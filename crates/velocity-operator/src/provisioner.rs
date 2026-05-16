@@ -43,12 +43,18 @@ pub enum ProvisionError {
 
     #[error("breaking schema change rejected: {0:?}")]
     BreakingChange(Vec<MigrationOp>),
+
+    #[error(
+        "breaking schema change recognised but not yet executable (deferred to Phase 2+): {0:?}"
+    )]
+    BreakingChangeDeferred(Vec<MigrationOp>),
 }
 
 impl From<DiffError> for ProvisionError {
     fn from(e: DiffError) -> Self {
         match e {
             DiffError::BreakingOpsBlocked(ops) => ProvisionError::BreakingChange(ops),
+            DiffError::BreakingOpsDeferred(ops) => ProvisionError::BreakingChangeDeferred(ops),
             DiffError::Sql(e) => ProvisionError::Sql(e),
         }
     }

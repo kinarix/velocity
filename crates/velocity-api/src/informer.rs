@@ -34,12 +34,31 @@ pub async fn run(
     let mut stream = watcher(api, watcher::Config::default()).boxed();
     tracing::info!("schema informer started");
 
+    // kube-rs 0.96 splits the old `Restarted(Vec<T>)` event into
+    // Init → InitApply* → InitDone. We MUST treat that sequence as a single
+    // atomic snapshot — otherwise a schema deleted while the watcher is
+    // disconnected would remain in the registry forever, since the
+    // post-reconnect init batch won't emit a Delete for it.
+    let mut bootstrap: Vec<ResolvedSchema> = Vec::new();
+
     while let Some(event) = stream.next().await {
         match event {
             Ok(Event::Init) => {
-                tracing::debug!("informer init");
+                bootstrap.clear();
+                tracing::debug!("informer init — buffering snapshot");
             }
-            Ok(Event::InitApply(sd)) | Ok(Event::Apply(sd)) => {
+            Ok(Event::InitApply(sd)) => {
+                if let Some(rs) = resolve(&sd) {
+                    bootstrap.push(rs);
+                }
+            }
+            Ok(Event::InitDone) => {
+                let count = bootstrap.len();
+                registry.replace_all(std::mem::take(&mut bootstrap));
+                registry.mark_ready();
+                tracing::info!(count, "informer initial sync complete — registry ready");
+            }
+            Ok(Event::Apply(sd)) => {
                 if let Some(rs) = resolve(&sd) {
                     tracing::info!(
                         path = %crate::registry::registry_key(&rs.path),
@@ -47,13 +66,6 @@ pub async fn run(
                     );
                     registry.upsert(rs);
                 }
-            }
-            Ok(Event::InitDone) => {
-                tracing::info!(
-                    count = registry.snapshot().len(),
-                    "informer initial sync complete — registry ready"
-                );
-                registry.mark_ready();
             }
             Ok(Event::Delete(sd)) => {
                 if let Some(path) = path_from_labels(&sd) {

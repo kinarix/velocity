@@ -67,6 +67,13 @@ pub enum DiffError {
     #[error("breaking migration ops rejected (set annotation `velocity.sh/breaking-change: approved` to override): {0:?}")]
     BreakingOpsBlocked(Vec<MigrationOp>),
 
+    /// Some breaking ops are recognised but the executor for them is not yet
+    /// implemented (DropColumn, ChangeType). We refuse rather than silently
+    /// no-op'ing them, so users don't think a destructive change ran when it
+    /// didn't. Returns the ops the user would have to handle out-of-band.
+    #[error("breaking migration ops recognised but not yet executable (deferred to Phase 2+); refusing to silently skip: {0:?}")]
+    BreakingOpsDeferred(Vec<MigrationOp>),
+
     #[error("postgres error: {0}")]
     Sql(#[from] sqlx::Error),
 }
@@ -155,16 +162,50 @@ pub fn classify(
 ) -> Result<Vec<String>, DiffError> {
     let mut breaking = Vec::new();
     let mut safe_sql = Vec::new();
+    // Breaking ops with no SQL renderer (DropColumn, ChangeType). We collect
+    // these separately so that even with `allow_breaking = true` we refuse
+    // rather than silently dropping the user's intent on the floor.
+    let mut deferred = Vec::new();
     for op in ops {
-        if op.is_breaking() {
-            breaking.push(op);
-        } else if let Some(sql) = op_to_sql(qualified_table, &op) {
-            safe_sql.push(sql);
+        let is_breaking = op.is_breaking();
+        match (is_breaking, op_to_sql(qualified_table, &op)) {
+            (false, Some(sql)) => safe_sql.push(sql),
+            (false, None) => {
+                // Safe op with no SQL — currently unreachable (op_to_sql only
+                // returns None for DropColumn/ChangeType, both breaking) but
+                // we don't want a silent drop if that ever changes.
+                deferred.push(op);
+            }
+            (true, Some(sql)) => {
+                // Breaking but renderable (e.g. AddColumn NOT NULL, length
+                // shrink, NOT NULL tightening). Held under `breaking` until
+                // we know whether allow_breaking permits applying them.
+                breaking.push((op, Some(sql)));
+            }
+            (true, None) => {
+                breaking.push((op, None));
+            }
         }
     }
+
     if !breaking.is_empty() && !allow_breaking {
-        return Err(DiffError::BreakingOpsBlocked(breaking));
+        let ops: Vec<MigrationOp> = breaking.into_iter().map(|(op, _)| op).collect();
+        return Err(DiffError::BreakingOpsBlocked(ops));
     }
+
+    // allow_breaking is true (or breaking is empty). Apply renderable
+    // breaking ops; refuse if any breaking op has no executor yet.
+    for (op, sql) in breaking {
+        match sql {
+            Some(sql) => safe_sql.push(sql),
+            None => deferred.push(op),
+        }
+    }
+
+    if !deferred.is_empty() {
+        return Err(DiffError::BreakingOpsDeferred(deferred));
+    }
+
     Ok(safe_sql)
 }
 
@@ -339,17 +380,35 @@ mod tests {
     }
 
     #[test]
-    fn classify_allows_breaking_when_approved() {
+    fn classify_approves_renderable_breaking_ops() {
+        // Approval + a renderable breaking op (NOT NULL tighten) → SQL emitted.
+        let ops = vec![MigrationOp::ChangeNullability {
+            name: "amount".into(),
+            was_nullable: true,
+            now_nullable: false,
+        }];
+        let sql = classify("s.t", ops, true).unwrap();
+        assert_eq!(sql.len(), 1);
+        assert!(sql[0].contains("SET NOT NULL"));
+    }
+
+    #[test]
+    fn classify_defers_unrenderable_breaking_even_when_approved() {
+        // Approval is not enough for DropColumn — we have no executor for it
+        // yet, and we must NOT silently no-op a destructive intent. Refuse
+        // with a distinct error so the controller can surface "deferred".
         let ops = vec![
             MigrationOp::DropColumn { name: "legacy".into() },
             MigrationOp::AddColumn(col("po", "text", None, false)),
         ];
-        // approval lets breaking ops through; we still emit only safe ops as
-        // SQL because rendering breaking ops belongs to a separate (audited)
-        // path — Phase 2+.
-        let sql = classify("s.t", ops, true).unwrap();
-        assert_eq!(sql.len(), 1);
-        assert!(sql[0].contains("ADD COLUMN IF NOT EXISTS po"));
+        let err = classify("s.t", ops, true).unwrap_err();
+        match err {
+            DiffError::BreakingOpsDeferred(deferred) => {
+                assert_eq!(deferred.len(), 1);
+                assert!(matches!(deferred[0], MigrationOp::DropColumn { .. }));
+            }
+            other => panic!("expected BreakingOpsDeferred, got {other:?}"),
+        }
     }
 
     #[test]

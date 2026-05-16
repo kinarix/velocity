@@ -260,10 +260,15 @@ async fn sync_schema_tables_blocks_breaking_drop_column_without_annotation() {
         "drop column without approval must be rejected, got: {err:?}"
     );
 
-    // With approval, the migration is no longer rejected. The actual DROP
-    // COLUMN execution is deferred to the audited Phase-2+ path — for now
-    // approval only lifts the gate; the column survives.
-    prov.sync_schema_tables(&plan2, true).await.unwrap();
+    // Approval lifts the per-op safety gate, but DROP COLUMN has no executor
+    // yet — we refuse with `BreakingChangeDeferred` rather than silently
+    // succeeding while leaving the column in place. This is intentional:
+    // "approved + no-op" is the worst possible UX for destructive intent.
+    let err = prov.sync_schema_tables(&plan2, true).await;
+    assert!(
+        matches!(err, Err(ProvisionError::BreakingChangeDeferred(_))),
+        "approved drop column must be deferred (not silently no-op), got: {err:?}"
+    );
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
          WHERE table_schema = $1 AND table_name = 'purchase_order_v1' AND column_name = 'notes')",
@@ -272,7 +277,7 @@ async fn sync_schema_tables_blocks_breaking_drop_column_without_annotation() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(exists, "drop is deferred; column should still exist with approval in Phase 1");
+    assert!(exists, "deferred drop leaves the column untouched");
 
     cleanup(&pool, &pg_schema).await;
 }
