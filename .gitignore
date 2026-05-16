@@ -1,0 +1,96 @@
+# --- Rust ---
+target/
+**/*.rs.bk
+*.pdb
+
+# Coverage / profiling
+*.profraw
+*.profdata
+tarpaulin-report.html
+cobertura.xml
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Editors / IDEs ---
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.fleet/
+.zed/
+
+# --- Direnv / env ---
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# --- Node / portal ---
+portal/node_modules/
+portal/dist/
+portal/.vite/
+portal/.turbo/
+portal/coverage/
+portal/*.log
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Helm / charts ---
+charts/**/charts/
+charts/**/Chart.lock
+*.tgz
+
+# --- Kubernetes / kubeconfig ---
+kubeconfig
+*.kubeconfig
+.kube/
+
+# --- Secrets ---
+*.pem
+*.key
+!**/testdata/**/*.pem
+!**/testdata/**/*.key
+secrets/
+*.secret.yaml
+
+# --- Local test infra ---
+.testcontainers/
+docker-compose.override.yml
+
+# Local data volumes mounted by docker-compose (postgres on 5434, redis, kafka, typesense)
+data/
+pgdata/
+redis-data/
+kafka-data/
+
+# --- Build / dist artifacts ---
+dist/
+build/
+out/
+
+# --- Logs / temp ---
+*.log
+logs/
+tmp/
+.tmp/
+
+# --- Generated docs (only the auto-generated ones; design docs in docs/ stay) ---
+docs/api/generated/
+docs/crd/generated/
+
+# --- Coverage / bench output ---
+criterion/
+flamegraph.svg
+perf.data*

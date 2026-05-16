@@ -1,0 +1,170 @@
+# Velocity — local dev Makefile
+# All commands assume `make` is run from the repo root.
+
+SHELL          := /usr/bin/env bash
+.SHELLFLAGS    := -eu -o pipefail -c
+.DEFAULT_GOAL  := help
+
+# --- Config ---
+COMPOSE        ?= docker compose
+PG_HOST        ?= localhost
+PG_PORT        ?= 5434
+PG_DB          ?= velocity
+PG_SUPERUSER   ?= postgres
+PG_SUPERPASS   ?= postgres
+PG_API_USER    ?= velocity_api
+PG_API_PASS    ?= velocity_api_dev
+
+PG_SUPER_URL   := postgres://$(PG_SUPERUSER):$(PG_SUPERPASS)@$(PG_HOST):$(PG_PORT)/$(PG_DB)
+PG_API_URL     := postgres://$(PG_API_USER):$(PG_API_PASS)@$(PG_HOST):$(PG_PORT)/$(PG_DB)
+
+# Run psql inside the postgres container so the host doesn't need libpq/psql.
+# -T disables TTY (for non-interactive); interactive targets use the form without -T.
+PSQL_SUPER     := $(COMPOSE) exec -T -e PGPASSWORD=$(PG_SUPERPASS) postgres psql -U $(PG_SUPERUSER) -d $(PG_DB) -v ON_ERROR_STOP=1
+PSQL_SUPER_I   := $(COMPOSE) exec    -e PGPASSWORD=$(PG_SUPERPASS) postgres psql -U $(PG_SUPERUSER) -d $(PG_DB)
+PSQL_API_I     := $(COMPOSE) exec    -e PGPASSWORD=$(PG_API_PASS)  postgres psql -U $(PG_API_USER)  -d $(PG_DB)
+PSQL_API       := $(COMPOSE) exec -T -e PGPASSWORD=$(PG_API_PASS)  postgres psql -U $(PG_API_USER)  -d $(PG_DB) -v ON_ERROR_STOP=1
+
+DATA_DIRS      := data/postgres data/redis data/kafka data/typesense
+
+# --- Help ---
+.PHONY: help
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
+	  /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+# --- Infra lifecycle ---
+.PHONY: up
+up: data-dirs ## Start all dev infra (postgres, redis, kafka, typesense)
+	$(COMPOSE) up -d
+	@$(MAKE) --no-print-directory wait-pg
+	@echo "→ Postgres ready at $(PG_HOST):$(PG_PORT)"
+
+.PHONY: up-pg
+up-pg: data-dirs ## Start only postgres
+	$(COMPOSE) up -d postgres
+	@$(MAKE) --no-print-directory wait-pg
+
+.PHONY: down
+down: ## Stop all dev infra (keeps data volumes)
+	$(COMPOSE) down
+
+.PHONY: nuke
+nuke: ## Stop infra AND delete all local data (DESTRUCTIVE)
+	$(COMPOSE) down -v
+	rm -rf $(DATA_DIRS)
+	@echo "→ data/ wiped"
+
+.PHONY: restart
+restart: down up ## Restart all infra
+
+.PHONY: ps
+ps: ## List running infra
+	$(COMPOSE) ps
+
+.PHONY: logs
+logs: ## Tail logs for all infra
+	$(COMPOSE) logs -f --tail=100
+
+.PHONY: logs-pg
+logs-pg: ## Tail postgres logs
+	$(COMPOSE) logs -f --tail=100 postgres
+
+.PHONY: data-dirs
+data-dirs: ## Create local data volume directories
+	@mkdir -p $(DATA_DIRS)
+
+.PHONY: wait-pg
+wait-pg: ## Block until postgres is accepting connections
+	@for i in $$(seq 1 30); do \
+	  if $(COMPOSE) exec -T postgres pg_isready -U $(PG_SUPERUSER) -d $(PG_DB) >/dev/null 2>&1; then \
+	    exit 0; \
+	  fi; \
+	  sleep 1; \
+	done; \
+	echo "postgres failed to become ready"; exit 1
+
+# --- Database (runs psql inside the postgres container — no host psql needed) ---
+.PHONY: psql
+psql: ## Open psql as superuser (interactive, inside container)
+	@$(PSQL_SUPER_I)
+
+.PHONY: psql-api
+psql-api: ## Open psql as velocity_api (interactive, verifies NOBYPASSRLS path)
+	@$(PSQL_API_I)
+
+.PHONY: db-bootstrap
+db-bootstrap: wait-pg ## Re-apply db/init/*.sql against the running cluster (idempotent)
+	@for f in db/init/*.sql; do \
+	  echo "→ applying $$f"; \
+	  $(PSQL_SUPER) < "$$f"; \
+	done
+
+.PHONY: db-verify-rls
+db-verify-rls: ## Assert velocity_api has NOBYPASSRLS (ADR-007)
+	@result=$$($(PSQL_API) -tAc "SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user" | tr -d '[:space:]'); \
+	if [ "$$result" = "f" ]; then \
+	  echo "✓ velocity_api NOBYPASSRLS"; \
+	else \
+	  echo "✗ velocity_api has BYPASSRLS=true — fix the role (got '$$result')"; exit 1; \
+	fi
+
+.PHONY: migrate
+migrate: wait-pg ## Apply platform.* migrations (numeric order)
+	@if [ ! -d migrations ] || [ -z "$$(ls -A migrations 2>/dev/null)" ]; then \
+	  echo "no migrations yet — skipping"; exit 0; \
+	fi; \
+	for f in migrations/*.sql; do \
+	  echo "→ applying $$f"; \
+	  $(PSQL_SUPER) < "$$f"; \
+	done
+
+.PHONY: db-reset
+db-reset: ## Drop + recreate the velocity database
+	@$(COMPOSE) exec -T -e PGPASSWORD=$(PG_SUPERPASS) postgres psql -U $(PG_SUPERUSER) -d postgres -v ON_ERROR_STOP=1 \
+	  -c "DROP DATABASE IF EXISTS $(PG_DB) WITH (FORCE); CREATE DATABASE $(PG_DB);"
+	@$(MAKE) --no-print-directory db-bootstrap migrate
+
+.PHONY: db-url
+db-url: ## Print connection URLs
+	@echo "superuser: $(PG_SUPER_URL)"
+	@echo "api:       $(PG_API_URL)"
+
+# --- Rust workspace ---
+.PHONY: build
+build: ## cargo build --workspace
+	cargo build --workspace
+
+.PHONY: test
+test: ## cargo test --workspace
+	cargo test --workspace
+
+.PHONY: fmt
+fmt: ## cargo fmt
+	cargo fmt --all
+
+.PHONY: fmt-check
+fmt-check: ## cargo fmt --check
+	cargo fmt --all -- --check
+
+.PHONY: clippy
+clippy: ## cargo clippy -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
+
+.PHONY: audit
+audit: ## cargo audit
+	cargo audit
+
+.PHONY: check
+check: fmt-check clippy test ## Full pre-commit check
+
+.PHONY: generate-crds
+generate-crds: ## Regenerate crds/*.yaml from velocity-types
+	cargo run --bin generate-crds
+
+# --- Convenience ---
+.PHONY: dev
+dev: up-pg db-bootstrap db-verify-rls ## One-shot: bring up pg, bootstrap roles, verify RLS
+	@echo ""
+	@echo "Velocity dev DB ready."
+	@$(MAKE) --no-print-directory db-url
