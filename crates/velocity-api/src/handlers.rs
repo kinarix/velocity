@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use serde_json::{json, Value};
@@ -22,11 +22,14 @@ use velocity_types::crds::schema::{FieldKind, SearchTier};
 
 use crate::error::ApiError;
 use crate::identity::Identity;
+use crate::idempotency::{self, CachedResponse, Lookup};
 use crate::query::{build_list, ListQuery};
 use crate::registry::ResolvedSchema;
 use crate::session::{with_session_context, RoleClass};
 use crate::state::AppState;
 use crate::validate::{validate_fields, validate_rules, WriteMode};
+
+const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 
 /// URL path: `/api/{org}/{app}/{domain}/{object}/{version}`.
 type SchemaPathParts = (String, String, String, String, String);
@@ -130,6 +133,7 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let schema = resolve_schema(&state, parts)?;
@@ -139,6 +143,27 @@ pub async fn create(
         .as_object()
         .ok_or_else(|| ApiError::BadRequest("payload must be a JSON object".into()))?
         .clone();
+
+    // ── Idempotency (#16) — if present, replay or 409 before doing work.
+    let idempotency_key = headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let request_hash = idempotency_key
+        .as_ref()
+        .map(|_| idempotency::hash_payload(&Value::Object(payload_obj.clone())));
+    if let (Some(key), Some(hash)) = (idempotency_key.as_deref(), request_hash.as_deref()) {
+        idempotency::validate_key(key)?;
+        match idempotency::lookup(&state.pool, key, hash).await? {
+            Lookup::Replay(cached) => {
+                let status = StatusCode::from_u16(cached.status)
+                    .unwrap_or(StatusCode::CREATED);
+                return Ok((status, Json(cached.body)));
+            }
+            Lookup::Conflict => return Err(ApiError::IdempotencyConflict),
+            Lookup::Miss => {}
+        }
+    }
 
     // ── Validation (#15) — runs before any SQL is built.
     validate_fields(&schema, &payload_obj, WriteMode::Create)?;
@@ -179,6 +204,15 @@ pub async fn create(
         },
     )
     .await?;
+
+    // ── Idempotency record — write after the work commits so replays
+    // return the same body the first caller got. A lost race here is
+    // harmless: the existing row already has the same hash.
+    if let (Some(key), Some(hash)) = (idempotency_key.as_deref(), request_hash.as_deref()) {
+        let cached =
+            CachedResponse { status: StatusCode::CREATED.as_u16(), body: inserted.clone() };
+        idempotency::record(&state.pool, key, hash, &cached).await?;
+    }
 
     Ok((StatusCode::CREATED, Json(inserted)))
 }

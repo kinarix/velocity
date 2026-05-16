@@ -47,6 +47,8 @@ dashmap            = { workspace = true }
 cel-interpreter    = { workspace = true }
 regex              = { workspace = true }
 uuid               = { workspace = true }
+sha2               = { workspace = true }
+hex                = { workspace = true }
 
 # Pinned only to call CryptoProvider::install_default() at startup. kube-rs
 # (via rustls-tls) pulls rustls 0.23 in but doesn't pick a provider for us.
@@ -56,3 +58,5 @@ rustls             = { version = "0.23", features = ["aws-lc-rs"] }
 tokio             = { workspace = true, features = ["test-util", "macros"] }
 velocity-operator = { workspace = true }
 uuid              = { workspace = true }
+tower             = { workspace = true, features = ["util"] }
+http-body-util    = "0.1"

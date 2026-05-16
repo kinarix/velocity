@@ -14,6 +14,7 @@ pub mod error;
 pub mod handlers;
 pub mod health;
 pub mod identity;
+pub mod idempotency;
 pub mod informer;
 pub mod query;
 pub mod registry;

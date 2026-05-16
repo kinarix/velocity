@@ -23,6 +23,12 @@ pub enum ApiError {
     #[error("version conflict")]
     VersionConflict,
 
+    /// `Idempotency-Key` re-used with a different request body. The caller
+    /// is almost certainly buggy — we refuse rather than re-doing work
+    /// against possibly different state.
+    #[error("idempotency-key reused with different body")]
+    IdempotencyConflict,
+
     #[error("unknown field `{0}`")]
     UnknownField(String),
 
@@ -49,7 +55,7 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             ApiError::SchemaNotFound | ApiError::NotFound => StatusCode::NOT_FOUND,
-            ApiError::VersionConflict => StatusCode::CONFLICT,
+            ApiError::VersionConflict | ApiError::IdempotencyConflict => StatusCode::CONFLICT,
             ApiError::UnknownField(_)
             | ApiError::NotFilterable(_)
             | ApiError::NotSortable(_)
@@ -64,6 +70,7 @@ impl ApiError {
             ApiError::SchemaNotFound => "SCHEMA_NOT_FOUND",
             ApiError::NotFound => "NOT_FOUND",
             ApiError::VersionConflict => "VERSION_CONFLICT",
+            ApiError::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
             ApiError::UnknownField(_) => "UNKNOWN_FIELD",
             ApiError::NotFilterable(_) => "FIELD_NOT_FILTERABLE",
             ApiError::NotSortable(_) => "FIELD_NOT_SORTABLE",

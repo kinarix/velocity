@@ -92,6 +92,7 @@ regex           = "1"
 
 # Crypto
 sha2            = "0.10"
+hex             = "0.4"
 jsonwebtoken    = "9"
 rand            = "0.8"
 argon2          = "0.5"
