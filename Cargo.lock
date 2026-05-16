@@ -3107,11 +3107,13 @@ dependencies = [
  "bytes",
  "http",
  "http-body",
+ "http-body-util",
  "mime",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3317,7 +3319,20 @@ name = "velocity-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
+ "axum",
+ "dashmap",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 1.0.69",
  "tokio",
+ "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "velocity-types",
