@@ -1,0 +1,128 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/velocity-types",
+    "crates/velocity-operator",
+    "crates/velocity-api",
+    "crates/velocity-webhook",
+    "crates/velocity-cli",
+    "crates/velocity-log-processor",
+    "crates/velocity-log-collector",
+    "crates/velocity-archive-worker",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.85"
+license      = "Apache-2.0"
+authors      = ["Velocity Contributors"]
+repository   = "https://github.com/kinarix/velocity"
+homepage     = "https://velocity.kinarix.com"
+publish      = false
+
+[workspace.lints.rust]
+unsafe_code               = "forbid"
+unused_must_use           = "deny"
+unreachable_pub           = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used     = "warn"
+expect_used     = "warn"
+panic           = "warn"
+todo            = "warn"
+dbg_macro       = "warn"
+print_stdout    = "warn"
+print_stderr    = "warn"
+mod_module_files = "warn"
+
+[workspace.dependencies]
+# Async runtime + utilities
+tokio          = { version = "1.40", features = ["full"] }
+tokio-util     = "0.7"
+futures        = "0.3"
+async-trait    = "0.1"
+pin-project    = "1"
+
+# HTTP / web
+axum           = { version = "0.7", features = ["macros"] }
+tower          = "0.5"
+tower-http     = { version = "0.6", features = ["trace", "cors", "limit", "request-id"] }
+hyper          = "1"
+reqwest        = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Kubernetes
+kube           = { version = "0.96", default-features = false, features = ["client", "derive", "runtime", "rustls-tls"] }
+k8s-openapi    = { version = "0.23", features = ["latest"] }
+schemars       = { version = "0.8", features = ["chrono", "uuid1"] }
+
+# Database
+sqlx           = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "chrono", "uuid", "json"] }
+
+# Concurrency primitives
+arc-swap       = "1.7"
+dashmap        = "6"
+parking_lot    = "0.12"
+
+# Serialization
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+serde_yaml     = "0.9"
+
+# Errors
+anyhow         = "1"
+thiserror      = "1"
+
+# Observability
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.27"
+opentelemetry       = "0.26"
+opentelemetry_sdk   = { version = "0.26", features = ["rt-tokio"] }
+opentelemetry-otlp  = { version = "0.26", features = ["grpc-tonic"] }
+prometheus          = "0.13"
+
+# Expression / data
+cel-interpreter = "0.9"
+jsonpath-rust   = "0.7"
+json-patch      = "3"
+
+# Crypto
+sha2            = "0.10"
+jsonwebtoken    = "9"
+rand            = "0.8"
+argon2          = "0.5"
+base64          = "0.22"
+
+# CLI
+clap            = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+# Time / IDs
+chrono          = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+uuid            = { version = "1", features = ["v4", "v7", "serde"] }
+
+# Testing
+testcontainers  = "0.23"
+
+# Internal crates
+velocity-types  = { path = "crates/velocity-types" }
+
+[profile.release]
+lto             = "thin"
+codegen-units   = 1
+strip           = "symbols"
+opt-level       = 3
+debug           = false
+
+[profile.release-with-debug]
+inherits = "release"
+debug    = true
+strip    = "none"
+
+[profile.dev]
+opt-level = 0
+debug     = true
+
+[profile.test]
+opt-level = 1

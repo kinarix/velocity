@@ -1,0 +1,24 @@
+[package]
+name        = "velocity-types"
+description = "Shared CRD struct definitions and runtime types for Velocity"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+publish.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+chrono     = { workspace = true }
+uuid       = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

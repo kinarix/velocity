@@ -1,0 +1,5 @@
+avoid-breaking-exported-api = false
+disallowed-methods = [
+    # ADR-007: never connect with a role that has BYPASSRLS
+    { path = "sqlx::postgres::PgConnectOptions::username", reason = "Use the SET LOCAL ROLE pattern instead of switching to a privileged user mid-tx" },
+]
