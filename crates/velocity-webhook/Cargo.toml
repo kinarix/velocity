@@ -38,3 +38,7 @@ k8s-openapi        = { workspace = true }
 kube               = { workspace = true, features = ["admission"] }
 
 cel-interpreter    = { workspace = true }
+
+# Pinned only to call CryptoProvider::install_default() at startup. axum-server's
+# tls-rustls feature pulls rustls 0.23 in but doesn't pick a provider for us.
+rustls             = { version = "0.23", features = ["aws-lc-rs"] }

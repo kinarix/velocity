@@ -55,15 +55,14 @@ spec:
                           description: 'Claim mapping with optional JSONPath + transforms (see design §1.5). We accept the right-hand side as a raw JSON value so transforms like `{ path: "$.roles", transform: scope_to_roles }` round-trip losslessly.'
                           properties:
                             actorId:
-                              nullable: true
+                              x-kubernetes-preserve-unknown-fields: true
                             attributes:
-                              additionalProperties: true
                               default: {}
-                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
                             email:
-                              nullable: true
+                              x-kubernetes-preserve-unknown-fields: true
                             roles:
-                              nullable: true
+                              x-kubernetes-preserve-unknown-fields: true
                           type: object
                         issuer:
                           type: string

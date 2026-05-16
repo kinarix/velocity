@@ -72,7 +72,8 @@ spec:
                               type: string
                             op:
                               type: string
-                            value: {}
+                            value:
+                              x-kubernetes-preserve-unknown-fields: true
                           required:
                           - field
                           - op
@@ -200,7 +201,7 @@ spec:
                           type: array
                       type: object
                     default:
-                      nullable: true
+                      x-kubernetes-preserve-unknown-fields: true
                     enumValues:
                       default: []
                       items:

@@ -146,6 +146,7 @@ pub struct RowFilterRule {
 pub struct RowFilter {
     pub field: String,
     pub op: String,
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub value: serde_json::Value,
 }
 
@@ -184,6 +185,7 @@ pub struct FieldSpec {
     pub searchable: bool,
 
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub default: Option<serde_json::Value>,
 
     // Numeric constraints
@@ -399,6 +401,7 @@ pub struct ObservabilitySpec {
     #[serde(default)]
     pub slos: Vec<SloSpec>,
     #[serde(default, flatten)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub extras: BTreeMap<String, serde_json::Value>,
 }
 

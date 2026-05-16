@@ -16,6 +16,13 @@ use velocity_types::crds::{Application, Domain, Organisation};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // rustls 0.23 requires an explicit crypto provider before any TLS code
+    // runs. kube-rs (via rustls-tls) pulls rustls in but doesn't pick a
+    // provider for us, so install aws-lc-rs here.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("rustls CryptoProvider already installed"))?;
+
     let cfg = OperatorConfig::from_env()?;
     init_tracing(cfg.pretty_logs);
 

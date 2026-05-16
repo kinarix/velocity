@@ -38,10 +38,9 @@ spec:
                 items:
                   properties:
                     attributes:
-                      additionalProperties: true
                       default: {}
                       description: 'Attribute filters (e.g., `region: west`).'
-                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     operations:
                       default: []
                       items:

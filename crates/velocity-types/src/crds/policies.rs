@@ -45,6 +45,7 @@ pub struct ArchiveTrigger {
     #[serde(default)]
     pub op: Option<String>,
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub value: Option<serde_json::Value>,
     #[serde(default)]
     pub rule: Option<String>,
@@ -96,6 +97,7 @@ pub struct LogFilterRule {
     pub priority: i32,
     pub action: String, // keep|drop|sample|redact
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub when: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub fields: Vec<String>,
@@ -136,6 +138,7 @@ pub struct LogDestination {
     #[serde(rename = "type")]
     pub kind: String, // loki|s3|kafka
     #[serde(default, flatten)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub config: BTreeMap<String, serde_json::Value>,
 }
 

@@ -12,6 +12,13 @@ use velocity_webhook::{handler, WebhookConfig};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // rustls 0.23 requires an explicit crypto provider before any TLS code
+    // runs. axum-server pulls in rustls but does not pick a provider for us,
+    // so install aws-lc-rs (the higher-perf default) here.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("rustls CryptoProvider already installed"))?;
+
     let cfg = WebhookConfig::from_env()?;
     init_tracing(cfg.pretty_logs);
 

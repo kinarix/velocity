@@ -115,6 +115,20 @@ pub fn kebab(s: &str) -> String {
     s.to_lowercase().replace(['_', '.', ' ', '/'], "-")
 }
 
+/// JSON Schema helper that emits `x-kubernetes-preserve-unknown-fields: true`,
+/// which the Kubernetes apiserver requires for fields whose schema is "any
+/// JSON value." Use as `#[schemars(schema_with = "preserve_unknown_fields")]`
+/// on a `serde_json::Value` or `BTreeMap<String, Value>` field — without this,
+/// kube's CRD generator emits a properties block without a parent `type`,
+/// which the apiserver rejects with `must not be empty for specified object fields`.
+pub fn preserve_unknown_fields(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    use schemars::schema::{Schema, SchemaObject};
+    use serde_json::json;
+    let mut extensions = schemars::Map::new();
+    extensions.insert("x-kubernetes-preserve-unknown-fields".into(), json!(true));
+    Schema::Object(SchemaObject { extensions, ..Default::default() })
+}
+
 /// Errors raised by parsers in this module.
 #[derive(Debug, Error)]
 pub enum CommonError {

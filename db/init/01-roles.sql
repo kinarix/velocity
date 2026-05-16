@@ -23,3 +23,8 @@ END
 $$;
 
 GRANT CONNECT ON DATABASE velocity TO velocity_api, velocity_operator;
+
+-- velocity_operator owns per-domain schemas (CREATE SCHEMA, CREATE ROLE for
+-- the reader/writer/admin domain roles). It is still NOSUPERUSER + NOBYPASSRLS;
+-- this is the bounded "platform admin" surface.
+GRANT CREATE ON DATABASE velocity TO velocity_operator;

@@ -47,6 +47,10 @@ sha2               = { workspace = true }
 chrono             = { workspace = true }
 arc-swap           = { workspace = true }
 
+# Pinned only to call CryptoProvider::install_default() at startup. kube-rs
+# (via rustls-tls) pulls rustls 0.23 in but doesn't pick a provider for us.
+rustls             = { version = "0.23", features = ["aws-lc-rs"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 uuid  = { workspace = true }

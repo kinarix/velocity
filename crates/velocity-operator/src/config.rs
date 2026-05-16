@@ -24,9 +24,13 @@ pub struct OperatorConfig {
 
 impl OperatorConfig {
     pub fn from_env() -> Result<Self> {
-        let pg_url = std::env::var("VELOCITY_OPERATOR_PG_URL")
+        let pg_url = match std::env::var("VELOCITY_OPERATOR_PG_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .context("VELOCITY_OPERATOR_PG_URL or DATABASE_URL must be set")?;
+        {
+            Ok(url) => url,
+            Err(_) => Self::compose_pg_url()
+                .context("VELOCITY_OPERATOR_PG_URL/DATABASE_URL not set and PG_HOST/PORT/USER/DB/PASSWORD env vars are incomplete")?,
+        };
 
         let health_addr = std::env::var("VELOCITY_OPERATOR_HEALTH_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8081".to_string());
@@ -54,5 +58,54 @@ impl OperatorConfig {
             leader_election,
             pretty_logs,
         })
+    }
+
+    /// Build `postgres://user:password@host:port/db` from the piecewise env vars
+    /// used by the Helm chart. The password is percent-encoded so reserved
+    /// URL chars (`:/@?#[]`) round-trip cleanly.
+    fn compose_pg_url() -> Result<String> {
+        let host = std::env::var("VELOCITY_OPERATOR_PG_HOST").context("PG_HOST")?;
+        let port = std::env::var("VELOCITY_OPERATOR_PG_PORT").unwrap_or_else(|_| "5432".into());
+        let user = std::env::var("VELOCITY_OPERATOR_PG_USER").context("PG_USER")?;
+        let db = std::env::var("VELOCITY_OPERATOR_PG_DB").context("PG_DB")?;
+        let password = std::env::var("VELOCITY_OPERATOR_PG_PASSWORD").context("PG_PASSWORD")?;
+        Ok(format!(
+            "postgres://{}:{}@{}:{}/{}",
+            percent_encode(&user),
+            percent_encode(&password),
+            host,
+            port,
+            db
+        ))
+    }
+}
+
+/// Minimal percent-encoder for the URL "userinfo" component. Encodes every
+/// byte that's not in the unreserved set or sub-delims allowed inside userinfo.
+/// (See RFC 3986 §3.2.1.)
+fn percent_encode(s: &str) -> String {
+    fn is_unreserved(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
+    }
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        if is_unreserved(*b) {
+            out.push(*b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_encode;
+
+    #[test]
+    fn percent_encode_reserved_chars() {
+        assert_eq!(percent_encode("plain"), "plain");
+        assert_eq!(percent_encode("a:b/c@d"), "a%3Ab%2Fc%40d");
+        assert_eq!(percent_encode("pass#word?"), "pass%23word%3F");
     }
 }

@@ -194,6 +194,11 @@ operator-test: ## Run velocity-operator tests (incl. integration vs docker-compo
 	VELOCITY_OPERATOR_PG_URL=postgres://postgres:postgres@$(PG_HOST):$(PG_PORT)/$(PG_DB) \
 	cargo test -p velocity-operator
 
+# --- End-to-end ---
+.PHONY: e2e
+e2e: ## Run Phase 0 end-to-end test against minikube (see tests/e2e/run.sh)
+	@bash tests/e2e/run.sh
+
 # --- Convenience ---
 .PHONY: dev
 dev: up-pg db-bootstrap db-verify-rls ## One-shot: bring up pg, bootstrap roles, verify RLS

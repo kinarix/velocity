@@ -70,12 +70,16 @@ pub struct IssuerConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ClaimMapping {
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub actor_id: Option<serde_json::Value>,
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub email: Option<serde_json::Value>,
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub roles: Option<serde_json::Value>,
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub attributes: BTreeMap<String, serde_json::Value>,
 }
 
@@ -142,6 +146,7 @@ pub struct ScopeSpec {
     pub operations: Vec<String>,
     /// Attribute filters (e.g., `region: west`).
     #[serde(default)]
+    #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub attributes: BTreeMap<String, serde_json::Value>,
 }
 

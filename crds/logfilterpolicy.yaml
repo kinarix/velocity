@@ -42,9 +42,8 @@ spec:
                       nullable: true
                       type: number
                     when:
-                      additionalProperties: true
                       default: {}
-                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                   required:
                   - action
                   - name
