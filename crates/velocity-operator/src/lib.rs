@@ -13,10 +13,12 @@ pub mod context;
 pub mod controllers;
 pub mod ddl_builder;
 pub mod health;
+pub mod migration_diff;
 pub mod provisioner;
 pub mod startup;
 
 pub use config::OperatorConfig;
 pub use context::Context;
-pub use ddl_builder::{build_ddl, DdlError, DdlPlan};
+pub use ddl_builder::{build_ddl, ColumnSpec, DdlError, DdlPlan};
+pub use migration_diff::{classify, diff_columns, DiffError, MigrationOp};
 pub use provisioner::{PostgresProvisioner, ProvisionError};

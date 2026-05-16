@@ -80,6 +80,8 @@ pub struct DdlPlan {
     pub qualified_table: String,
     /// `CREATE TABLE {schema}.{object}_{version} ( ... )`
     pub main_table: String,
+    /// Structured column list of the main table — feeds [`migration_diff`](crate::migration_diff).
+    pub columns: Vec<ColumnSpec>,
     /// `CREATE TABLE {schema}.{object}_{version}_history ( ... )`
     pub history_table: String,
     /// Tier-3 only — outbox table for CDC (ADR-002).
@@ -88,6 +90,23 @@ pub struct DdlPlan {
     pub indexes: Vec<String>,
     /// PL/pgSQL functions + triggers (updated_at touch, history+outbox).
     pub triggers: Vec<String>,
+}
+
+/// Structured view of one column. Used by [`DdlPlan`] and the diff layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnSpec {
+    pub name: String,
+    /// Lowercase base type as Postgres reports it (e.g. `text`, `numeric`,
+    /// `bigint`, `boolean`, `timestamptz`, `uuid`, `jsonb`, `varchar`).
+    /// Length/precision modifiers are NOT part of this — they live on
+    /// [`length`](Self::length) so the diff treats `VARCHAR(64)` and `TEXT`
+    /// as type-incompatible but `VARCHAR(64)` and `VARCHAR(128)` as a
+    /// (safe) length change.
+    pub base_type: String,
+    pub length: Option<u32>,
+    pub not_null: bool,
+    /// True for the 9 mandatory system columns — diff layer ignores these.
+    pub system: bool,
 }
 
 /// Build a complete [`DdlPlan`] for a `SchemaDefinition`.
@@ -99,6 +118,7 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
     let qualified = format!("{schema_name}.{table}");
 
     let columns = build_columns(spec, &table)?;
+    let column_specs = build_column_specs(spec)?;
     let main_table = build_create_table(&qualified, &columns, &table)?;
     let history_table = build_history_table(&schema_name, &table)?;
     let outbox_table = match spec.search.tier {
@@ -111,11 +131,126 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
     Ok(DdlPlan {
         qualified_table: qualified,
         main_table,
+        columns: column_specs,
         history_table,
         outbox_table,
         indexes,
         triggers,
     })
+}
+
+/// Auto-provisioned columns as typed [`ColumnSpec`] values — used by the diff
+/// layer. Keep in sync with [`SYSTEM_COLUMNS`].
+fn system_column_specs() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            base_type: "uuid".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "created_at".into(),
+            base_type: "timestamptz".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "updated_at".into(),
+            base_type: "timestamptz".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "deleted_at".into(),
+            base_type: "timestamptz".into(),
+            length: None,
+            not_null: false,
+            system: true,
+        },
+        ColumnSpec {
+            name: "version".into(),
+            base_type: "integer".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "created_by".into(),
+            base_type: "text".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "updated_by".into(),
+            base_type: "text".into(),
+            length: None,
+            not_null: true,
+            system: true,
+        },
+        ColumnSpec {
+            name: "archived_at".into(),
+            base_type: "timestamptz".into(),
+            length: None,
+            not_null: false,
+            system: true,
+        },
+        ColumnSpec {
+            name: "archive_ref".into(),
+            base_type: "text".into(),
+            length: None,
+            not_null: false,
+            system: true,
+        },
+    ]
+}
+
+fn build_column_specs(spec: &SchemaDefinitionSpec) -> Result<Vec<ColumnSpec>, DdlError> {
+    let mut out = system_column_specs();
+    for f in &spec.fields {
+        let name = validate_ident(&sanitize(&f.name))?;
+        if RESERVED_FIELD_NAMES.contains(&name.as_str()) {
+            return Err(DdlError::ReservedFieldName(name));
+        }
+        let (base_type, length) = pg_base_type_for(f)?;
+        out.push(ColumnSpec { name, base_type, length, not_null: f.required, system: false });
+    }
+    Ok(out)
+}
+
+/// Canonical (base_type, length) — matches what `information_schema.columns`
+/// reports after normalisation by [`crate::migration_diff::normalise_pg_type`].
+fn pg_base_type_for(f: &FieldSpec) -> Result<(String, Option<u32>), DdlError> {
+    let pair = match f.kind {
+        FieldKind::String => match f.max_length {
+            Some(n) if n > 0 => ("varchar".into(), Some(n)),
+            _ => ("text".into(), None),
+        },
+        FieldKind::Integer => ("bigint".into(), None),
+        FieldKind::Number => ("numeric".into(), None),
+        FieldKind::Boolean => ("boolean".into(), None),
+        FieldKind::Date => ("date".into(), None),
+        FieldKind::Datetime => ("timestamptz".into(), None),
+        FieldKind::Uuid => ("uuid".into(), None),
+        FieldKind::Json => ("jsonb".into(), None),
+        FieldKind::Enum => {
+            if f.enum_values.is_empty() {
+                return Err(DdlError::EmptyEnum(f.name.clone()));
+            }
+            ("text".into(), None)
+        }
+        FieldKind::Ref => {
+            if f.r#ref.is_none() {
+                return Err(DdlError::RefMissingTarget(f.name.clone()));
+            }
+            ("text".into(), None)
+        }
+    };
+    Ok(pair)
 }
 
 // ─── Columns ────────────────────────────────────────────────────────────────
