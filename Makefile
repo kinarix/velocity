@@ -179,7 +179,20 @@ check: fmt-check clippy test ## Full pre-commit check
 
 .PHONY: generate-crds
 generate-crds: ## Regenerate crds/*.yaml from velocity-types
-	cargo run --bin generate-crds
+	cargo run -p velocity-types --bin generate-crds
+
+# --- Operator ---
+.PHONY: operator
+operator: ## Run velocity-operator locally against docker-compose postgres
+	VELOCITY_OPERATOR_PG_URL=postgres://velocity_operator:velocity_operator_dev@$(PG_HOST):$(PG_PORT)/$(PG_DB) \
+	VELOCITY_OPERATOR_PRETTY_LOGS=true \
+	RUST_LOG=$${RUST_LOG:-info,velocity_operator=debug} \
+	cargo run -p velocity-operator
+
+.PHONY: operator-test
+operator-test: ## Run velocity-operator tests (incl. integration vs docker-compose postgres)
+	VELOCITY_OPERATOR_PG_URL=postgres://postgres:postgres@$(PG_HOST):$(PG_PORT)/$(PG_DB) \
+	cargo test -p velocity-operator
 
 # --- Convenience ---
 .PHONY: dev

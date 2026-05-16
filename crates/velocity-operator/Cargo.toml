@@ -18,8 +18,36 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-velocity-types = { workspace = true }
-tokio          = { workspace = true }
-anyhow         = { workspace = true }
-tracing        = { workspace = true }
+velocity-types     = { workspace = true }
+
+tokio              = { workspace = true }
+futures            = { workspace = true }
+async-trait        = { workspace = true }
+
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+
+tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+kube               = { workspace = true }
+k8s-openapi        = { workspace = true }
+schemars           = { workspace = true }
+
+sqlx               = { workspace = true }
+
+axum               = { workspace = true }
+tower              = { workspace = true }
+
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+
+dashmap            = { workspace = true }
+sha2               = { workspace = true }
+chrono             = { workspace = true }
+arc-swap           = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+uuid  = { workspace = true }
+sqlx  = { workspace = true }
