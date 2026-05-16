@@ -199,6 +199,14 @@ operator-test: ## Run velocity-operator tests (incl. integration vs docker-compo
 e2e: ## Run Phase 0 end-to-end test against minikube (see tests/e2e/run.sh)
 	@bash tests/e2e/run.sh
 
+.PHONY: e2e-clean
+e2e-clean: ## Tear down everything `make e2e` created (helm release, namespaces, stray operator)
+	-helm -n velocity-system uninstall velocity --ignore-not-found 2>/dev/null
+	-kubectl delete ns velocity-system --ignore-not-found --timeout=30s
+	-kubectl delete ns acme-supply-chain --ignore-not-found --timeout=30s
+	-pkill -f 'target/(debug|release)/velocity-operator' 2>/dev/null || true
+	-rm -rf data/webhook-tls
+
 # --- Convenience ---
 .PHONY: dev
 dev: up-pg db-bootstrap db-verify-rls ## One-shot: bring up pg, bootstrap roles, verify RLS

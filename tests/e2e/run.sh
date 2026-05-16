@@ -79,7 +79,10 @@ req_extensions     = v3_req
 [ dn ]
 CN = ${SVC}
 [ v3_req ]
-keyUsage         = critical, digitalSignature, keyEncipherment
+# Self-signed leaf doubles as its own trust anchor — Go's x509 verifier
+# rejects it otherwise ("parent certificate cannot sign this kind of cert").
+basicConstraints = critical, CA:TRUE
+keyUsage         = critical, digitalSignature, keyEncipherment, keyCertSign
 extendedKeyUsage = serverAuth
 subjectAltName   = @alt
 [ alt ]
