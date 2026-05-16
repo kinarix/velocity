@@ -107,7 +107,8 @@ uuid            = { version = "1", features = ["v4", "v7", "serde"] }
 testcontainers  = "0.23"
 
 # Internal crates
-velocity-types  = { path = "crates/velocity-types" }
+velocity-types    = { path = "crates/velocity-types" }
+velocity-operator = { path = "crates/velocity-operator" }
 
 [profile.release]
 lto             = "thin"

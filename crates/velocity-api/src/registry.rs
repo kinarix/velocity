@@ -9,13 +9,56 @@
 //! after the informer's first `InitDone` event. Until then, the Kubernetes
 //! Service excludes this pod and no traffic arrives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use velocity_types::common::SchemaPath;
+use velocity_types::crds::schema::FieldSpec;
 use velocity_types::crds::SchemaDefinitionSpec;
+
+/// Pre-computed views over `SchemaDefinitionSpec.fields` so the request hot
+/// path never iterates the Vec. Built once at resolve time; cheap to clone
+/// because the contents are wrapped in `Arc`.
+///
+/// Only **user-declared** fields are in here. System columns (`id`,
+/// `created_at`, `updated_at`, `deleted_at`, `version`, `created_by`,
+/// `updated_by`) are handled by the SQL builders directly and are not part of
+/// the user-facing schema surface.
+#[derive(Debug, Clone, Default)]
+pub struct FieldIndex {
+    /// O(1) `name -> spec` lookup, keyed by field name as declared in the CRD.
+    pub by_name: HashMap<String, Arc<FieldSpec>>,
+    /// Names of fields with `filterable: true` — used by `QueryBuilder` to
+    /// gate `WHERE` clauses.
+    pub filterable: HashSet<String>,
+    /// Names of fields with `sortable: true` — used to gate `ORDER BY`.
+    pub sortable: HashSet<String>,
+    /// Field list in spec order, for introspection responses.
+    pub ordered: Vec<Arc<FieldSpec>>,
+}
+
+impl FieldIndex {
+    fn from_spec(spec: &SchemaDefinitionSpec) -> Self {
+        let mut by_name = HashMap::with_capacity(spec.fields.len());
+        let mut filterable = HashSet::new();
+        let mut sortable = HashSet::new();
+        let mut ordered = Vec::with_capacity(spec.fields.len());
+        for f in &spec.fields {
+            let arc = Arc::new(f.clone());
+            if f.filterable {
+                filterable.insert(f.name.clone());
+            }
+            if f.sortable {
+                sortable.insert(f.name.clone());
+            }
+            by_name.insert(f.name.clone(), arc.clone());
+            ordered.push(arc);
+        }
+        Self { by_name, filterable, sortable, ordered }
+    }
+}
 
 /// A `SchemaDefinition` resolved into the form the API needs to serve traffic.
 ///
@@ -36,6 +79,8 @@ pub struct ResolvedSchema {
     /// Spec snapshot. Wrapped in Arc so it can be cheaply shared across
     /// concurrent handler invocations.
     pub spec: Arc<SchemaDefinitionSpec>,
+    /// Pre-computed user-field index. See [`FieldIndex`].
+    pub fields: Arc<FieldIndex>,
 }
 
 impl ResolvedSchema {
@@ -43,6 +88,7 @@ impl ResolvedSchema {
         let pg_schema = path.pg_schema();
         let pg_table = path.pg_table();
         let pg_qualified = path.pg_qualified_table();
+        let fields = Arc::new(FieldIndex::from_spec(&spec));
         Self {
             pg_role_writer: format!("{pg_schema}_writer"),
             pg_role_admin: format!("{pg_schema}_admin"),
@@ -52,6 +98,7 @@ impl ResolvedSchema {
             pg_table,
             pg_qualified,
             spec: Arc::new(spec),
+            fields,
         }
     }
 }
@@ -147,10 +194,15 @@ impl RegistryInner {
 mod tests {
     use super::*;
     use velocity_types::crds::schema::{
-        AccessSpec, AuthSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec, SearchTier,
+        AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+        SearchSpec, SearchTier,
     };
 
     fn spec() -> SchemaDefinitionSpec {
+        spec_with_fields(Vec::new())
+    }
+
+    fn spec_with_fields(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
         SchemaDefinitionSpec {
             version: "v1".into(),
             partitioning: None,
@@ -162,7 +214,7 @@ mod tests {
                 overrides: Vec::new(),
             },
             access: AccessSpec::default(),
-            fields: Vec::new(),
+            fields,
             validations: Vec::new(),
             search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
             time_machine: None,
@@ -171,6 +223,18 @@ mod tests {
             observability: ObservabilitySpec::default(),
             scaling: None,
         }
+    }
+
+    fn field(name: &str, filterable: bool, sortable: bool) -> FieldSpec {
+        let mut f: FieldSpec = serde_json::from_value(serde_json::json!({
+            "name": name,
+            "type": "string",
+        }))
+        .unwrap();
+        f.kind = FieldKind::String;
+        f.filterable = filterable;
+        f.sortable = sortable;
+        f
     }
 
     fn make(org: &str) -> ResolvedSchema {
@@ -207,6 +271,33 @@ mod tests {
         let p = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
         r.remove(&p);
         assert!(r.resolve(&p).is_none());
+    }
+
+    #[test]
+    fn field_index_separates_filterable_and_sortable() {
+        let spec = spec_with_fields(vec![
+            field("po_number", true, true),
+            field("notes", false, false),
+            field("supplier_code", true, false),
+        ]);
+        let idx = FieldIndex::from_spec(&spec);
+        assert!(idx.by_name.contains_key("po_number"));
+        assert!(idx.by_name.contains_key("notes"));
+        assert!(idx.filterable.contains("po_number"));
+        assert!(idx.filterable.contains("supplier_code"));
+        assert!(!idx.filterable.contains("notes"));
+        assert!(idx.sortable.contains("po_number"));
+        assert!(!idx.sortable.contains("supplier_code"));
+        assert_eq!(idx.ordered.len(), 3);
+        assert_eq!(idx.ordered[0].name, "po_number");
+    }
+
+    #[test]
+    fn resolved_schema_exposes_field_index() {
+        let spec = spec_with_fields(vec![field("po_number", true, true)]);
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let rs = ResolvedSchema::from_spec(path, spec);
+        assert!(rs.fields.filterable.contains("po_number"));
     }
 
     #[test]

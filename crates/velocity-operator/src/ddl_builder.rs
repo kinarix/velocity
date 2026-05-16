@@ -35,8 +35,12 @@ const SYSTEM_COLUMNS: &[(&str, &str)] = &[
     ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
     ("deleted_at", "TIMESTAMPTZ"),
     ("version", "INTEGER NOT NULL DEFAULT 1"),
-    ("created_by", "TEXT NOT NULL"),
-    ("updated_by", "TEXT NOT NULL"),
+    // `app.current_user` is set by the API in the transaction prelude
+    // (ADR-007). Defaulting the column to that setting means even direct
+    // INSERTs through psql get tagged with the caller, and the API
+    // handler never has to remember to bind these columns.
+    ("created_by", "TEXT NOT NULL DEFAULT current_setting('app.current_user', true)"),
+    ("updated_by", "TEXT NOT NULL DEFAULT current_setting('app.current_user', true)"),
     ("archived_at", "TIMESTAMPTZ"),
     ("archive_ref", "TEXT"),
 ];

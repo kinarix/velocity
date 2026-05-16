@@ -3335,6 +3335,8 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "velocity-operator",
  "velocity-types",
 ]
 

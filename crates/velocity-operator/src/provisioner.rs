@@ -108,6 +108,15 @@ impl PostgresProvisioner {
         create_role_if_absent(&mut tx, &writer).await?;
         create_role_if_absent(&mut tx, &admin).await?;
 
+        // Grant velocity_api membership in each domain role so the API can
+        // `SET LOCAL ROLE` into the per-request role at handler entry
+        // (ADR-007). The membership is what makes RLS effective — the API
+        // never runs queries as velocity_api itself (which is NOBYPASSRLS
+        // anyway), it always drops into the domain role first.
+        for role in [&reader, &writer, &admin] {
+            exec(&mut tx, &format!("GRANT {role} TO velocity_api")).await?;
+        }
+
         // 3. Schema-level grants
         for role in [&reader, &writer, &admin] {
             exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO {role}")).await?;
