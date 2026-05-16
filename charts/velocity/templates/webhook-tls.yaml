@@ -1,0 +1,29 @@
+{{- if and .Values.webhook.enabled (eq .Values.webhook.tls.source "values") -}}
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/tls
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}-tls
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+data:
+  tls.crt: {{ required "webhook.tls.crt required when tls.source=values" .Values.webhook.tls.crt }}
+  tls.key: {{ required "webhook.tls.key required when tls.source=values" .Values.webhook.tls.key }}
+---
+{{- end -}}
+{{- if and .Values.webhook.enabled (eq .Values.webhook.tls.source "certManager") -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}-tls
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "velocity.webhook.fullname" . }}-tls
+  dnsNames:
+    - {{ include "velocity.webhook.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "velocity.webhook.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ required "webhook.tls.certManager.issuerName required" .Values.webhook.tls.certManager.issuerName }}
+    kind: {{ .Values.webhook.tls.certManager.issuerKind }}
+{{- end -}}

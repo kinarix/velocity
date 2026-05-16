@@ -1,0 +1,83 @@
+{{- if .Values.webhook.enabled -}}
+{{- $tlsSecret := "" -}}
+{{- if eq .Values.webhook.tls.source "secret" -}}
+  {{- $tlsSecret = required "webhook.tls.existingSecret required when tls.source=secret" .Values.webhook.tls.existingSecret -}}
+{{- else -}}
+  {{- $tlsSecret = printf "%s-tls" (include "velocity.webhook.fullname" .) -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  replicas: {{ .Values.webhook.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "velocity.webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.webhook.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.webhook.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: webhook
+          image: {{ include "velocity.webhook.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.webhook.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_WEBHOOK_TLS_ADDR
+              value: "0.0.0.0:{{ .Values.webhook.service.targetPort }}"
+            - name: VELOCITY_WEBHOOK_HEALTH_ADDR
+              value: "0.0.0.0:{{ .Values.webhook.service.healthPort }}"
+            - name: VELOCITY_WEBHOOK_TLS_CERT
+              value: "/tls/tls.crt"
+            - name: VELOCITY_WEBHOOK_TLS_KEY
+              value: "/tls/tls.key"
+            - name: VELOCITY_WEBHOOK_PRETTY_LOGS
+              value: {{ .Values.webhook.logging.pretty | quote }}
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_webhook=%s" .Values.webhook.logging.level .Values.webhook.logging.level | quote }}
+          ports:
+            - name: tls
+              containerPort: {{ .Values.webhook.service.targetPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.webhook.service.healthPort }}
+              protocol: TCP
+          readinessProbe:
+            httpGet: { path: /healthz, port: health }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.webhook.resources | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ $tlsSecret }}
+        - name: tmp
+          emptyDir: {}
+{{- end -}}

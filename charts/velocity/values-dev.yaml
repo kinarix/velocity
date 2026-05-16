@@ -1,0 +1,27 @@
+# Dev overrides — for minikube + local docker-compose Postgres.
+# Usage: helm install velocity charts/velocity -f charts/velocity/values-dev.yaml
+
+operator:
+  replicaCount: 1
+  logging:
+    pretty: true
+    level: "debug"
+  database:
+    # docker-compose Postgres on the host, reachable from minikube via host.minikube.internal.
+    host: "host.minikube.internal"
+    port: 5434
+    user: "velocity_api"
+    db:   "velocity"
+    password: "velocity_api_dev"
+
+webhook:
+  replicaCount: 1
+  failurePolicy: "Ignore"   # dev — don't wedge the cluster if webhook crashes
+  logging:
+    pretty: true
+    level: "debug"
+  tls:
+    # Dev uses a self-signed cert baked into a Secret by `make webhook-dev-cert`.
+    source: "secret"
+    existingSecret: "velocity-webhook-tls"
+    caBundle: ""   # populated by `make webhook-dev-cert`

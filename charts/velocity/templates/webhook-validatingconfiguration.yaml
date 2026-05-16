@@ -1,0 +1,45 @@
+{{- if .Values.webhook.enabled -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+  {{- if eq .Values.webhook.tls.source "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "velocity.webhook.fullname" . }}-tls"
+  {{- end }}
+webhooks:
+  - name: validate.velocity.sh
+    admissionReviewVersions: ["v1"]
+    sideEffects: {{ .Values.webhook.sideEffects | quote }}
+    failurePolicy: {{ .Values.webhook.failurePolicy | quote }}
+    matchPolicy: {{ .Values.webhook.matchPolicy | quote }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "velocity.webhook.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: {{ .Values.webhook.service.tlsPort }}
+      {{- if and (ne .Values.webhook.tls.source "certManager") .Values.webhook.tls.caBundle }}
+      caBundle: {{ .Values.webhook.tls.caBundle }}
+      {{- end }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["velocity.sh"]
+        apiVersions: ["v1"]
+        resources:
+          - organisations
+          - applications
+          - domains
+          - schemadefinitions
+          - authstrategies
+          - archivepolicies
+          - logfilterpolicies
+          - logroutingpolicies
+          - rolebindings
+          - apikeys
+          - purgerequests
+        scope: "*"
+{{- end -}}

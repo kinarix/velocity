@@ -1,0 +1,15 @@
+target/
+data/
+.git/
+.github/
+docs/
+runbooks/
+portal/
+charts/
+crds/
+db/
+docker-compose.yml
+Makefile
+*.md
+NOTICE
+LICENSE

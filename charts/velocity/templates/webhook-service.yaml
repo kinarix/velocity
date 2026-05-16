@@ -1,0 +1,22 @@
+{{- if .Values.webhook.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  type: {{ .Values.webhook.service.type }}
+  selector:
+    {{- include "velocity.webhook.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: tls
+      port: {{ .Values.webhook.service.tlsPort }}
+      targetPort: {{ .Values.webhook.service.targetPort }}
+      protocol: TCP
+    - name: health
+      port: {{ .Values.webhook.service.healthPort }}
+      targetPort: {{ .Values.webhook.service.healthPort }}
+      protocol: TCP
+{{- end -}}

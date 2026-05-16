@@ -1,0 +1,157 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: organisations.velocity.sh
+spec:
+  group: velocity.sh
+  names:
+    categories: []
+    kind: Organisation
+    plural: organisations
+    shortNames:
+    - org
+    singular: organisation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for OrganisationSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              adminRoles:
+                default: []
+                items:
+                  type: string
+                type: array
+              defaultAuthStrategy:
+                description: Lightweight pointer to another CRD by name + namespace.
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              defaultPolicies:
+                default:
+                  audit: null
+                  retention: null
+                  timeMachine: null
+                properties:
+                  audit:
+                    nullable: true
+                    type: string
+                  retention:
+                    nullable: true
+                    type: string
+                  timeMachine:
+                    nullable: true
+                    type: boolean
+                type: object
+              displayName:
+                type: string
+              resourceQuotas:
+                nullable: true
+                properties:
+                  maxApplications:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxFieldsPerSchema:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxRecordsPerSchema:
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxSchemas:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxStorageGb:
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxVersionsPerSchema:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  requestsPerSecond:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+              tenancyMode:
+                default: single
+                description: ADR-010 — single vs multi-tenant scoping of cross-org refs and search.
+                enum:
+                - single
+                - multi-tenant
+                type: string
+            required:
+            - displayName
+            type: object
+          status:
+            nullable: true
+            properties:
+              applications:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              conditions:
+                default: []
+                items:
+                  description: Common condition shape reused in `*Status.conditions`.
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: Phase reported by an operator-managed resource.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deprecated
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: Organisation
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

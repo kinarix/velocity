@@ -1,0 +1,69 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "velocity.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+rules:
+  # Velocity CRDs — operator owns lifecycle.
+  - apiGroups: ["velocity.sh"]
+    resources:
+      - organisations
+      - applications
+      - domains
+      - schemadefinitions
+      - authstrategies
+      - archivepolicies
+      - logfilterpolicies
+      - logroutingpolicies
+      - rolebindings
+      - apikeys
+      - purgerequests
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["velocity.sh"]
+    resources:
+      - organisations/status
+      - applications/status
+      - domains/status
+      - schemadefinitions/status
+      - authstrategies/status
+      - archivepolicies/status
+      - logfilterpolicies/status
+      - logroutingpolicies/status
+      - rolebindings/status
+      - apikeys/status
+      - purgerequests/status
+    verbs: ["get", "update", "patch"]
+  # Namespaces are provisioned by the operator (one per Domain).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # Events for status messages.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Leader election (Lease).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMaps + Secrets (downstream object provisioning in later phases).
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "velocity.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "velocity.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "velocity.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end -}}

@@ -1,0 +1,161 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: applications.velocity.sh
+spec:
+  group: velocity.sh
+  names:
+    categories: []
+    kind: Application
+    plural: applications
+    shortNames:
+    - app
+    singular: application
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ApplicationSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              authStrategy:
+                description: Lightweight pointer to another CRD by name + namespace.
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              databaseQuota:
+                nullable: true
+                properties:
+                  coldTablespace:
+                    description: Use cold-tier tablespace for the archive schema.
+                    nullable: true
+                    type: boolean
+                  poolSize:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  readReplicas:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+              displayName:
+                type: string
+              org:
+                type: string
+              owner:
+                nullable: true
+                type: string
+              resourceQuotas:
+                nullable: true
+                properties:
+                  maxApplications:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxFieldsPerSchema:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxRecordsPerSchema:
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxSchemas:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxStorageGb:
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  maxVersionsPerSchema:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  requestsPerSecond:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+              team:
+                nullable: true
+                type: string
+            required:
+            - displayName
+            - org
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: Common condition shape reused in `*Status.conditions`.
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              domains:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              phase:
+                description: Phase reported by an operator-managed resource.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deprecated
+                nullable: true
+                type: string
+              schemas:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: Application
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

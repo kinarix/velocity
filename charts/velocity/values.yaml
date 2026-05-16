@@ -1,0 +1,116 @@
+# Default values for velocity.
+# Override per-environment via -f values-<env>.yaml or --set.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# CRDs ship under charts/velocity/crds/ and are installed by Helm at `helm install`
+# time. They are NOT removed on `helm uninstall` and NOT updated on `helm upgrade`
+# (Helm's documented behaviour). Manage upgrades with `kubectl apply -f charts/velocity/crds/`
+# or by running the operator's generate-crds binary and re-applying.
+
+image:
+  registry: ghcr.io
+  repository: kinarix
+  # Operator + webhook share the same workspace; tags pin per-binary versions.
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+###############################################################################
+# Operator
+###############################################################################
+operator:
+  enabled: true
+  replicaCount: 1
+  image:
+    name: velocity-operator
+    tag: "0.1.0"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  env: []
+  envFrom: []
+  # Database connection — operator must use a NOBYPASSRLS role (ADR-007).
+  database:
+    # Either set databaseUrl OR (host, port, user, password, db).
+    url: ""
+    host: ""
+    port: 5432
+    user: "velocity_api"
+    db:   "velocity"
+    # If password is set, a Secret is rendered; otherwise an existing Secret
+    # is referenced via existingSecret/passwordKey.
+    password: ""
+    existingSecret: ""
+    passwordKey: "password"
+  leaderElection:
+    enabled: true
+    namespace: ""  # defaults to release namespace
+  logging:
+    pretty: false
+    level: "info"
+
+###############################################################################
+# Admission webhook
+###############################################################################
+webhook:
+  enabled: true
+  replicaCount: 2
+  image:
+    name: velocity-webhook
+    tag: "0.1.0"
+  service:
+    type: ClusterIP
+    tlsPort: 443
+    targetPort: 8443
+    healthPort: 8080
+  resources:
+    requests: { cpu: 50m,  memory: 64Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  # TLS sources:
+  #   tls.source = "secret"  → use existing Secret (with tls.crt/tls.key)
+  #   tls.source = "values"  → render Secret from inline base64 PEM
+  #   tls.source = "certManager" → emit a cert-manager Certificate
+  tls:
+    source: "secret"
+    existingSecret: ""
+    caBundle: ""        # base64 PEM, required by ValidatingWebhookConfiguration when source != certManager
+    crt: ""             # base64 PEM (source=values)
+    key: ""             # base64 PEM (source=values)
+    certManager:
+      issuerName: ""
+      issuerKind: "Issuer"
+  failurePolicy: "Fail"
+  matchPolicy: "Equivalent"
+  sideEffects: "None"
+  timeoutSeconds: 10
+  logging:
+    pretty: false
+    level: "info"
+
+###############################################################################
+# RBAC + ServiceAccount
+###############################################################################
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+rbac:
+  create: true

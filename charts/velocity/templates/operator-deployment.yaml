@@ -1,0 +1,89 @@
+{{- if .Values.operator.enabled -}}
+{{- $secretName := default (printf "%s-db" (include "velocity.operator.fullname" .)) .Values.operator.database.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.operator.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "velocity.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.operator.selectorLabels" . | nindent 8 }}
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: operator
+          image: {{ include "velocity.operator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_OPERATOR_PG_HOST
+              value: {{ .Values.operator.database.host | quote }}
+            - name: VELOCITY_OPERATOR_PG_PORT
+              value: {{ .Values.operator.database.port | quote }}
+            - name: VELOCITY_OPERATOR_PG_USER
+              value: {{ .Values.operator.database.user | quote }}
+            - name: VELOCITY_OPERATOR_PG_DB
+              value: {{ .Values.operator.database.db | quote }}
+            - name: VELOCITY_OPERATOR_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.operator.database.passwordKey }}
+            - name: VELOCITY_OPERATOR_LEADER_ELECTION
+              value: {{ .Values.operator.leaderElection.enabled | quote }}
+            - name: VELOCITY_OPERATOR_NAMESPACE
+              value: {{ default .Release.Namespace .Values.operator.leaderElection.namespace }}
+            - name: VELOCITY_OPERATOR_LOG_PRETTY
+              value: {{ .Values.operator.logging.pretty | quote }}
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_operator=%s" .Values.operator.logging.level .Values.operator.logging.level | quote }}
+            {{- with .Values.operator.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.operator.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9000
+              protocol: TCP
+          readinessProbe:
+            tcpSocket: { port: metrics }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end -}}

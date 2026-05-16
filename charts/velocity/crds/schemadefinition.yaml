@@ -1,0 +1,577 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: schemadefinitions.velocity.sh
+spec:
+  group: velocity.sh
+  names:
+    categories: []
+    kind: SchemaDefinition
+    plural: schemadefinitions
+    shortNames:
+    - sd
+    singular: schemadefinition
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for SchemaDefinitionSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              access:
+                properties:
+                  policies:
+                    default: []
+                    items:
+                      properties:
+                        action:
+                          type: string
+                        condition:
+                          type: string
+                        fields:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        message:
+                          nullable: true
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - action
+                      - condition
+                      - name
+                      type: object
+                    type: array
+                  roles:
+                    default: []
+                    items:
+                      properties:
+                        operations:
+                          items:
+                            type: string
+                          type: array
+                        role:
+                          type: string
+                      required:
+                      - operations
+                      - role
+                      type: object
+                    type: array
+                  rowFilter:
+                    default: []
+                    items:
+                      properties:
+                        filter:
+                          properties:
+                            field:
+                              type: string
+                            op:
+                              type: string
+                            value: {}
+                          required:
+                          - field
+                          - op
+                          - value
+                          type: object
+                        role:
+                          type: string
+                      required:
+                      - filter
+                      - role
+                      type: object
+                    type: array
+                type: object
+              archive:
+                nullable: true
+                properties:
+                  policyRef:
+                    description: Lightweight pointer to another CRD by name + namespace.
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                required:
+                - policyRef
+                type: object
+              audit:
+                nullable: true
+                properties:
+                  enabled:
+                    default: true
+                    type: boolean
+                  reads:
+                    nullable: true
+                    properties:
+                      bulkThreshold:
+                        format: uint32
+                        minimum: 0.0
+                        nullable: true
+                        type: integer
+                      sensitiveFields:
+                        default: false
+                        type: boolean
+                    type: object
+                  regulations:
+                    default: []
+                    items:
+                      type: string
+                    type: array
+                  writes:
+                    nullable: true
+                    properties:
+                      requireReason:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                      requireTicketRef:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              auth:
+                properties:
+                  overrides:
+                    default: []
+                    items:
+                      properties:
+                        operations:
+                          items:
+                            type: string
+                          type: array
+                        strategyRef:
+                          description: Lightweight pointer to another CRD by name + namespace.
+                          properties:
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          type: object
+                      required:
+                      - operations
+                      - strategyRef
+                      type: object
+                    type: array
+                  strategyRef:
+                    description: Lightweight pointer to another CRD by name + namespace.
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                required:
+                - strategyRef
+                type: object
+              fields:
+                items:
+                  properties:
+                    access:
+                      description: Per-role read/write access on the field.
+                      nullable: true
+                      properties:
+                        read:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        write:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    default:
+                      nullable: true
+                    enumValues:
+                      default: []
+                      items:
+                        type: string
+                      type: array
+                    filterable:
+                      default: false
+                      type: boolean
+                    indexed:
+                      default: false
+                      type: boolean
+                    max:
+                      format: double
+                      nullable: true
+                      type: number
+                    maxLength:
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    min:
+                      format: double
+                      nullable: true
+                      type: number
+                    name:
+                      type: string
+                    pattern:
+                      nullable: true
+                      type: string
+                    ref:
+                      description: Cross-schema reference (string field acting as FK).
+                      nullable: true
+                      properties:
+                        app:
+                          type: string
+                        domain:
+                          type: string
+                        key:
+                          description: 'Field on the target schema this reference resolves by (default: `id`).'
+                          type: string
+                        object:
+                          type: string
+                        org:
+                          type: string
+                        version:
+                          type: string
+                      required:
+                      - app
+                      - domain
+                      - object
+                      - org
+                      - version
+                      type: object
+                    required:
+                      default: false
+                      type: boolean
+                    searchable:
+                      default: false
+                      type: boolean
+                    sensitivity:
+                      description: Sensitivity tag — drives masking and log redaction.
+                      enum:
+                      - public
+                      - internal
+                      - confidential
+                      - pii
+                      - financial
+                      nullable: true
+                      type: string
+                    sortable:
+                      default: false
+                      type: boolean
+                    type:
+                      enum:
+                      - string
+                      - integer
+                      - number
+                      - boolean
+                      - date
+                      - datetime
+                      - uuid
+                      - json
+                      - enum
+                      - ref
+                      type: string
+                    unique:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
+              observability:
+                default:
+                  slos: []
+                properties:
+                  slos:
+                    default: []
+                    items:
+                      properties:
+                        availability:
+                          format: double
+                          nullable: true
+                          type: number
+                        operation:
+                          type: string
+                        targetP99Ms:
+                          format: uint32
+                          minimum: 0.0
+                          nullable: true
+                          type: integer
+                        window:
+                          nullable: true
+                          type: string
+                      required:
+                      - operation
+                      type: object
+                    type: array
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              partitioning:
+                nullable: true
+                properties:
+                  enabled:
+                    type: boolean
+                  field:
+                    type: string
+                  interval:
+                    enum:
+                    - monthly
+                    - quarterly
+                    - yearly
+                    type: string
+                  retention:
+                    description: e.g. `"7years"` — auto-drop older partitions.
+                    nullable: true
+                    type: string
+                  strategy:
+                    enum:
+                    - range
+                    - list
+                    - hash
+                    type: string
+                required:
+                - enabled
+                - field
+                - interval
+                - strategy
+                type: object
+              scaling:
+                nullable: true
+                properties:
+                  max:
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  min:
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  triggers:
+                    default: []
+                    items:
+                      properties:
+                        threshold:
+                          format: double
+                          type: number
+                        type:
+                          type: string
+                      required:
+                      - threshold
+                      - type
+                      type: object
+                    type: array
+                required:
+                - max
+                - min
+                type: object
+              search:
+                properties:
+                  crossSearch:
+                    default: false
+                    type: boolean
+                  crossSearchWeight:
+                    format: uint8
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  display:
+                    nullable: true
+                    properties:
+                      label:
+                        nullable: true
+                        type: string
+                      subtitleField:
+                        nullable: true
+                        type: string
+                      titleField:
+                        nullable: true
+                        type: string
+                      urlTemplate:
+                        nullable: true
+                        type: string
+                    type: object
+                  tier:
+                    description: 1 = Postgres filters only, 2 = Postgres FTS, 3 = Typesense (CDC via outbox).
+                    enum:
+                    - Tier1
+                    - Tier2
+                    - Tier3
+                    type: string
+                required:
+                - tier
+                type: object
+              timeMachine:
+                nullable: true
+                properties:
+                  enabled:
+                    default: true
+                    type: boolean
+                  storage:
+                    default:
+                      cold: null
+                      hot: null
+                      warm: null
+                    properties:
+                      cold:
+                        nullable: true
+                        properties:
+                          backend:
+                            type: string
+                          format:
+                            nullable: true
+                            type: string
+                          retention:
+                            nullable: true
+                            type: string
+                        required:
+                        - backend
+                        type: object
+                      hot:
+                        nullable: true
+                        properties:
+                          backend:
+                            type: string
+                          format:
+                            nullable: true
+                            type: string
+                          retention:
+                            nullable: true
+                            type: string
+                        required:
+                        - backend
+                        type: object
+                      warm:
+                        nullable: true
+                        properties:
+                          backend:
+                            type: string
+                          format:
+                            nullable: true
+                            type: string
+                          retention:
+                            nullable: true
+                            type: string
+                        required:
+                        - backend
+                        type: object
+                    type: object
+                type: object
+              validations:
+                default: []
+                items:
+                  description: Validation rule. The discriminator is `type`; the meaningful fields depend on it (`compare` → left/operator/right, `cel` → rule). Modeled as a flat struct because kube's CRD generator can't express internally-tagged enums.
+                  properties:
+                    left:
+                      nullable: true
+                      type: string
+                    maxExecutionMs:
+                      description: Per-rule timeout cap (CEL only); clamped to AuthStrategy.cel.maxExecutionMs.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    message:
+                      nullable: true
+                      type: string
+                    operator:
+                      nullable: true
+                      type: string
+                    right:
+                      nullable: true
+                      type: string
+                    rule:
+                      nullable: true
+                      type: string
+                    type:
+                      enum:
+                      - compare
+                      - cel
+                      type: string
+                  required:
+                  - type
+                  type: object
+                type: array
+              version:
+                type: string
+            required:
+            - access
+            - auth
+            - fields
+            - search
+            - version
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: Common condition shape reused in `*Status.conditions`.
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              pgTable:
+                nullable: true
+                type: string
+              phase:
+                description: Phase reported by an operator-managed resource.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deprecated
+                nullable: true
+                type: string
+              policyHash:
+                nullable: true
+                type: string
+              provisionedAt:
+                nullable: true
+                type: string
+              records:
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: SchemaDefinition
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
