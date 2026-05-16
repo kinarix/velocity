@@ -13,12 +13,21 @@ publish.workspace      = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "generate-crds"
+path = "src/bin/generate_crds.rs"
+
 [dependencies]
-serde      = { workspace = true }
-serde_json = { workspace = true }
-thiserror  = { workspace = true }
-chrono     = { workspace = true }
-uuid       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+serde_yaml  = { workspace = true }
+thiserror   = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+kube        = { workspace = true }
+k8s-openapi = { workspace = true }
+schemars    = { workspace = true }
+anyhow      = { workspace = true }
 
 [dev-dependencies]
 serde_yaml = { workspace = true }

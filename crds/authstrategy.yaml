@@ -1,0 +1,164 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: authstrategies.velocity.sh
+spec:
+  group: velocity.sh
+  names:
+    categories: []
+    kind: AuthStrategy
+    plural: authstrategies
+    shortNames:
+    - auth
+    singular: authstrategy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for AuthStrategySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              config:
+                properties:
+                  cel:
+                    nullable: true
+                    properties:
+                      maxExecutionMs:
+                        description: Cap on per-rule CEL execution (milliseconds). ADR — CEL safety.
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - maxExecutionMs
+                    type: object
+                  clockSkew:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  issuers:
+                    default: []
+                    items:
+                      properties:
+                        audience:
+                          nullable: true
+                          type: string
+                        claims:
+                          default:
+                            actorId: null
+                            attributes: {}
+                            email: null
+                            roles: null
+                          description: 'Claim mapping with optional JSONPath + transforms (see design §1.5). We accept the right-hand side as a raw JSON value so transforms like `{ path: "$.roles", transform: scope_to_roles }` round-trip losslessly.'
+                          properties:
+                            actorId:
+                              nullable: true
+                            attributes:
+                              additionalProperties: true
+                              default: {}
+                              type: object
+                            email:
+                              nullable: true
+                            roles:
+                              nullable: true
+                          type: object
+                        issuer:
+                          type: string
+                        jwksUrl:
+                          type: string
+                      required:
+                      - issuer
+                      - jwksUrl
+                      type: object
+                    type: array
+                  revocation:
+                    nullable: true
+                    properties:
+                      backend:
+                        type: string
+                      failOpen:
+                        default: false
+                        description: ADR-003 — default false (deny on Redis failure).
+                        type: boolean
+                      key:
+                        nullable: true
+                        type: string
+                      ttl:
+                        format: uint32
+                        minimum: 0.0
+                        nullable: true
+                        type: integer
+                    required:
+                    - backend
+                    type: object
+                  ttlMax:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+              type:
+                enum:
+                - jwt
+                - oidc
+                - apikey
+                - composite
+                - none
+                type: string
+            required:
+            - config
+            - type
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: Common condition shape reused in `*Status.conditions`.
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              issuersResolved:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              phase:
+                description: Phase reported by an operator-managed resource.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deprecated
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: AuthStrategy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
