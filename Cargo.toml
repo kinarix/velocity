@@ -49,6 +49,7 @@ pin-project    = "1"
 axum           = { version = "0.7", features = ["macros"] }
 tower          = "0.5"
 tower-http     = { version = "0.6", features = ["trace", "cors", "limit", "request-id"] }
+axum-server    = { version = "0.7", features = ["tls-rustls"] }
 hyper          = "1"
 reqwest        = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
