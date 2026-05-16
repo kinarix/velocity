@@ -26,6 +26,7 @@ use crate::query::{build_list, ListQuery};
 use crate::registry::ResolvedSchema;
 use crate::session::{with_session_context, RoleClass};
 use crate::state::AppState;
+use crate::validate::{validate_fields, validate_rules, WriteMode};
 
 /// URL path: `/api/{org}/{app}/{domain}/{object}/{version}`.
 type SchemaPathParts = (String, String, String, String, String);
@@ -139,9 +140,13 @@ pub async fn create(
         .ok_or_else(|| ApiError::BadRequest("payload must be a JSON object".into()))?
         .clone();
 
-    // Build column/value/cast lists from declared fields only — anything the
-    // payload contains that isn't in the schema is silently ignored for
-    // Phase 1. Validation lands in #15.
+    // ── Validation (#15) — runs before any SQL is built.
+    validate_fields(&schema, &payload_obj, WriteMode::Create)?;
+    validate_rules(&schema.compiled_validations, &Value::Object(payload_obj.clone())).await?;
+
+    // Build column/value/cast lists from declared fields only. Anything the
+    // payload contains that isn't in the schema is silently ignored — this
+    // matches the validator's "unknown fields are out-of-band" stance.
     let mut cols: Vec<String> = Vec::new();
     let mut casts: Vec<String> = Vec::new();
     let mut vals: Vec<Value> = Vec::new();
@@ -274,6 +279,13 @@ pub async fn update(
         .and_then(|v| v.as_i64())
         .ok_or_else(|| ApiError::BadRequest("`version` is required for update".into()))?
         as i32;
+
+    // ── Validation (#15) — partial-update semantics: only the supplied
+    // fields are field-checked, but rule-level validations still run over
+    // the (partial) payload. Rules that reference fields not present will
+    // see Null and decide on their own.
+    validate_fields(&schema, &payload_obj, WriteMode::Update)?;
+    validate_rules(&schema.compiled_validations, &Value::Object(payload_obj.clone())).await?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut vals: Vec<Value> = Vec::new();

@@ -88,6 +88,7 @@ prometheus          = "0.13"
 cel-interpreter = "0.9"
 jsonpath-rust   = "0.7"
 json-patch      = "3"
+regex           = "1"
 
 # Crypto
 sha2            = "0.10"

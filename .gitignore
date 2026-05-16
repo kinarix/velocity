@@ -94,3 +94,7 @@ docs/crd/generated/
 criterion/
 flamegraph.svg
 perf.data*
+
+# --- Local tooling (not part of the platform) ---
+graphify-out/
+**/graphify-out/

@@ -21,6 +21,7 @@ pub mod router;
 pub mod session;
 pub mod startup;
 pub mod state;
+pub mod validate;
 
 pub use config::ApiConfig;
 pub use error::ApiError;

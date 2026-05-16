@@ -81,6 +81,10 @@ pub struct ResolvedSchema {
     pub spec: Arc<SchemaDefinitionSpec>,
     /// Pre-computed user-field index. See [`FieldIndex`].
     pub fields: Arc<FieldIndex>,
+    /// CEL / compare rules from `spec.validations`, compiled at resolve
+    /// time so the request hot path is allocation- and parser-free. See
+    /// [`crate::validate`].
+    pub compiled_validations: Arc<Vec<crate::validate::CompiledRule>>,
 }
 
 impl ResolvedSchema {
@@ -89,6 +93,8 @@ impl ResolvedSchema {
         let pg_table = path.pg_table();
         let pg_qualified = path.pg_qualified_table();
         let fields = Arc::new(FieldIndex::from_spec(&spec));
+        let compiled_validations =
+            Arc::new(crate::validate::compile_rules(&spec.validations));
         Self {
             pg_role_writer: format!("{pg_schema}_writer"),
             pg_role_admin: format!("{pg_schema}_admin"),
@@ -99,6 +105,7 @@ impl ResolvedSchema {
             pg_qualified,
             spec: Arc::new(spec),
             fields,
+            compiled_validations,
         }
     }
 }
