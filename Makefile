@@ -130,6 +130,25 @@ db-url: ## Print connection URLs
 	@echo "superuser: $(PG_SUPER_URL)"
 	@echo "api:       $(PG_API_URL)"
 
+.PHONY: db-smoke
+db-smoke: ## Smoke-test platform schema: audit chain + velocity_api gates
+	@echo "→ writing two audit rows via the proc"
+	@$(PSQL_SUPER) -c "SELECT platform.audit_insert('smoke', 'create', 'success', 'smoke/test/x/y/v1', gen_random_uuid(), '{}'::jsonb, NULL, 'smoke-1', NULL, NULL);" >/dev/null
+	@$(PSQL_SUPER) -c "SELECT platform.audit_insert('smoke', 'update', 'success', 'smoke/test/x/y/v1', gen_random_uuid(), '{}'::jsonb, NULL, 'smoke-2', NULL, NULL);" >/dev/null
+	@echo "→ verifying chain integrity"
+	@tampered=$$($(PSQL_SUPER) -tAc "SELECT count(*) FROM platform.audit_verify_window(now() - interval '1 hour', now() + interval '1 hour') WHERE stored_hash != computed_hash" | tr -d '[:space:]'); \
+	  test "$$tampered" = "0" && echo "  ✓ chain intact ($$tampered tampered rows)" || (echo "  ✗ chain has $$tampered tampered rows" && exit 1)
+	@echo "→ verifying velocity_api can call audit_insert"
+	@$(PSQL_API) -c "SELECT platform.audit_insert('smoke', 'read', 'success', 'smoke/test/x/y/v1', gen_random_uuid(), '{}'::jsonb, NULL, 'smoke-3', NULL, NULL);" >/dev/null && echo "  ✓ velocity_api → audit_insert works"
+	@echo "→ verifying velocity_api CANNOT INSERT into audit_log directly (ADR-005)"
+	@if $(PSQL_API) -c "INSERT INTO platform.audit_log (occurred_at, actor, action, outcome, hash) VALUES (now(), 'smoke', 'r', 's', 'x')" >/dev/null 2>&1; then \
+	  echo "  ✗ direct INSERT succeeded — REVOKE is broken"; exit 1; \
+	else echo "  ✓ direct INSERT denied"; fi
+	@echo "→ cleaning up smoke rows"
+	@$(PSQL_SUPER) -c "DELETE FROM platform.audit_log WHERE actor='smoke';" >/dev/null
+	@$(PSQL_SUPER) -c "UPDATE platform.audit_chain_state SET last_hash=(SELECT hash FROM platform.audit_log ORDER BY occurred_at DESC, id DESC LIMIT 1) WHERE id=1;" >/dev/null
+	@echo "db-smoke: PASS"
+
 # --- Rust workspace ---
 .PHONY: build
 build: ## cargo build --workspace
