@@ -9,10 +9,10 @@ use kube::Client;
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use velocity_operator::{
-    controllers::{application, domain, organisation},
+    controllers::{application, domain, organisation, schema_definition},
     health, startup, Context, OperatorConfig,
 };
-use velocity_types::crds::{Application, Domain, Organisation};
+use velocity_types::crds::{Application, Domain, Organisation, SchemaDefinition};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -74,10 +74,15 @@ async fn main() -> Result<()> {
         Some(ns) => Api::namespaced(kube.clone(), ns),
         None => Api::all(kube.clone()),
     };
+    let sd_api: Api<SchemaDefinition> = match &cfg.watch_namespace {
+        Some(ns) => Api::namespaced(kube.clone(), ns),
+        None => Api::all(kube.clone()),
+    };
 
     let org_ctx = ctx.clone();
     let app_ctx = ctx.clone();
     let dom_ctx = ctx.clone();
+    let sd_ctx = ctx.clone();
 
     let org_fut = Controller::new(org_api, watcher_cfg.clone())
         .shutdown_on_signal()
@@ -97,12 +102,21 @@ async fn main() -> Result<()> {
             }
         });
 
-    let dom_fut = Controller::new(domain_api, watcher_cfg)
+    let dom_fut = Controller::new(domain_api, watcher_cfg.clone())
         .shutdown_on_signal()
         .run(domain::reconcile, domain::error_policy, dom_ctx)
         .for_each(|r| async move {
             if let Err(e) = r {
                 tracing::warn!(error = %e, "domain controller stream error");
+            }
+        });
+
+    let sd_fut = Controller::new(sd_api, watcher_cfg)
+        .shutdown_on_signal()
+        .run(schema_definition::reconcile, schema_definition::error_policy, sd_ctx)
+        .for_each(|r| async move {
+            if let Err(e) = r {
+                tracing::warn!(error = %e, "schemadefinition controller stream error");
             }
         });
 
@@ -115,6 +129,7 @@ async fn main() -> Result<()> {
         _ = org_fut => tracing::warn!("organisation controller exited"),
         _ = app_fut => tracing::warn!("application controller exited"),
         _ = dom_fut => tracing::warn!("domain controller exited"),
+        _ = sd_fut  => tracing::warn!("schemadefinition controller exited"),
         r = health_handle => match r {
             Ok(Ok(())) => tracing::warn!("health server exited cleanly"),
             Ok(Err(e)) => tracing::error!(error = %e, "health server failed"),

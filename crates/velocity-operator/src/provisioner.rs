@@ -22,6 +22,11 @@ use sqlx::{PgPool, Postgres, Transaction};
 use thiserror::Error;
 use velocity_types::common::sanitize;
 
+use crate::ddl_builder::DdlPlan;
+use crate::migration_diff::{
+    classify, diff_columns, fetch_existing_columns, DiffError, MigrationOp,
+};
+
 #[derive(Debug, Error)]
 pub enum ProvisionError {
     #[error("invalid identifier `{ident}`: must match [a-z0-9_]{{1,63}}")]
@@ -32,6 +37,21 @@ pub enum ProvisionError {
 
     #[error("postgres error: {0}")]
     Sql(#[from] sqlx::Error),
+
+    #[error("parent Domain schema `{0}` does not exist — Domain must reconcile first")]
+    DomainNotProvisioned(String),
+
+    #[error("breaking schema change rejected: {0:?}")]
+    BreakingChange(Vec<MigrationOp>),
+}
+
+impl From<DiffError> for ProvisionError {
+    fn from(e: DiffError) -> Self {
+        match e {
+            DiffError::BreakingOpsBlocked(ops) => ProvisionError::BreakingChange(ops),
+            DiffError::Sql(e) => ProvisionError::Sql(e),
+        }
+    }
 }
 
 /// What was provisioned. Returned so the reconciler can write it to status.
@@ -130,6 +150,137 @@ impl PostgresProvisioner {
 
         Ok(ProvisionedDomain { pg_schema: schema, pg_roles: vec![reader, writer, admin] })
     }
+
+    /// Provision the per-schema tables (main + history + optional outbox) from
+    /// a [`DdlPlan`]. Idempotent.
+    ///
+    /// First run: executes the full plan (CREATE TABLE / INDEX / TRIGGER).
+    /// Subsequent runs: diffs target columns against the live table and
+    /// applies safe ALTER statements; breaking ops are rejected unless
+    /// `allow_breaking` is true (caller decides based on the
+    /// `velocity.sh/breaking-change: approved` annotation).
+    pub async fn sync_schema_tables(
+        &self,
+        plan: &DdlPlan,
+        allow_breaking: bool,
+    ) -> Result<ProvisionedSchema, ProvisionError> {
+        let (pg_schema, table) = split_qualified(&plan.qualified_table)?;
+
+        // Refuse to provision tables if the parent Domain schema is missing —
+        // running CREATE TABLE in that case would create a schema implicitly
+        // and bypass the Domain reconciler's role/grant setup.
+        let schema_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+        )
+        .bind(&pg_schema)
+        .fetch_one(&self.pool)
+        .await?;
+        if !schema_exists {
+            return Err(ProvisionError::DomainNotProvisioned(pg_schema));
+        }
+
+        let existing = fetch_existing_columns(&self.pool, &pg_schema, &table).await?;
+
+        let mut tx = self.pool.begin().await?;
+
+        if existing.is_empty() {
+            // First-run path — execute the full plan.
+            exec(&mut tx, &plan.main_table).await?;
+            exec(&mut tx, &plan.history_table).await?;
+            if let Some(outbox) = &plan.outbox_table {
+                for stmt in split_statements(outbox) {
+                    exec(&mut tx, &stmt).await?;
+                }
+            }
+            for stmt in &plan.indexes {
+                exec(&mut tx, stmt).await?;
+            }
+            for stmt in &plan.triggers {
+                for s in split_statements(stmt) {
+                    exec(&mut tx, &s).await?;
+                }
+            }
+        } else {
+            // Migrate path — diff and apply safe ops.
+            let ops = diff_columns(&plan.columns, &existing);
+            let migrations = classify(&plan.qualified_table, ops, allow_breaking)?;
+            for stmt in migrations {
+                exec(&mut tx, &stmt).await?;
+            }
+            // Always re-create triggers + indexes (idempotent) so new fields
+            // pick up indexes and refactored triggers replace the old ones.
+            for stmt in &plan.indexes {
+                exec(&mut tx, stmt).await?;
+            }
+            for stmt in &plan.triggers {
+                for s in split_statements(stmt) {
+                    exec(&mut tx, &s).await?;
+                }
+            }
+        }
+
+        tx.commit().await?;
+
+        Ok(ProvisionedSchema {
+            pg_schema,
+            pg_table: table,
+            qualified: plan.qualified_table.clone(),
+        })
+    }
+}
+
+/// Result of [`PostgresProvisioner::sync_schema_tables`].
+#[derive(Debug, Clone)]
+pub struct ProvisionedSchema {
+    pub pg_schema: String,
+    pub pg_table: String,
+    pub qualified: String,
+}
+
+fn split_qualified(qualified: &str) -> Result<(String, String), ProvisionError> {
+    let (schema, table) = qualified
+        .split_once('.')
+        .ok_or_else(|| ProvisionError::InvalidIdentifier { ident: qualified.to_string() })?;
+    Ok((schema.to_string(), table.to_string()))
+}
+
+/// Some DDL "statements" we generate are actually multiple semicolon-terminated
+/// statements (e.g. the outbox CREATE TABLE + its index). Postgres' simple
+/// query protocol can handle that, but for clarity (and so error reporting
+/// points at the right statement) we split before execution.
+///
+/// PL/pgSQL function bodies contain semicolons too — we detect `$$ ... $$`
+/// dollar-quoted blocks and pass them through untouched.
+fn split_statements(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_dollar = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '$' {
+            in_dollar = !in_dollar;
+            cur.push_str("$$");
+            i += 2;
+            continue;
+        }
+        if c == ';' && !in_dollar {
+            let trimmed = cur.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    let trimmed = cur.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+    out
 }
 
 async fn exec(tx: &mut Transaction<'_, Postgres>, sql: &str) -> Result<(), sqlx::Error> {

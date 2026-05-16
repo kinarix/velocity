@@ -3,6 +3,7 @@
 pub mod application;
 pub mod domain;
 pub mod organisation;
+pub mod schema_definition;
 
 use std::time::Duration;
 
