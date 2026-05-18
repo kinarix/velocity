@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use velocity_types::common::{sanitize, SchemaPath};
@@ -161,6 +162,97 @@ impl TypesenseClient {
         Ok(())
     }
 
+    /// Upsert a collection alias: `alias` → `target`. Typesense's
+    /// `PUT /aliases/<alias>` is itself idempotent — re-pointing an
+    /// existing alias to a different collection is the supported swap
+    /// primitive used by Phase 5d-3b blue-green.
+    pub async fn upsert_alias(
+        &self,
+        alias: &str,
+        target: &str,
+    ) -> Result<(), TypesenseError> {
+        let r = self
+            .http
+            .put(self.url(&format!("/aliases/{alias}")))
+            .header("X-TYPESENSE-API-KEY", &self.api_key)
+            .json(&serde_json::json!({ "collection_name": target }))
+            .send()
+            .await?;
+        if !r.status().is_success() {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            return Err(TypesenseError::Status { status, body });
+        }
+        Ok(())
+    }
+
+    /// Fetch the current target of an alias. `Ok(None)` on 404; the
+    /// blue-green logic in 5d-3b uses this to detect "alias exists,
+    /// but points at an out-of-date concrete collection" without
+    /// flipping the alias.
+    pub async fn get_alias(&self, alias: &str) -> Result<Option<String>, TypesenseError> {
+        let r = self
+            .http
+            .get(self.url(&format!("/aliases/{alias}")))
+            .header("X-TYPESENSE-API-KEY", &self.api_key)
+            .send()
+            .await?;
+        if r.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !r.status().is_success() {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            return Err(TypesenseError::Status { status, body });
+        }
+        let v = r
+            .json::<Value>()
+            .await
+            .map_err(|e| TypesenseError::Decode(e.to_string()))?;
+        Ok(v.get("collection_name").and_then(|v| v.as_str()).map(str::to_string))
+    }
+
+    /// Delete an alias. 404 → `Ok(())` so callers can use this as
+    /// part of an idempotent cleanup pass.
+    pub async fn delete_alias(&self, alias: &str) -> Result<(), TypesenseError> {
+        let r = self
+            .http
+            .delete(self.url(&format!("/aliases/{alias}")))
+            .header("X-TYPESENSE-API-KEY", &self.api_key)
+            .send()
+            .await?;
+        if r.status().as_u16() == 404 {
+            return Ok(());
+        }
+        if !r.status().is_success() {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            return Err(TypesenseError::Status { status, body });
+        }
+        Ok(())
+    }
+
+    /// Delete a collection. 404 → `Ok(())`. Used by Phase 5d-3b to
+    /// reap the old concrete collection after a successful alias
+    /// swap; calling it twice in a row is safe.
+    pub async fn delete_collection(&self, name: &str) -> Result<(), TypesenseError> {
+        let r = self
+            .http
+            .delete(self.url(&format!("/collections/{name}")))
+            .header("X-TYPESENSE-API-KEY", &self.api_key)
+            .send()
+            .await?;
+        if r.status().as_u16() == 404 {
+            return Ok(());
+        }
+        if !r.status().is_success() {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            return Err(TypesenseError::Status { status, body });
+        }
+        Ok(())
+    }
+
     /// Search a collection. Returns raw Typesense JSON.
     pub async fn search(
         &self,
@@ -257,10 +349,50 @@ fn urlencode(s: &str) -> String {
 
 // ─── Naming helpers ──────────────────────────────────────────────────────────
 
-/// Per-schema collection name. Matches the underlying Postgres table so
-/// dashboards line up: `<pg_schema>_<object>_<version>`.
+/// Per-schema **alias** name. Matches the underlying Postgres table so
+/// dashboards line up: `<pg_schema>_<object>_<version>`. Phase 5d-3a
+/// onward: this is always the *alias* — the concrete collection it
+/// points at carries an extra `__<hash>` suffix. Existing read/write
+/// call sites that address this name keep working because Typesense
+/// resolves alias names transparently in collection-scoped endpoints.
 pub fn schema_collection_name(path: &SchemaPath) -> String {
     format!("{}_{}", path.pg_schema(), path.pg_table())
+}
+
+/// Per-schema **concrete** collection name: `<alias>__<short_hash>`.
+/// The hash covers the full serialized `CollectionSpec` so any change
+/// the platform would consider field-relevant (name, type, facet,
+/// optional, even cosmetic re-ordering) produces a new concrete name.
+/// 5d-3b's swap logic relies on this: a stable hash means "no swap
+/// needed"; a changed hash means "spin up the new collection and flip
+/// the alias."
+///
+/// Length budget: Typesense collection names cap at ~64 chars in
+/// practice, and we leave room for the suffix by clipping the alias
+/// to 51 chars (51 + "__" + 8 = 61). The leading bytes carry org/app
+/// identity so the truncation is unambiguous in dashboards.
+pub fn schema_concrete_collection_name(
+    path: &SchemaPath,
+    spec: &SchemaDefinitionSpec,
+) -> String {
+    let alias = schema_collection_name(path);
+    let cs = collection_spec_inner(path, spec, &alias);
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&cs).unwrap_or_default());
+    let hash = format!("{:x}", hasher.finalize());
+    let trimmed = &alias[..alias.len().min(51)];
+    format!("{trimmed}__{}", &hash[..8])
+}
+
+/// Build a `CollectionSpec` whose `name` is the concrete (hashed)
+/// collection name. Operator + CDC use this for the actual POST to
+/// `/collections`; the alias is created separately and points at it.
+pub fn concrete_collection_spec(
+    path: &SchemaPath,
+    spec: &SchemaDefinitionSpec,
+) -> CollectionSpec {
+    let concrete = schema_concrete_collection_name(path, spec);
+    collection_spec_inner(path, spec, &concrete)
 }
 
 /// Cross-schema collection name for an org: `<org>_search`. One per org
@@ -271,14 +403,28 @@ pub fn cross_collection_name(org: &str) -> String {
 
 // ─── Spec helpers ────────────────────────────────────────────────────────────
 
-/// Build the Typesense collection schema for a given Velocity schema.
-/// Only `searchable` fields land as indexed columns; everything else is
-/// `optional: true` so the doc carries the value through but pays no
-/// indexing cost.
+/// Build the Typesense collection schema for a given Velocity schema,
+/// writing the **alias** name into the `name` field. Phase 5d-2
+/// callers that issue `POST /collections` directly on this still
+/// work, but Phase 5d-3a and beyond want the concrete-suffixed
+/// variant via [`concrete_collection_spec`].
+///
+/// Only `searchable` fields land as indexed columns; everything else
+/// is `optional: true` so the doc carries the value through but pays
+/// no indexing cost.
 ///
 /// Takes `&SchemaDefinitionSpec` + `&SchemaPath` directly so the
 /// operator (which doesn't carry `ResolvedSchema`) can call this.
 pub fn collection_spec(path: &SchemaPath, spec: &SchemaDefinitionSpec) -> CollectionSpec {
+    let alias = schema_collection_name(path);
+    collection_spec_inner(path, spec, &alias)
+}
+
+fn collection_spec_inner(
+    _path: &SchemaPath,
+    spec: &SchemaDefinitionSpec,
+    name: &str,
+) -> CollectionSpec {
     let mut fields = vec![
         TsField { name: "id".into(), kind: "string".into(), facet: None, optional: None },
         TsField {
@@ -304,7 +450,7 @@ pub fn collection_spec(path: &SchemaPath, spec: &SchemaDefinitionSpec) -> Collec
         fields.push(field_to_tsfield(f));
     }
     CollectionSpec {
-        name: schema_collection_name(path),
+        name: name.into(),
         fields,
         default_sorting_field: None,
     }
@@ -430,6 +576,58 @@ mod tests {
         assert!(names.contains(&"po_number"));
         assert!(names.contains(&"description"));
         assert_eq!(cs.name, "acme_supply_chain_procurement_purchase_order_v1");
+    }
+
+    #[test]
+    fn concrete_collection_name_changes_when_spec_changes() {
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let s1: SchemaDefinitionSpec = serde_json::from_value(json!({
+            "version": "v1",
+            "auth": { "strategyRef": { "name": "default", "namespace": "p" } },
+            "access": {},
+            "fields": [ { "name": "po_number", "type": "string", "required": true } ],
+            "search": { "tier": "Tier3" }
+        })).expect("s1 spec");
+        let s2: SchemaDefinitionSpec = serde_json::from_value(json!({
+            "version": "v1",
+            "auth": { "strategyRef": { "name": "default", "namespace": "p" } },
+            "access": {},
+            "fields": [
+                { "name": "po_number", "type": "string", "required": true },
+                { "name": "supplier_code", "type": "string", "required": false }
+            ],
+            "search": { "tier": "Tier3" }
+        })).expect("s2 spec");
+
+        let n1a = schema_concrete_collection_name(&path, &s1);
+        let n1b = schema_concrete_collection_name(&path, &s1);
+        let n2 = schema_concrete_collection_name(&path, &s2);
+
+        assert_eq!(n1a, n1b, "concrete name must be deterministic for identical spec");
+        assert_ne!(n1a, n2, "adding a field must change the concrete name (drives 5d-3b swap)");
+
+        // Shape: <alias>__<8 hex chars>
+        let alias = schema_collection_name(&path);
+        assert!(n1a.starts_with(&alias), "concrete name carries alias prefix");
+        assert!(n1a.contains("__"), "double underscore separator present");
+        let suffix = n1a.rsplit("__").next().expect("suffix present");
+        assert_eq!(suffix.len(), 8, "8 hex chars");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn concrete_collection_spec_names_the_concrete_collection() {
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let spec: SchemaDefinitionSpec = serde_json::from_value(json!({
+            "version": "v1",
+            "auth": { "strategyRef": { "name": "default", "namespace": "p" } },
+            "access": {},
+            "fields": [ { "name": "po_number", "type": "string", "required": true } ],
+            "search": { "tier": "Tier3" }
+        })).expect("spec");
+        let cs = concrete_collection_spec(&path, &spec);
+        assert_eq!(cs.name, schema_concrete_collection_name(&path, &spec));
+        assert_ne!(cs.name, schema_collection_name(&path), "concrete name != alias name");
     }
 
     #[test]

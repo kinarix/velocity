@@ -21,11 +21,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::post;
-use axum::Router;
-use serde_json::Value;
+use axum::response::IntoResponse;
+use axum::routing::{delete, get, post, put};
+use axum::{Json, Router};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use velocity_types::common::SchemaPath;
 use velocity_typesense::{collection_spec, TypesenseClient, TypesenseError};
@@ -113,6 +114,72 @@ async fn create_collection_409_is_idempotent_ok() {
         .create_collection(&spec)
         .await
         .expect("409 must be treated as Ok — two replicas may race on same schema");
+}
+
+#[tokio::test]
+async fn upsert_alias_puts_collection_name_body() {
+    let captured = CapturedBody::default();
+    let app = Router::new()
+        .route(
+            "/aliases/{alias}",
+            put(
+                |State(c): State<CapturedBody>, body: Bytes| async move {
+                    *c.0.lock().unwrap() = Some(body);
+                    (StatusCode::OK, r#"{"name":"a","collection_name":"a__deadbeef"}"#)
+                },
+            ),
+        )
+        .with_state(captured.clone());
+    let addr = spawn(app).await;
+
+    let client = TypesenseClient::new(format!("http://{addr}"), "xyz").unwrap();
+    client.upsert_alias("a", "a__deadbeef").await.expect("alias upsert succeeds");
+
+    let body = captured.0.lock().unwrap().clone().expect("body captured");
+    let parsed: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["collection_name"], "a__deadbeef");
+}
+
+#[tokio::test]
+async fn get_alias_200_returns_target_404_returns_none() {
+    let app = Router::new()
+        .route(
+            "/aliases/{alias}",
+            get(|Path(alias): Path<String>| async move {
+                if alias == "present" {
+                    (
+                        StatusCode::OK,
+                        Json(json!({ "name": "present", "collection_name": "present__deadbeef" })),
+                    )
+                        .into_response()
+                } else {
+                    (StatusCode::NOT_FOUND, Json(json!({ "message": "Not Found" })))
+                        .into_response()
+                }
+            }),
+        );
+    let addr = spawn(app).await;
+
+    let client = TypesenseClient::new(format!("http://{addr}"), "xyz").unwrap();
+    let target = client.get_alias("present").await.expect("200 ok");
+    assert_eq!(target.as_deref(), Some("present__deadbeef"));
+    let absent = client.get_alias("missing").await.expect("404 → None");
+    assert_eq!(absent, None);
+}
+
+#[tokio::test]
+async fn delete_alias_404_is_idempotent_ok() {
+    let app = Router::new().route(
+        "/aliases/{alias}",
+        delete(|| async { (StatusCode::NOT_FOUND, "{}") }),
+    );
+    let addr = spawn(app).await;
+
+    let client = TypesenseClient::new(format!("http://{addr}"), "xyz").unwrap();
+    client
+        .delete_alias("gone")
+        .await
+        .expect("404 on delete is idempotent ok");
 }
 
 #[tokio::test]

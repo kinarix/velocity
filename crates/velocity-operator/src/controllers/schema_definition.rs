@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::SearchTier;
 use velocity_types::crds::{ReconcilePhase, SchemaDefinition};
-use velocity_typesense::{collection_spec, schema_collection_name};
+use velocity_typesense::{
+    concrete_collection_spec, schema_collection_name, schema_concrete_collection_name,
+};
 
 use crate::context::Context;
 use crate::controllers::{error_action, ReconcileError};
@@ -77,24 +79,36 @@ pub async fn reconcile(
     let plan = build_ddl(&obj.spec, &path).map_err(|e| ReconcileError::Invalid(e.to_string()))?;
     let provisioned = ctx.provisioner.sync_schema_tables(&plan, allow_breaking).await?;
 
-    // Phase 5d-2: eagerly provision the Typesense collection for Tier-3
-    // schemas. If `ctx.typesense` is `None`, the operator was started
-    // without a Typesense URL; the API's CDC worker handles lazy
-    // creation as a backstop. If the client is present and Typesense is
-    // unreachable / errors, the reconcile fails — kube-runtime requeues
-    // and the next attempt retries. Spec drift on an existing collection
-    // is **not** handled here (create_collection returns Ok on 409);
-    // Phase 5d-3 blue-green is the only safe path for field changes.
+    // Phase 5d-2 + 5d-3a: eagerly provision the Typesense collection
+    // for Tier-3 schemas. The concrete collection name carries a
+    // content-hash suffix; an alias under the stable name routes
+    // reads/writes to it. On re-reconcile after a spec change we
+    // create the new concrete collection but **leave the alias
+    // alone** — the explicit swap (with backfill) is Phase 5d-3b.
+    //
+    // If `ctx.typesense` is `None`, the operator was started without
+    // a Typesense URL; the API's CDC worker handles lazy creation as
+    // a backstop. If the client is present and Typesense errors,
+    // the reconcile fails — kube-runtime requeues.
     if matches!(obj.spec.search.tier, SearchTier::Tier3) {
         if let Some(ts) = ctx.typesense.as_ref() {
-            let spec = collection_spec(&path, &obj.spec);
-            let coll = schema_collection_name(&path);
+            let alias = schema_collection_name(&path);
+            let concrete = schema_concrete_collection_name(&path, &obj.spec);
+            let spec = concrete_collection_spec(&path, &obj.spec);
             tracing::info!(
-                collection = %coll,
+                alias = %alias,
+                concrete = %concrete,
                 schema = %path,
-                "ensuring Typesense collection"
+                "ensuring Typesense concrete collection"
             );
             ts.create_collection(&spec).await?;
+            // First-time alias bind. Re-reconciles after a spec
+            // change land here with the alias already pointing at
+            // the *old* concrete — we do not flip until 5d-3b.
+            if ts.get_alias(&alias).await?.is_none() {
+                tracing::info!(alias = %alias, concrete = %concrete, "binding new Typesense alias");
+                ts.upsert_alias(&alias, &concrete).await?;
+            }
         } else {
             tracing::warn!(
                 schema = %path,

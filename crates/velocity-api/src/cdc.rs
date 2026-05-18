@@ -156,12 +156,18 @@ async fn drain_outbox(
         return Ok(0);
     }
 
-    // Ensure the per-schema collection exists. Done once per session
-    // per collection; cheaper than a HEAD per batch.
+    // Ensure the per-schema collection (concrete + alias) exists.
+    // Phase 5d-3a: writes/reads address the *alias* name; the concrete
+    // collection carries a content-hash suffix so 5d-3b can spin up a
+    // new one and flip the alias atomically. ensure_aliased_collection
+    // is a no-op when the alias already points anywhere — re-reconcile
+    // never causes an unintended swap.
     let coll_name = schema_collection_name(schema);
-    ensure_collection(typesense, &coll_name, || collection_spec(schema), provisioned).await?;
+    ensure_aliased_collection(typesense, schema, provisioned).await?;
 
     // Cross-search collection — opt-in via spec.search.cross_search.
+    // Stays un-aliased: its shape is fixed (id, __schema, __body, …),
+    // so blue-green doesn't apply.
     let cross_enabled = schema.spec.search.cross_search;
     if cross_enabled {
         let cross_name = cross_collection_name(&schema.path.org);
@@ -235,6 +241,36 @@ where
         ts.create_collection(&s).await?;
     }
     provisioned.insert(name.to_string());
+    Ok(())
+}
+
+/// Phase 5d-3a: ensure the per-schema concrete collection exists and
+/// the alias points at it. If the alias already exists (regardless of
+/// target), leave it alone — re-reconcile must not silently swap
+/// search out from under live traffic. The explicit swap belongs to
+/// 5d-3b.
+async fn ensure_aliased_collection(
+    ts: &TypesenseClient,
+    schema: &Arc<ResolvedSchema>,
+    provisioned: &mut HashSet<String>,
+) -> Result<(), crate::typesense::TypesenseError> {
+    let alias = schema_collection_name(schema);
+    if provisioned.contains(&alias) {
+        return Ok(());
+    }
+    let concrete_name = velocity_typesense::schema_concrete_collection_name(
+        &schema.path,
+        &schema.spec,
+    );
+    let concrete_spec = velocity_typesense::concrete_collection_spec(
+        &schema.path,
+        &schema.spec,
+    );
+    ts.create_collection(&concrete_spec).await?;
+    if ts.get_alias(&alias).await?.is_none() {
+        ts.upsert_alias(&alias, &concrete_name).await?;
+    }
+    provisioned.insert(alias);
     Ok(())
 }
 
