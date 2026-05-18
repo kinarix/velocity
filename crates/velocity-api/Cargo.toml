@@ -43,12 +43,24 @@ serde_json         = { workspace = true }
 
 arc-swap           = { workspace = true }
 dashmap            = { workspace = true }
+parking_lot        = { workspace = true }
+async-trait        = { workspace = true }
+redis              = { workspace = true }
 
 cel-interpreter    = { workspace = true }
 regex              = { workspace = true }
 uuid               = { workspace = true }
 sha2               = { workspace = true }
 hex                = { workspace = true }
+hmac               = { workspace = true }
+rand               = { workspace = true }
+jsonwebtoken       = { workspace = true }
+jsonpath-rust      = { workspace = true }
+json-patch         = { workspace = true }
+reqwest            = { workspace = true }
+base64             = { workspace = true }
+chrono             = { workspace = true }
+ipnet              = { workspace = true }
 
 # Pinned only to call CryptoProvider::install_default() at startup. kube-rs
 # (via rustls-tls) pulls rustls 0.23 in but doesn't pick a provider for us.
@@ -60,3 +72,6 @@ velocity-operator = { workspace = true }
 uuid              = { workspace = true }
 tower             = { workspace = true, features = ["util"] }
 http-body-util    = "0.1"
+rsa               = "0.9"
+rand              = { workspace = true }
+serde_json        = { workspace = true }

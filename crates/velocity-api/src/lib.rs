@@ -9,23 +9,36 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod audit;
+pub mod auth;
+pub mod auth_handlers;
+pub mod auth_informer;
 pub mod config;
 pub mod error;
+pub mod event_log;
+pub mod field_filter;
 pub mod handlers;
 pub mod health;
 pub mod identity;
 pub mod idempotency;
 pub mod informer;
+pub mod masking;
+pub mod policy;
 pub mod query;
+pub mod rbac;
 pub mod registry;
+pub mod row_filter;
 pub mod router;
 pub mod session;
 pub mod startup;
 pub mod state;
+pub mod tiering;
+pub mod time_machine;
 pub mod validate;
 
+pub use auth::{AuthRegistry, JwksCache, ResolvedAuthStrategy};
 pub use config::ApiConfig;
 pub use error::ApiError;
 pub use identity::Identity;
-pub use registry::{registry_key, FieldIndex, ResolvedSchema, SchemaRegistry};
+pub use registry::{registry_key, AccessIndex, FieldIndex, ResolvedSchema, SchemaRegistry};
 pub use state::AppState;

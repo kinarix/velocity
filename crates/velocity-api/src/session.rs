@@ -9,15 +9,25 @@
 //!    request had connected directly as that role.
 //! 3. `SET LOCAL app.current_user = '...'` — surface for RLS predicates and
 //!    `platform.audit_insert()`.
-//! 4. Optional per-request attributes (`store_id`, `tenant_id`, etc.) via
+//! 4. `SET LOCAL app.scoped_roles = '...'` — the encoded role-scope for
+//!    Layer-7 RLS row filtering (see [`crate::row_filter::scoped_roles_for_session`]).
+//!    A `Broken` rowFilter on the schema surfaces here as a [`sqlx::Error`]
+//!    so the handler turns it into a 500; the transaction never commits.
+//! 5. Optional per-request attributes (`store_id`, `tenant_id`, etc.) via
 //!    `set_config('app.<key>', '<value>', true)`.
-//! 5. Run the caller's closure on the same transaction.
-//! 6. Commit (or roll back via `?`).
+//! 6. Run the caller's closure on the same transaction.
+//! 7. Commit (or roll back via `?`).
 //!
 //! **SQL safety:** the `domain_role` and `app.<key>` identifiers must be
 //! validated by the caller. In practice they come from `ResolvedSchema`
 //! (built from the CRD, sanitized by the operator) and from a fixed
-//! allow-list of attribute keys — never from the request body.
+//! allow-list of attribute keys — never from the request body. Values
+//! flow through `$N` binds, never interpolated.
+//!
+//! **Fails closed:** Layer-7 policies treat a missing `app.scoped_roles`
+//! as NULL, which makes the `USING` clause evaluate NULL and excludes
+//! the row. A handler path that forgot the prelude would see *zero rows*
+//! rather than every row. Pinned in the operator-side integration tests.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -100,6 +110,23 @@ where
     // SET LOCAL app.current_user via set_config() so the value can be bound.
     sqlx::query("SELECT set_config('app.current_user', $1, true)")
         .bind(&identity.actor_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // Layer-7 row-scope: encode the caller's role-scope into
+    // `app.scoped_roles`. The per-table policies the operator emits
+    // read this setting and grant access accordingly. A `Broken`
+    // rowFilter on the schema surfaces here as a protocol error so the
+    // transaction rolls back rather than committing a wide-open read.
+    let scoped_roles =
+        crate::row_filter::scoped_roles_for_session(schema, identity).map_err(|e| {
+            sqlx::Error::Protocol(format!(
+                "rowFilter broken on role `{}`: {}",
+                e.role, e.reason
+            ))
+        })?;
+    sqlx::query("SELECT set_config('app.scoped_roles', $1, true)")
+        .bind(&scoped_roles)
         .execute(&mut *tx)
         .await?;
 

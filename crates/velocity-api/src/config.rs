@@ -19,6 +19,28 @@ pub struct ApiConfig {
     pub pg_pool_max: u32,
     /// Pretty logs (true) vs JSON logs (false; default for production).
     pub pretty_logs: bool,
+    /// Optional Redis URL for the actor revocation backend (ADR-003).
+    /// When unset, no revocation checker is wired and the middleware
+    /// admits every actor — the startup log emits a warning so the gap is
+    /// visible. When set, [`crate::auth::RedisRevocationChecker`] is
+    /// connected and the strategy's `revocation_fail_open` flag governs
+    /// behaviour on backend errors.
+    pub redis_url: Option<String>,
+    /// URL of `velocity-warm-reader` for time-machine queries whose
+    /// `at` falls outside the hot window (Phase 4.4). Example:
+    /// `http://velocity-warm-reader.platform.svc:9090`. When `None`,
+    /// any warm-tier time-machine request returns 503
+    /// `WARM_TIER_NOT_CONFIGURED` — explicit failure, never silent fall
+    /// back to "no events" (ADR-003 fail-closed).
+    pub warm_reader_url: Option<String>,
+    /// Bearer token sent to `velocity-warm-reader`. Must match
+    /// `VELOCITY_WARM_READER_SERVICE_TOKEN` on the reader. REQUIRED
+    /// when `warm_reader_url` is set; otherwise startup fails.
+    pub warm_reader_service_token: Option<String>,
+    /// Per-request timeout for warm-reader calls. Default 15s
+    /// (CLAUDE.md §Inter-Service RPC). Configurable so a slow warm
+    /// path can be given more budget without code changes.
+    pub warm_reader_timeout_ms: u64,
 }
 
 impl ApiConfig {
@@ -43,8 +65,41 @@ impl ApiConfig {
         let pretty_logs = std::env::var("VELOCITY_API_PRETTY_LOGS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let redis_url = std::env::var("VELOCITY_API_REDIS_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
 
-        Ok(Self { pg_url, bind_addr, health_addr, watch_namespace, pg_pool_max, pretty_logs })
+        let warm_reader_url = std::env::var("VELOCITY_API_WARM_READER_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let warm_reader_service_token = std::env::var("VELOCITY_API_WARM_READER_SERVICE_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        // Pair them: if a URL is set, demand a token. Allowing
+        // unauthenticated calls to the warm reader would let any pod
+        // with network access query historical data — fail-loud here.
+        if warm_reader_url.is_some() && warm_reader_service_token.is_none() {
+            anyhow::bail!(
+                "VELOCITY_API_WARM_READER_URL is set but VELOCITY_API_WARM_READER_SERVICE_TOKEN is missing"
+            );
+        }
+        let warm_reader_timeout_ms = std::env::var("VELOCITY_API_WARM_READER_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15_000);
+
+        Ok(Self {
+            pg_url,
+            bind_addr,
+            health_addr,
+            watch_namespace,
+            pg_pool_max,
+            pretty_logs,
+            redis_url,
+            warm_reader_url,
+            warm_reader_service_token,
+            warm_reader_timeout_ms,
+        })
     }
 
     fn compose_pg_url() -> Result<String> {

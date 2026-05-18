@@ -51,6 +51,13 @@ fn field(name: &str, kind: FieldKind, filterable: bool, sortable: bool) -> Field
     f
 }
 
+fn unique_field(name: &str, kind: FieldKind) -> FieldSpec {
+    let mut f = field(name, kind, true, true);
+    f.unique = true;
+    f.required = true;
+    f
+}
+
 fn spec(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
     SchemaDefinitionSpec {
         version: "v1".into(),
@@ -187,6 +194,66 @@ async fn crud_round_trip() {
     cleanup(&admin_pool, &pg_schema).await;
 }
 
+/// Phase-1 acceptance: a soft-deleted row must not block re-creating a row with
+/// the same unique value. DdlBuilder emits partial unique indexes
+/// (`WHERE deleted_at IS NULL`) for `unique: true` fields — this proves the
+/// constraint actually behaves that way end-to-end.
+#[tokio::test]
+async fn soft_delete_releases_unique_value() {
+    let Some(admin) = admin_url() else {
+        eprintln!("skipping: VELOCITY_API_TEST_PG_URL not set");
+        return;
+    };
+    let Some(api) = api_url() else {
+        eprintln!("skipping: VELOCITY_API_TEST_API_URL not set");
+        return;
+    };
+
+    let admin_pool = PgPoolOptions::new().max_connections(4).connect(&admin).await.unwrap();
+    let api_pool = PgPoolOptions::new().max_connections(4).connect(&api).await.unwrap();
+
+    let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let org = format!("acme{suffix}");
+    let app = "supply-chain";
+    let domain = "procurement";
+    let pg_schema = format!("{org}_supply_chain_procurement");
+    cleanup(&admin_pool, &pg_schema).await;
+
+    let prov = PostgresProvisioner::new(admin_pool.clone());
+    prov.sync_domain(&org, app, domain).await.unwrap();
+
+    let path = SchemaPath::new(&org, app, domain, "purchase-order", "v1");
+    let s = spec(vec![unique_field("po_number", FieldKind::String)]);
+    let plan = velocity_operator::build_ddl(&s, &path).unwrap();
+    prov.sync_schema_tables(&plan, false).await.unwrap();
+
+    let schema = ResolvedSchema::from_spec(path.clone(), s);
+    let identity = Identity::anonymous();
+
+    let first = handler_create(&api_pool, &schema, &identity, &json!({ "po_number": "PO-UNIQUE" }))
+        .await
+        .expect("first insert");
+    let first_id = first["id"].as_str().unwrap().to_string();
+
+    // Re-insert before delete → must fail on the partial unique index.
+    let dup = handler_create(&api_pool, &schema, &identity, &json!({ "po_number": "PO-UNIQUE" }))
+        .await;
+    assert!(dup.is_err(), "second insert should violate the active unique index");
+
+    // Soft delete.
+    handler_delete(&api_pool, &schema, &identity, &first_id).await.unwrap();
+
+    // Now re-creation with the same unique value must succeed.
+    let revived =
+        handler_create(&api_pool, &schema, &identity, &json!({ "po_number": "PO-UNIQUE" }))
+            .await
+            .expect("re-insert after soft delete");
+    assert_eq!(revived["po_number"], "PO-UNIQUE");
+    assert_ne!(revived["id"].as_str().unwrap(), first_id, "must be a new row");
+
+    cleanup(&admin_pool, &pg_schema).await;
+}
+
 // ── Thin handler-shaped helpers that mirror the HTTP entry points but skip
 // Axum extraction. They re-use the same `with_session_context` + SQL paths
 // the real handlers use so the SQL contract is exercised end-to-end.
@@ -256,7 +323,7 @@ async fn handler_list(
     identity: &Identity,
     q: &ListQuery,
 ) -> Result<Vec<Value>, velocity_api::ApiError> {
-    let compiled = build_list(schema, q)?;
+    let compiled = build_list(schema, q, identity)?;
     let rows = with_session_context(pool, schema, RoleClass::Reader, identity, move |tx| {
         Box::pin(async move {
             let sql = compiled

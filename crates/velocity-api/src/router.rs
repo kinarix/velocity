@@ -16,6 +16,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 
+use crate::auth_handlers::{self, AuthHandlersState};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -28,15 +29,45 @@ const BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 pub fn build(state: AppState) -> Router {
+    // `build` deliberately does not install the auth middleware. The binary
+    // wires `axum::middleware::from_fn_with_state(auth_state, authenticate)`
+    // on top of this router; tests stack their own identity-injection
+    // layer instead, so the unauthenticated assertions stay possible.
+    //
+    // The `/auth/*` routes are *not* protected — they kick off and
+    // terminate the OIDC redirect flow. The auth middleware already
+    // recognises this (its `schema_path_from_uri` returns `None` for
+    // anything not under `/api/{...}`), so they pass through untouched
+    // even when the middleware is installed.
     Router::new()
         .route("/api", get(index))
         .route(
-            "/api/:org/:app/:domain/:object/:version",
+            "/api/{org}/{app}/{domain}/{object}/{version}",
             get(handlers::list).post(handlers::create),
         )
         .route(
-            "/api/:org/:app/:domain/:object/:version/:id",
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}",
             get(handlers::get_one).put(handlers::update).delete(handlers::delete_soft),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/history",
+            get(crate::time_machine::history),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/diff",
+            get(crate::time_machine::diff_endpoint),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/restore",
+            axum::routing::post(crate::time_machine::restore),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/replay",
+            get(crate::time_machine::replay),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/history/snapshot",
+            axum::routing::post(crate::time_machine::snapshot),
         )
         .layer(
             ServiceBuilder::new()
@@ -75,6 +106,21 @@ pub fn build(state: AppState) -> Router {
                 //    request bytes before any extractor reads them.
                 .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES)),
         )
+        .with_state(state)
+}
+
+/// Build the `/auth/*` sub-router for the OIDC redirect flow. Carries
+/// its own state because the handlers don't touch the schema registry —
+/// they only need the auth registry + session store + flow-cookie key.
+/// Mounted alongside the API router in `main.rs` via `Router::merge`.
+pub fn build_auth(state: AuthHandlersState) -> Router {
+    Router::new()
+        .route(
+            "/auth/login/{namespace}/{name}",
+            get(auth_handlers::login),
+        )
+        .route("/auth/callback", get(auth_handlers::callback))
+        .route("/auth/logout", axum::routing::post(auth_handlers::logout))
         .with_state(state)
 }
 

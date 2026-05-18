@@ -11,7 +11,7 @@
 //! taken as-is.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -20,11 +20,18 @@ use sqlx::Row;
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{FieldKind, SearchTier};
 
+use crate::audit::{self, action, outcome};
+use crate::event_log::{self, EventLogRow, EventSource};
+use crate::auth::AuthDecision;
 use crate::error::ApiError;
+use crate::field_filter::FieldFilterIndex;
 use crate::identity::Identity;
 use crate::idempotency::{self, CachedResponse, Lookup};
+use crate::policy;
 use crate::query::{build_list, ListQuery};
+use crate::rbac::{check_access, op};
 use crate::registry::ResolvedSchema;
+use crate::row_filter;
 use crate::session::{with_session_context, RoleClass};
 use crate::state::AppState;
 use crate::validate::{validate_fields, validate_rules, WriteMode};
@@ -32,18 +39,42 @@ use crate::validate::{validate_fields, validate_rules, WriteMode};
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 
 /// URL path: `/api/{org}/{app}/{domain}/{object}/{version}`.
-type SchemaPathParts = (String, String, String, String, String);
+pub(crate) type SchemaPathParts = (String, String, String, String, String);
 
-fn path_from_parts(parts: SchemaPathParts) -> SchemaPath {
+pub(crate) fn path_from_parts(parts: SchemaPathParts) -> SchemaPath {
     SchemaPath::new(parts.0, parts.1, parts.2, parts.3, parts.4)
 }
 
-fn resolve_schema(
+pub(crate) fn resolve_schema(
     state: &AppState,
     parts: SchemaPathParts,
 ) -> Result<std::sync::Arc<ResolvedSchema>, ApiError> {
     let path = path_from_parts(parts);
     state.registry.resolve(&path).ok_or(ApiError::SchemaNotFound)
+}
+
+/// Take the `Identity` the auth middleware attached to the request, falling
+/// back to `Identity::anonymous()` when the middleware isn't wired (Phase 1
+/// integration tests, healthcheck-only deployments). The RBAC gate decides
+/// what an anonymous identity may actually do — see [`crate::rbac`].
+pub(crate) fn identity_from_ext(ext: Option<Extension<Identity>>) -> Identity {
+    ext.map(|Extension(id)| id).unwrap_or_else(Identity::anonymous)
+}
+
+/// Layer-5 write gate. Returns [`ApiError::FieldWriteDenied`] with the
+/// sorted list of forbidden field names so an integrator can fix their
+/// payload without guessing.
+fn check_field_writes(
+    filter: &FieldFilterIndex,
+    payload: &serde_json::Map<String, Value>,
+    identity: &Identity,
+) -> Result<(), ApiError> {
+    let denied = filter.check_writes(payload, &identity.roles);
+    if denied.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::FieldWriteDenied(denied))
+    }
 }
 
 /// Render a `$N` placeholder with the cast appropriate to `kind`.
@@ -70,16 +101,29 @@ pub fn cast_placeholder(idx: usize, kind: FieldKind) -> String {
 
 /// Fetch a single row by id as JSON. Returns Ok(None) when the row exists but
 /// is soft-deleted, Ok(Some) for an alive row, Err for DB issues.
+///
+/// `scope` is the Layer-4 row-filter predicate for the caller, AND'd into the
+/// WHERE. Passing `None` is intentional (open schema / unrestricted role);
+/// callers must never default to `None` to "skip" the gate — they have to
+/// have asked the row-filter index and gotten back `None` first.
 async fn fetch_one_json(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     qualified_table: &str,
     id: &str,
+    scope: Option<&row_filter::Predicate>,
 ) -> Result<Option<Value>, sqlx::Error> {
+    let scope_sql = scope.map(|p| format!(" AND {}", p.sql)).unwrap_or_default();
     let sql = format!(
         "SELECT row_to_json(t) AS row FROM {qualified_table} t \
-         WHERE id = $1::uuid AND deleted_at IS NULL"
+         WHERE id = $1::uuid AND deleted_at IS NULL{scope_sql}"
     );
-    let row = sqlx::query(&sql).bind(id).fetch_optional(&mut **tx).await?;
+    let mut q = sqlx::query(&sql).bind(id);
+    if let Some(p) = scope {
+        for v in &p.params {
+            q = row_filter::bind_json_param(q, v);
+        }
+    }
+    let row = q.fetch_optional(&mut **tx).await?;
     Ok(row.map(|r| r.get::<Value, _>("row")))
 }
 
@@ -89,10 +133,12 @@ pub async fn list(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
     Query(q): Query<ListQuery>,
+    identity_ext: Option<Extension<Identity>>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, parts)?;
-    let identity = Identity::anonymous();
-    let compiled = build_list(&schema, &q)?;
+    let identity = identity_from_ext(identity_ext);
+    check_access(&schema, &identity, op::READ)?;
+    let compiled = build_list(&schema, &q, &identity)?;
 
     let items = with_session_context(
         &state.pool,
@@ -111,7 +157,7 @@ pub async fn list(
                 );
                 let mut q = sqlx::query(&select);
                 for v in &compiled.params {
-                    q = q.bind(v);
+                    q = row_filter::bind_json_param(q, v);
                 }
                 let rows = q.fetch_all(&mut **tx).await?;
                 let items: Vec<Value> =
@@ -121,6 +167,20 @@ pub async fn list(
         },
     )
     .await?;
+
+    // Layer-5 read strip — applied row-by-row so an actor without the
+    // role for a sensitive column never sees it leave the server. The
+    // SQL fetched all columns because filtering at SQL would force every
+    // schema to know its role-to-column matrix; strip-in-app is cheaper.
+    //
+    // Layer-6 masking runs immediately after the strip on the same row.
+    // Ordering matters: a stripped field is gone, so masking can't
+    // resurrect it; a masked field is still present, just transformed.
+    let mut items = items;
+    for row in &mut items {
+        schema.field_filter.strip_for_read(row, &identity.roles);
+        schema.masking.apply_for_read(row, &identity.roles);
+    }
 
     Ok(Json(json!({
         "items": items,
@@ -134,15 +194,36 @@ pub async fn create(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
     headers: HeaderMap,
+    identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
     Json(payload): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let schema = resolve_schema(&state, parts)?;
-    let identity = Identity::anonymous();
+    let identity = identity_from_ext(identity_ext);
+    let decision = decision_ext.map(|Extension(d)| d);
+    check_access(&schema, &identity, op::CREATE)?;
 
     let payload_obj = payload
         .as_object()
         .ok_or_else(|| ApiError::BadRequest("payload must be a JSON object".into()))?
         .clone();
+
+    // Layer-2 ABAC. Runs after RBAC (cheap allow/deny by role) and before
+    // validation (deeper field/CEL checks). A policy that needs the full
+    // payload sees the un-touched submission — same view the SQL builder
+    // will operate on.
+    policy::evaluate_for(
+        &schema.compiled_policies,
+        op::CREATE,
+        &Value::Object(payload_obj.clone()),
+        &identity,
+    )
+    .await?;
+
+    // Layer-5 field-filter — reject before idempotency stores anything,
+    // so a 403 on the first attempt doesn't poison the idempotency-key
+    // cache with a no-op response that future retries would replay.
+    check_field_writes(&schema.field_filter, &payload_obj, &identity)?;
 
     // ── Idempotency (#16) — if present, replay or 409 before doing work.
     let idempotency_key = headers
@@ -158,7 +239,10 @@ pub async fn create(
             Lookup::Replay(cached) => {
                 let status = StatusCode::from_u16(cached.status)
                     .unwrap_or(StatusCode::CREATED);
-                return Ok((status, Json(cached.body)));
+                let mut body = cached.body;
+                schema.field_filter.strip_for_read(&mut body, &identity.roles);
+                schema.masking.apply_for_read(&mut body, &identity.roles);
+                return Ok((status, Json(body)));
             }
             Lookup::Conflict => return Err(ApiError::IdempotencyConflict),
             Lookup::Miss => {}
@@ -186,6 +270,11 @@ pub async fn create(
     let tier = schema.spec.search.tier;
     let table = schema.pg_qualified.clone();
     let outbox_table = format!("{}.{}_outbox", schema.pg_schema, schema.pg_table);
+    let audit_schema = schema.clone();
+    let audit_identity = identity.clone();
+    let audit_decision = decision.clone();
+    let event_schema = schema.clone();
+    let event_identity = identity.clone();
 
     let inserted = with_session_context(
         &state.pool,
@@ -199,6 +288,42 @@ pub async fn create(
                     let id = row["id"].as_str().unwrap_or_default().to_string();
                     write_outbox(tx, &outbox_table, "create", &id, &row).await?;
                 }
+                // ADR-005: audit row writes in the same tx as the data
+                // change. A best-effort log line *after* commit would leave
+                // the data and audit chain visibly out of sync on a crash.
+                let id = row["id"].as_str().unwrap_or_default().to_string();
+                audit::write_audit(
+                    tx,
+                    &audit_schema,
+                    &audit_identity,
+                    action::CREATE,
+                    outcome::SUCCESS,
+                    &id,
+                    &row,
+                    audit_decision.as_ref(),
+                    None,
+                )
+                .await?;
+                // Phase 3 — append to platform.event_log in the same tx so
+                // /history reflects the create the moment the row is
+                // visible. No `diff` on create (the payload IS the diff
+                // from `null`); no `request_id` plumbing yet — the
+                // middleware layer that surfaces it lands later.
+                event_log::write(
+                    tx,
+                    EventLogRow {
+                        schema: &event_schema,
+                        entity_id: &id,
+                        operation: action::CREATE,
+                        source: EventSource::Api,
+                        identity: &event_identity,
+                        request_id: None,
+                        diff: None,
+                        payload: Some(row.clone()),
+                        reason: None,
+                    },
+                )
+                .await?;
                 Ok(row)
             })
         },
@@ -208,13 +333,21 @@ pub async fn create(
     // ── Idempotency record — write after the work commits so replays
     // return the same body the first caller got. A lost race here is
     // harmless: the existing row already has the same hash.
+    //
+    // Note: we cache the FULL row (pre-strip) so a future replay that
+    // happens to carry a wider-role identity sees what they're entitled
+    // to. Strip runs after the cache lookup on every request, including
+    // replays — see the Lookup::Replay arm above.
     if let (Some(key), Some(hash)) = (idempotency_key.as_deref(), request_hash.as_deref()) {
         let cached =
             CachedResponse { status: StatusCode::CREATED.as_u16(), body: inserted.clone() };
         idempotency::record(&state.pool, key, hash, &cached).await?;
     }
 
-    Ok((StatusCode::CREATED, Json(inserted)))
+    let mut body = inserted;
+    schema.field_filter.strip_for_read(&mut body, &identity.roles);
+    schema.masking.apply_for_read(&mut body, &identity.roles);
+    Ok((StatusCode::CREATED, Json(body)))
 }
 
 async fn insert_row(
@@ -269,21 +402,30 @@ pub async fn get_one(
         String,
         String,
     )>,
+    identity_ext: Option<Extension<Identity>>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
-    let identity = Identity::anonymous();
+    let identity = identity_from_ext(identity_ext);
+    check_access(&schema, &identity, op::READ)?;
     let table = schema.pg_qualified.clone();
+    // id is $1, so row-filter binds start at $2.
+    let scope = row_filter::predicate_for(&schema, &identity, 2)?;
 
     let row = with_session_context(
         &state.pool,
         &schema,
         RoleClass::Reader,
         &identity,
-        move |tx| Box::pin(async move { fetch_one_json(tx, &table, &id).await }),
+        move |tx| {
+            Box::pin(async move { fetch_one_json(tx, &table, &id, scope.as_ref()).await })
+        },
     )
     .await?;
 
-    row.map(Json).ok_or(ApiError::NotFound)
+    let mut row = row.ok_or(ApiError::NotFound)?;
+    schema.field_filter.strip_for_read(&mut row, &identity.roles);
+    schema.masking.apply_for_read(&mut row, &identity.roles);
+    Ok(Json(row))
 }
 
 // ---------- UPDATE --------------------------------------------------------
@@ -298,15 +440,36 @@ pub async fn update(
         String,
         String,
     )>,
+    identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
-    let identity = Identity::anonymous();
+    let identity = identity_from_ext(identity_ext);
+    let decision = decision_ext.map(|Extension(d)| d);
+    check_access(&schema, &identity, op::UPDATE)?;
 
     let payload_obj = payload
         .as_object()
         .ok_or_else(|| ApiError::BadRequest("payload must be a JSON object".into()))?
         .clone();
+
+    // Layer-2 ABAC — see comment on `create`. For updates the policy sees
+    // the *requested* mutation, not the merged post-image; that's
+    // intentional, so a "you may only set X to Y" rule fires on the
+    // submitted value rather than on the row that already exists.
+    policy::evaluate_for(
+        &schema.compiled_policies,
+        op::UPDATE,
+        &Value::Object(payload_obj.clone()),
+        &identity,
+    )
+    .await?;
+
+    // Layer-5 field-filter on writes. `version` is on every UPDATE payload
+    // but it isn't a user-declared field, so `check_writes` will pass it
+    // through (FieldFilterIndex keys on declared field names only).
+    check_field_writes(&schema.field_filter, &payload_obj, &identity)?;
 
     let expected_version: i32 = payload_obj
         .get("version")
@@ -346,14 +509,29 @@ pub async fn update(
     let id_idx = vals.len() + 1;
     let ver_idx = vals.len() + 2;
     let table = schema.pg_qualified.clone();
+    // Row-filter binds (if any) live after id/version — start at $(vals + 3).
+    let scope = row_filter::predicate_for(&schema, &identity, vals.len() + 3)?;
+    let scope_sql = scope
+        .as_ref()
+        .map(|p| format!(" AND {}", p.sql))
+        .unwrap_or_default();
     let sql = format!(
-        "UPDATE {table} SET {} WHERE id = ${id_idx}::uuid AND version = ${ver_idx} AND deleted_at IS NULL \
+        "UPDATE {table} SET {} WHERE id = ${id_idx}::uuid AND version = ${ver_idx} AND deleted_at IS NULL{scope_sql} \
          RETURNING row_to_json({table}.*) AS row",
         sets.join(", ")
     );
 
     let tier = schema.spec.search.tier;
     let outbox_table = format!("{}.{}_outbox", schema.pg_schema, schema.pg_table);
+    let audit_schema = schema.clone();
+    let audit_identity = identity.clone();
+    let audit_decision = decision.clone();
+    let event_schema = schema.clone();
+    let event_identity = identity.clone();
+    let pre_select_sql = format!(
+        "SELECT row_to_json({table}.*) AS row FROM {table} \
+         WHERE id = $1::uuid AND deleted_at IS NULL"
+    );
 
     let updated = with_session_context(
         &state.pool,
@@ -362,17 +540,39 @@ pub async fn update(
         &identity,
         move |tx| {
             Box::pin(async move {
+                // Snapshot the pre-update state inside the same tx so the
+                // event_log `diff` reflects what actually changed under
+                // the lock the UPDATE will take. SELECT-then-UPDATE in
+                // one tx is race-free because the UPDATE takes a row
+                // lock and the optimistic-lock check on version detects
+                // any interleaved write.
+                let before: Option<Value> = sqlx::query(&pre_select_sql)
+                    .bind(&id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+                    .map(|r| r.get::<Value, _>("row"));
+
                 let mut q = sqlx::query(&sql);
                 for v in &vals {
                     q = q.bind(v);
                 }
-                let result = q.bind(&id).bind(expected_version).fetch_optional(&mut **tx).await?;
+                q = q.bind(&id).bind(expected_version);
+                if let Some(p) = &scope {
+                    for v in &p.params {
+                        q = row_filter::bind_json_param(q, v);
+                    }
+                }
+                let result = q.fetch_optional(&mut **tx).await?;
                 let row = match result {
                     Some(r) => r.get::<Value, _>("row"),
                     None => {
-                        // Either no such id, or version mismatch. The handler
-                        // wrapper will translate the special sentinel into a
-                        // VersionConflict / NotFound via a follow-up probe.
+                        // Either no such id, version mismatch, or the row is
+                        // outside the caller's row-scope. We collapse the
+                        // last case into NotFound (don't leak existence to
+                        // scoped readers) and reuse the existing probe for
+                        // id-existence to distinguish 404 vs 409. The probe
+                        // does *not* re-apply the scope — a non-existent id
+                        // and a scope-hidden id both produce NotFound here.
                         let table = qualified_table_from_sql(&sql);
                         let probe_sql =
                             format!("SELECT id FROM {table} WHERE id = $1::uuid LIMIT 1");
@@ -380,7 +580,10 @@ pub async fn update(
                             .bind(&id)
                             .fetch_optional(&mut **tx)
                             .await?;
-                        return Err(if exists.is_some() {
+                        // If we had a scope, "exists" alone isn't enough —
+                        // the row may exist but be hidden. Treat as NotFound
+                        // unless there's no scope at all.
+                        return Err(if exists.is_some() && scope.is_none() {
                             sqlx::Error::Protocol("__version_conflict__".into())
                         } else {
                             sqlx::Error::RowNotFound
@@ -390,6 +593,40 @@ pub async fn update(
                 if matches!(tier, SearchTier::Tier3) {
                     write_outbox(tx, &outbox_table, "update", &id, &row).await?;
                 }
+                audit::write_audit(
+                    tx,
+                    &audit_schema,
+                    &audit_identity,
+                    action::UPDATE,
+                    outcome::SUCCESS,
+                    &id,
+                    &row,
+                    audit_decision.as_ref(),
+                    None,
+                )
+                .await?;
+                // Phase 3 — event_log row. `before` is `Some(...)` on the
+                // common path; `None` would only happen if the row vanished
+                // between our pre-SELECT and the UPDATE (e.g., concurrent
+                // hard delete), in which case the UPDATE would have already
+                // returned RowNotFound and we wouldn't be here. So the
+                // diff is unconditionally meaningful.
+                let diff_value = before.as_ref().map(|b| event_log::diff(b, &row));
+                event_log::write(
+                    tx,
+                    EventLogRow {
+                        schema: &event_schema,
+                        entity_id: &id,
+                        operation: action::UPDATE,
+                        source: EventSource::Api,
+                        identity: &event_identity,
+                        request_id: None,
+                        diff: diff_value,
+                        payload: Some(row.clone()),
+                        reason: None,
+                    },
+                )
+                .await?;
                 Ok(row)
             })
         },
@@ -397,7 +634,10 @@ pub async fn update(
     .await
     .map_err(map_update_err)?;
 
-    Ok(Json(updated))
+    let mut body = updated;
+    schema.field_filter.strip_for_read(&mut body, &identity.roles);
+    schema.masking.apply_for_read(&mut body, &identity.roles);
+    Ok(Json(body))
 }
 
 /// Translate the sentinel errors raised inside the UPDATE closure into
@@ -435,12 +675,27 @@ pub async fn delete_soft(
         String,
         String,
     )>,
+    identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
 ) -> Result<StatusCode, ApiError> {
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
-    let identity = Identity::anonymous();
+    let identity = identity_from_ext(identity_ext);
+    let decision = decision_ext.map(|Extension(d)| d);
+    check_access(&schema, &identity, op::DELETE)?;
+    // Layer-2 ABAC on delete. The policy sees `self = null` since the
+    // request body is empty — useful for "only admin actors may delete"
+    // expressed as `identity.attributes.role == 'admin'`.
+    policy::evaluate_for(&schema.compiled_policies, op::DELETE, &Value::Null, &identity).await?;
     let table = schema.pg_qualified.clone();
+    // id is $1, so row-filter binds start at $2.
+    let scope = row_filter::predicate_for(&schema, &identity, 2)?;
     let tier = schema.spec.search.tier;
     let outbox_table = format!("{}.{}_outbox", schema.pg_schema, schema.pg_table);
+    let audit_schema = schema.clone();
+    let audit_identity = identity.clone();
+    let audit_decision = decision.clone();
+    let event_schema = schema.clone();
+    let event_identity = identity.clone();
 
     let result = with_session_context(
         &state.pool,
@@ -449,13 +704,23 @@ pub async fn delete_soft(
         &identity,
         move |tx| {
             Box::pin(async move {
+                let scope_sql = scope
+                    .as_ref()
+                    .map(|p| format!(" AND {}", p.sql))
+                    .unwrap_or_default();
                 let sql = format!(
                     "UPDATE {table} \
                      SET deleted_at = now(), updated_at = now(), \
                          updated_by = current_setting('app.current_user', true) \
-                     WHERE id = $1::uuid AND deleted_at IS NULL"
+                     WHERE id = $1::uuid AND deleted_at IS NULL{scope_sql}"
                 );
-                let result = sqlx::query(&sql).bind(&id).execute(&mut **tx).await?;
+                let mut q = sqlx::query(&sql).bind(&id);
+                if let Some(p) = &scope {
+                    for v in &p.params {
+                        q = row_filter::bind_json_param(q, v);
+                    }
+                }
+                let result = q.execute(&mut **tx).await?;
                 if result.rows_affected() == 0 {
                     return Err(sqlx::Error::RowNotFound);
                 }
@@ -463,6 +728,38 @@ pub async fn delete_soft(
                     write_outbox(tx, &outbox_table, "delete", &id, &json!({ "id": id }))
                         .await?;
                 }
+                audit::write_audit(
+                    tx,
+                    &audit_schema,
+                    &audit_identity,
+                    action::DELETE,
+                    outcome::SUCCESS,
+                    &id,
+                    &json!({ "id": id }),
+                    audit_decision.as_ref(),
+                    None,
+                )
+                .await?;
+                // Phase 3 — delete event. No payload (the entity is now
+                // tombstoned; readers can rebuild prior state from the
+                // preceding event_log rows). No diff for the same reason
+                // — `null - prior_state` would just be a giant remove op
+                // that adds no information beyond "this row was deleted."
+                event_log::write(
+                    tx,
+                    EventLogRow {
+                        schema: &event_schema,
+                        entity_id: &id,
+                        operation: action::DELETE,
+                        source: EventSource::Api,
+                        identity: &event_identity,
+                        request_id: None,
+                        diff: None,
+                        payload: None,
+                        reason: None,
+                    },
+                )
+                .await?;
                 Ok(())
             })
         },

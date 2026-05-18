@@ -40,7 +40,7 @@ pub struct FieldIndex {
 }
 
 impl FieldIndex {
-    fn from_spec(spec: &SchemaDefinitionSpec) -> Self {
+    pub(crate) fn from_spec(spec: &SchemaDefinitionSpec) -> Self {
         let mut by_name = HashMap::with_capacity(spec.fields.len());
         let mut filterable = HashSet::new();
         let mut sortable = HashSet::new();
@@ -57,6 +57,57 @@ impl FieldIndex {
             ordered.push(arc);
         }
         Self { by_name, filterable, sortable, ordered }
+    }
+}
+
+/// Precomputed RBAC index — `operation -> set of roles that grant it`.
+///
+/// Built once at `ResolvedSchema::from_spec` time so the request hot path
+/// is a single `HashSet` lookup, same discipline as [`FieldIndex`].
+///
+/// `is_open` carries the load-bearing rule: a schema with no
+/// `access.roles` declared at all is treated as world-readable/writable.
+/// Flipping that default to "deny" would silently lock out every Phase 1
+/// schema; we make the choice explicit so a future change has to update
+/// this field (and the test that pins it).
+#[derive(Debug, Clone, Default)]
+pub struct AccessIndex {
+    by_op: HashMap<String, HashSet<String>>,
+    pub is_open: bool,
+}
+
+impl AccessIndex {
+    fn from_spec(spec: &SchemaDefinitionSpec) -> Self {
+        let mut by_op: HashMap<String, HashSet<String>> = HashMap::new();
+        for entry in &spec.access.roles {
+            for op in &entry.operations {
+                // Operation strings on the wire are canonical lowercase per
+                // CLAUDE.md › Metric label cardinality. We normalise on
+                // ingest so a CRD typo (`Read`) doesn't accidentally bypass
+                // the check — it just won't match anything.
+                by_op.entry(op.to_lowercase()).or_default().insert(entry.role.clone());
+            }
+        }
+        Self { is_open: spec.access.roles.is_empty(), by_op }
+    }
+
+    /// Returns `true` iff any role in `identity_roles` grants `op` on this
+    /// schema. Open schemas (no `access.roles` declared) always return `true`.
+    pub fn allows(&self, op: &str, identity_roles: &[String]) -> bool {
+        if self.is_open {
+            return true;
+        }
+        let Some(granted) = self.by_op.get(op) else {
+            return false;
+        };
+        identity_roles.iter().any(|r| granted.contains(r))
+    }
+
+    /// Number of distinct operations covered by the spec. Used in tests and
+    /// in startup logging so an operator can spot a schema that locks out
+    /// every operation by accident.
+    pub fn operations_count(&self) -> usize {
+        self.by_op.len()
     }
 }
 
@@ -81,10 +132,25 @@ pub struct ResolvedSchema {
     pub spec: Arc<SchemaDefinitionSpec>,
     /// Pre-computed user-field index. See [`FieldIndex`].
     pub fields: Arc<FieldIndex>,
+    /// Pre-computed RBAC index over `spec.access.roles`. See [`AccessIndex`].
+    pub access: Arc<AccessIndex>,
     /// CEL / compare rules from `spec.validations`, compiled at resolve
     /// time so the request hot path is allocation- and parser-free. See
     /// [`crate::validate`].
     pub compiled_validations: Arc<Vec<crate::validate::CompiledRule>>,
+    /// Layer-2 ABAC policies from `spec.access.policies`, compiled the
+    /// same way as `compiled_validations`. See [`crate::policy`].
+    pub compiled_policies: Arc<Vec<crate::policy::CompiledPolicy>>,
+    /// Layer-4 row-filter index from `spec.access.rowFilter`. See
+    /// [`crate::row_filter`].
+    pub row_filter: Arc<crate::row_filter::RowFilterIndex>,
+    /// Layer-5 per-field read/write index built from `FieldSpec.access`.
+    /// See [`crate::field_filter`].
+    pub field_filter: Arc<crate::field_filter::FieldFilterIndex>,
+    /// Layer-6 masking index built from `FieldSpec.mask`. Applied on
+    /// every read response *after* the Layer-5 strip has already run.
+    /// See [`crate::masking`].
+    pub masking: Arc<crate::masking::MaskingIndex>,
 }
 
 impl ResolvedSchema {
@@ -93,8 +159,15 @@ impl ResolvedSchema {
         let pg_table = path.pg_table();
         let pg_qualified = path.pg_qualified_table();
         let fields = Arc::new(FieldIndex::from_spec(&spec));
+        let access = Arc::new(AccessIndex::from_spec(&spec));
         let compiled_validations =
             Arc::new(crate::validate::compile_rules(&spec.validations));
+        let compiled_policies =
+            Arc::new(crate::policy::compile_policies(&spec.access.policies));
+        let row_filter =
+            Arc::new(crate::row_filter::RowFilterIndex::from_spec(&spec, &fields));
+        let field_filter = Arc::new(crate::field_filter::FieldFilterIndex::from_spec(&spec));
+        let masking = Arc::new(crate::masking::MaskingIndex::from_spec(&spec));
         Self {
             pg_role_writer: format!("{pg_schema}_writer"),
             pg_role_admin: format!("{pg_schema}_admin"),
@@ -105,7 +178,12 @@ impl ResolvedSchema {
             pg_qualified,
             spec: Arc::new(spec),
             fields,
+            access,
             compiled_validations,
+            compiled_policies,
+            row_filter,
+            field_filter,
+            masking,
         }
     }
 }
@@ -201,8 +279,8 @@ impl RegistryInner {
 mod tests {
     use super::*;
     use velocity_types::crds::schema::{
-        AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
-        SearchSpec, SearchTier,
+        AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, RoleAccess,
+        SchemaDefinitionSpec, SearchSpec, SearchTier,
     };
 
     fn spec() -> SchemaDefinitionSpec {
@@ -305,6 +383,86 @@ mod tests {
         let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
         let rs = ResolvedSchema::from_spec(path, spec);
         assert!(rs.fields.filterable.contains("po_number"));
+    }
+
+    fn spec_with_access(roles: Vec<RoleAccess>) -> SchemaDefinitionSpec {
+        let mut s = spec();
+        s.access = AccessSpec { roles, ..AccessSpec::default() };
+        s
+    }
+
+    fn role(name: &str, ops: &[&str]) -> RoleAccess {
+        RoleAccess {
+            role: name.into(),
+            operations: ops.iter().map(|s| (*s).into()).collect(),
+        }
+    }
+
+    #[test]
+    fn access_index_empty_roles_is_open() {
+        // `access.roles == []` means the schema declared no RBAC — the index
+        // returns `allows = true` for every op. CLAUDE.md's metric-cardinality
+        // ops list pins what callers may legitimately ask about, but the
+        // open-schema rule has to hold even for unknown ops to remain useful
+        // during Phase 1 / migration.
+        let idx = AccessIndex::from_spec(&spec_with_access(vec![]));
+        assert!(idx.is_open);
+        assert!(idx.allows("read", &[]));
+        assert!(idx.allows("create", &["whatever".into()]));
+        assert_eq!(idx.operations_count(), 0);
+    }
+
+    #[test]
+    fn access_index_non_empty_roles_denies_anonymous() {
+        // Anonymous identity carries no roles. A schema that declares
+        // *any* RBAC must reject it — this is the load-bearing inverse of
+        // the open-schema rule, and a foot-gun if we ever flip a default.
+        let idx = AccessIndex::from_spec(&spec_with_access(vec![role("reader", &["read"])]));
+        assert!(!idx.is_open);
+        assert!(!idx.allows("read", &[]));
+    }
+
+    #[test]
+    fn access_index_role_match_admits() {
+        let idx = AccessIndex::from_spec(&spec_with_access(vec![
+            role("reader", &["read"]),
+            role("writer", &["read", "create", "update"]),
+        ]));
+        assert!(idx.allows("read", &["reader".into()]));
+        assert!(idx.allows("create", &["writer".into()]));
+        assert!(idx.allows("read", &["writer".into()]));
+    }
+
+    #[test]
+    fn access_index_role_mismatch_denies() {
+        let idx = AccessIndex::from_spec(&spec_with_access(vec![role("reader", &["read"])]));
+        // Caller has a role, but not one that grants `create`.
+        assert!(!idx.allows("create", &["reader".into()]));
+        // Caller has roles, none of which are declared on this schema.
+        assert!(!idx.allows("read", &["stranger".into(), "other".into()]));
+    }
+
+    #[test]
+    fn access_index_normalises_op_case_on_ingest() {
+        // CRDs are hand-written YAML — a typo like `Read` shouldn't
+        // accidentally bypass the check by failing to match the canonical
+        // lowercase op. We lowercase on ingest; callers always pass canonical.
+        let idx = AccessIndex::from_spec(&spec_with_access(vec![RoleAccess {
+            role: "reader".into(),
+            operations: vec!["Read".into(), "CREATE".into()],
+        }]));
+        assert!(idx.allows("read", &["reader".into()]));
+        assert!(idx.allows("create", &["reader".into()]));
+        assert!(!idx.allows("READ", &["reader".into()])); // callers send canonical
+    }
+
+    #[test]
+    fn resolved_schema_exposes_access_index() {
+        let s = spec_with_access(vec![role("reader", &["read"])]);
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let rs = ResolvedSchema::from_spec(path, s);
+        assert!(!rs.access.is_open);
+        assert!(rs.access.allows("read", &["reader".into()]));
     }
 
     #[test]
