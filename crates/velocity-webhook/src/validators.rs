@@ -90,7 +90,47 @@ pub fn validate_schema_definition(
     }
 
     validate_field_refs(obj, org, multi_tenant_mode)?;
+    validate_fts_weights(obj)?;
 
+    Ok(())
+}
+
+/// Phase 5d — reject `ftsWeight` on fields that won't carry it into the
+/// generated tsvector. The DDL builder filters non-searchable / non-string
+/// fields out of the `__fts` expression silently, so without this check a
+/// user could set `ftsWeight: A` on a numeric column and never notice that
+/// it has no effect. Failing at admission tells them now.
+fn validate_fts_weights(obj: &Value) -> ValidationResult {
+    let Some(fields) = obj.pointer("/spec/fields").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for (i, f) in fields.iter().enumerate() {
+        let Some(weight) = f.pointer("/ftsWeight").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = f.pointer("/name").and_then(Value::as_str).unwrap_or("<unnamed>");
+        if !matches!(weight, "A" | "B" | "C" | "D") {
+            return Err(ValidationFailure(format!(
+                "fields[{i}] (`{name}`): ftsWeight must be one of A, B, C, D \
+                 (got `{weight}`)"
+            )));
+        }
+        let searchable = f.pointer("/searchable").and_then(Value::as_bool).unwrap_or(false);
+        let kind = f.pointer("/type").and_then(Value::as_str).unwrap_or("");
+        if !searchable {
+            return Err(ValidationFailure(format!(
+                "fields[{i}] (`{name}`): ftsWeight requires `searchable: true` — \
+                 the weight only affects the generated `__fts` tsvector"
+            )));
+        }
+        if !matches!(kind, "string" | "enum") {
+            return Err(ValidationFailure(format!(
+                "fields[{i}] (`{name}`): ftsWeight only applies to string/enum fields \
+                 (got `{kind}`); non-text searchable fields are silently dropped from \
+                 the tsvector"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -376,5 +416,67 @@ mod tests {
             }
         }));
         assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement", true).is_ok());
+    }
+
+    fn schema_with_field(field: serde_json::Value) -> serde_json::Value {
+        json!({
+            "metadata": {
+                "labels": {
+                    "velocity.sh/org": "acme",
+                    "velocity.sh/app": "supply-chain",
+                    "velocity.sh/domain": "procurement",
+                }
+            },
+            "spec": { "fields": [field] }
+        })
+    }
+
+    #[test]
+    fn fts_weight_accepted_on_searchable_string() {
+        let obj = schema_with_field(json!({
+            "name": "title",
+            "type": "string",
+            "searchable": true,
+            "ftsWeight": "A"
+        }));
+        assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement", false).is_ok());
+    }
+
+    #[test]
+    fn fts_weight_rejected_on_non_searchable_field() {
+        let obj = schema_with_field(json!({
+            "name": "title",
+            "type": "string",
+            "ftsWeight": "A"
+        }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
+        assert!(err.0.contains("searchable: true"));
+    }
+
+    #[test]
+    fn fts_weight_rejected_on_non_text_field() {
+        let obj = schema_with_field(json!({
+            "name": "amount",
+            "type": "number",
+            "searchable": true,
+            "ftsWeight": "B"
+        }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
+        assert!(err.0.contains("string/enum"));
+    }
+
+    #[test]
+    fn fts_weight_rejected_when_invalid() {
+        let obj = schema_with_field(json!({
+            "name": "title",
+            "type": "string",
+            "searchable": true,
+            "ftsWeight": "Z"
+        }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
+        assert!(err.0.contains("A, B, C, D"));
     }
 }

@@ -184,6 +184,15 @@ pub struct FieldSpec {
     #[serde(default)]
     pub searchable: bool,
 
+    /// Phase 5d — FTS weight class for this field's contribution to the
+    /// generated `__fts` tsvector. Only meaningful when `searchable:
+    /// true` and `kind` is `String` or `Enum`; the webhook rejects it
+    /// otherwise. Defaults to `D` so that a CRD with no `ftsWeight` on
+    /// any field reproduces the Phase 5b "uniform weighting" behaviour
+    /// — `ts_rank()` collapses to a constant across hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fts_weight: Option<FtsWeight>,
+
     #[serde(default)]
     #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub default: Option<serde_json::Value>,
@@ -255,6 +264,33 @@ pub enum MaskingStrategyKind {
     // implementation makes deserialize succeed on configs the runtime
     // can't honour. A CRD with `strategy: range` should fail to parse
     // until the runtime support lands.
+}
+
+/// Postgres FTS weight class for a `searchable` field. Maps to the
+/// fourth argument of `setweight(tsvector, 'A'|'B'|'C'|'D')`.
+/// Default (`D`) preserves existing Phase 5b ranking — every field
+/// equal — so omitting the knob across the board is a no-op.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum FtsWeight {
+    A,
+    B,
+    C,
+    #[default]
+    #[serde(other)]
+    D,
+}
+
+impl FtsWeight {
+    /// The single-character label Postgres expects in `setweight(..., $)`.
+    pub fn as_pg_char(&self) -> char {
+        match self {
+            Self::A => 'A',
+            Self::B => 'B',
+            Self::C => 'C',
+            Self::D => 'D',
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -210,6 +210,22 @@ spec:
                     filterable:
                       default: false
                       type: boolean
+                    ftsWeight:
+                      description: |-
+                        Phase 5d — FTS weight class for this field's contribution to the
+                        generated `__fts` tsvector. Only meaningful when `searchable:
+                        true` and `kind` is `String` or `Enum`; the webhook rejects it
+                        otherwise. Defaults to `D` so that a CRD with no `ftsWeight` on
+                        any field reproduces the Phase 5b "uniform weighting" behaviour
+                        — `ts_rank()` collapses to a constant across hits.
+                      enum:
+                      - A
+                      - B
+                      - C
+                      - D
+                      - null
+                      nullable: true
+                      type: string
                     indexed:
                       default: false
                       type: boolean

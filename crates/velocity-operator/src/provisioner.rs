@@ -24,7 +24,8 @@ use velocity_types::common::sanitize;
 
 use crate::ddl_builder::DdlPlan;
 use crate::migration_diff::{
-    classify, diff_columns, fetch_existing_columns, DiffError, MigrationOp,
+    classify, diff_columns, fetch_existing_columns, fetch_existing_fts_hash, fts_comment_sql,
+    fts_expression_hash, fts_migration_ops, DiffError, MigrationOp,
 };
 
 #[derive(Debug, Error)]
@@ -267,6 +268,15 @@ impl PostgresProvisioner {
         if existing.is_empty() {
             // First-run path — execute the full plan.
             exec(&mut tx, &plan.main_table).await?;
+            // Phase 5d — stamp the FTS-spec hash on the column so a
+            // later reconcile can tell our expression apart from a
+            // drift-edited one. Same statement runs on both first-run
+            // and migration paths, so we only need to remember the
+            // hash once.
+            if let Some(expr) = &plan.fts_expression {
+                let hash = fts_expression_hash(expr);
+                exec(&mut tx, &fts_comment_sql(&plan.qualified_table, &hash)).await?;
+            }
             exec(&mut tx, &plan.history_table).await?;
             if let Some(outbox) = &plan.outbox_table {
                 for stmt in split_statements(outbox) {
@@ -286,6 +296,29 @@ impl PostgresProvisioner {
             let ops = diff_columns(&plan.columns, &existing);
             let migrations = classify(&plan.qualified_table, ops, allow_breaking)?;
             for stmt in migrations {
+                exec(&mut tx, &stmt).await?;
+            }
+            // Phase 5d — reconcile the `__fts` generated column.
+            // Hash compare against the velocity-stamped COMMENT; if
+            // missing (legacy Phase-5b table) or mismatched (weight
+            // / field-set change), DROP CASCADE + ADD COLUMN rebuilds
+            // it. CASCADE drops the GIN index too — the standard
+            // index pass below re-creates it.
+            //
+            // Reads fetch_existing_fts_hash *outside* the open tx by
+            // intent: the catalogs (pg_attribute, pg_description)
+            // don't change between the snapshot we read and the
+            // ALTER we issue inside the tx — and even if they did,
+            // an out-of-date hash just produces one extra rebuild,
+            // never a wrong rebuild.
+            let live_hash =
+                fetch_existing_fts_hash(&self.pool, &pg_schema, &table).await?;
+            let fts_ops = fts_migration_ops(
+                &plan.qualified_table,
+                plan.fts_expression.as_deref(),
+                live_hash,
+            );
+            for stmt in fts_ops {
                 exec(&mut tx, &stmt).await?;
             }
             // Always re-create triggers + indexes (idempotent) so new fields

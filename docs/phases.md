@@ -381,6 +381,96 @@ velocity/
 - Outbox: kill CDC worker, write 100 records, restart worker → all 100 in Typesense
 - Cross-schema search: actor without supplier access → no supplier results
 
+**Phase 5 — shipped vs deferred:**
+
+Shipped in 5a/5b/5c: DSL engine, Tier-1 filters, Tier-2 FTS with uniform
+weighting, Tier-3 CDC with lazy collection provisioning, per-org
+cross-schema collection, cross-schema RBAC. Three items from the original
+deliverables list above were deferred to Phase 5d so the happy path could
+land first: per-field FTS weights (A/B/C/D), operator-side eager Typesense
+provisioning, and blue-green collection swap on searchable-field change.
+
+---
+
+## Phase 5d — Search Close-out (1 week)
+
+**Goal:** Land the three Phase 5 deliverables that were intentionally
+deferred from 5a/5b/5c. After this phase, Phase 5's deliverables list
+matches what's actually in the binary — no asterisks.
+
+### Deliverables
+
+**Per-field FTS weights (A/B/C/D):**
+- New CRD knob on `FieldSpec`: `ftsWeight: A | B | C | D` (defaults to
+  `D` — keeps existing collections' ranking semantically unchanged)
+- Webhook validation: weight only meaningful when `searchable: true` and
+  field is a string/enum; reject otherwise
+- `DdlBuilder` emits `setweight(to_tsvector('english', coalesce(<f>,'')), '<W>')`
+  per field, concatenated with `||`, replacing today's flat
+  `to_tsvector(... || ' ' || ...)`
+- Migration diff: a weight change is a `__fts` definition change — same
+  blast radius as adding a searchable field (rebuild the generated column),
+  so it must go through the existing breaking-change annotation gate or
+  be applied via `DROP COLUMN __fts; ADD COLUMN __fts ...` only when the
+  table is empty
+
+**Operator-side eager Typesense provisioning:**
+- SchemaDefinition reconciler calls `TypesenseClient::ensure_collection`
+  for any Tier-3 schema, same step that provisions the outbox table
+- Per-org cross-schema collection (`<org>__cross`) ensured on first Tier-3
+  schema in the org
+- Failure mode (ADR-003 aligned): if Typesense is unreachable, reconcile
+  fails loud — schema status reports `TypesenseUnavailable`, reconcile
+  requeues with backoff. No silent fallback to "lazy create later"; the
+  whole point is removing first-write latency
+- CDC worker keeps its `ensure_collection` call as a defensive idempotent
+  no-op so a manually-deleted collection self-heals on next write
+- Operator gets new env vars (`VELOCITY_OPERATOR_TYPESENSE_URL`,
+  `VELOCITY_OPERATOR_TYPESENSE_API_KEY`) — paired-or-neither, same shape
+  as the API's pairing
+
+**Blue-green collection swap on searchable-field change:**
+- Introduce a stable Typesense alias per collection
+  (`<org>__<app>__<domain>__<object>__<version>`) pointing at a versioned
+  underlying collection (`…__r1`, `…__r2`, …)
+- All reads (search handler, cross-search handler, CDC upserts) go
+  through the alias name, not the underlying name
+- Reconciler detects searchable-field-set or weight change by hashing the
+  effective FTS spec; on mismatch:
+  1. Create `…__r{n+1}` with the new schema
+  2. Spawn (or enqueue) a backfill: stream every non-deleted row from
+     Postgres into `…__r{n+1}` via Typesense bulk import
+  3. Tail outbox writes are dual-written (`…__r{n}` AND `…__r{n+1}`) for
+     the duration of the backfill so the new collection stays caught up
+  4. Once backfill is done and lag is zero, atomic alias flip to
+     `…__r{n+1}`
+  5. After grace period (operator-tunable, default 24h), drop `…__r{n}`
+- New CRD status field `searchIndex.activeRevision` reports the current
+  underlying collection name — debuggable from `kubectl describe`
+- Cross-schema collection follows the same pattern keyed on per-org
+  searchable-spec hash
+
+### Acceptance criteria
+
+- Per-field weights: schema with `title: ftsWeight A` and `body: ftsWeight D`
+  → query matching both ranks title-only document above body-only document
+- Eager provisioning: apply a Tier-3 SchemaDefinition with Typesense up
+  → collection exists before the first row is written; first /search hits
+  return 200 (not "collection not found")
+- Eager provisioning failure: apply with Typesense down → reconcile fails,
+  schema status shows `TypesenseUnavailable`, no silent partial state
+- Blue-green: write 10k rows, change a searchable field, observe alias
+  flip → /search continues serving throughout (zero-downtime), final
+  result set matches the new field schema
+- Blue-green concurrency: writes during backfill land in BOTH collections
+  → post-flip count matches pre-flip count + writes-during-backfill
+
+### Non-goals (still deferred, callout for future work)
+
+- Multi-language FTS (today's `__fts` is hard-coded `english`)
+- Field-level facets / typo tolerance tuning per field
+- Cross-collection joins inside Typesense
+
 ---
 
 ## Phase 6 — Audit & Central Logging (2 weeks)
@@ -668,15 +758,16 @@ Failover under load:
 | 3 | 2 weeks | 13 weeks | Time machine hot tier |
 | 4 | 1 week | 14 weeks | Time machine warm tier |
 | 4.5 | 1 week | 15 weeks | Operational tooling |
-| 5 | 2 weeks | 17 weeks | Query DSL + 3 search tiers |
-| 6 | 2 weeks | 19 weeks | Audit + central logging |
-| 7 | 2 weeks | 21 weeks | Observability |
-| 8 | 2 weeks | 23 weeks | Archive + version lifecycle |
-| 9 | 1 week | 24 weeks | CLI |
-| 10 | 2 weeks | 26 weeks | Portal |
-| 11 | 3 weeks | 29 weeks | Production hardening |
+| 5 | 2 weeks | 17 weeks | Query DSL + 3 search tiers (happy path) |
+| 5d | 1 week | 18 weeks | Search close-out (weights, eager provision, blue-green) |
+| 6 | 2 weeks | 20 weeks | Audit + central logging |
+| 7 | 2 weeks | 22 weeks | Observability |
+| 8 | 2 weeks | 24 weeks | Archive + version lifecycle |
+| 9 | 1 week | 25 weeks | CLI |
+| 10 | 2 weeks | 27 weeks | Portal |
+| 11 | 3 weeks | 30 weeks | Production hardening |
 
-**Total: ~29 weeks** (~7 months) for a small team (2-3 engineers). Solo: roughly double.
+**Total: ~30 weeks** (~7 months) for a small team (2-3 engineers). Solo: roughly double.
 
 ---
 
@@ -691,9 +782,10 @@ Pre-Phase (ADRs)
                             ├── Phase 3 (time machine hot)
                             │       └── Phase 4 (warm tier)
                             └── Phase 5 (query + search)   [needs 2a only]
-                                    ├── Phase 6 (audit + logging)
-                                    ├── Phase 7 (observability)
-                                    └── Phase 4.5 (ops tooling)
+                                    └── Phase 5d (search close-out)
+                                            ├── Phase 6 (audit + logging)
+                                            ├── Phase 7 (observability)
+                                            └── Phase 4.5 (ops tooling)
                                             └── Phase 8 (archive)
                                                     └── Phase 9 (CLI)
                                                             └── Phase 10 (portal)
@@ -715,4 +807,4 @@ Phases 3, 5, 6, 7 can run in parallel after Phase 2a. Phase 2b can run in parall
 7. **Non-superuser role enforced in Phase 0** — was implicit, now explicit gate
 8. **arc_swap mentioned from Phase 0** — registry choice from day one
 9. **CEL safety constraints in Phase 1** — was treated as detail, now first-class
-10. **Total duration: 29 weeks (was 23)** — realistic accounting for the splits and the pre-phase
+10. **Total duration: 30 weeks (was 23)** — realistic accounting for the splits, the pre-phase, and the Phase 5 close-out

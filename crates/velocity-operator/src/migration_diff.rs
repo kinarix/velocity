@@ -16,6 +16,7 @@
 //! Identifiers in emitted SQL are validated by [`validate_ident`] in
 //! [`crate::provisioner`]. The diff never embeds raw spec strings into DDL.
 
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use thiserror::Error;
 
@@ -207,6 +208,158 @@ pub fn classify(
     }
 
     Ok(safe_sql)
+}
+
+/// Stable hash of the canonical `__fts` expression, stored as a
+/// Postgres COMMENT on the column so the operator can detect drift
+/// across restarts (in-memory `last_hash` cache is wiped on every
+/// process bounce). Hashing the expression text (not the field+weight
+/// pairs) keeps the canonical form tied to whatever the builder
+/// emits — change the builder, the hash changes, the rebuild runs.
+pub fn fts_expression_hash(expr: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(expr.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+/// Marker prefix used on the COMMENT we attach to `__fts`. Lets the
+/// reconciler tell "we wrote this" from a user-managed comment in the
+/// unlikely event someone hand-edits a velocity table.
+pub const FTS_COMMENT_PREFIX: &str = "velocity:fts_hash:";
+
+/// SQL to stamp the hash onto the column. Run AFTER the ADD COLUMN so
+/// the column actually exists; quoting is fixed (no user input).
+pub fn fts_comment_sql(qualified_table: &str, hash: &str) -> String {
+    format!(
+        "COMMENT ON COLUMN {qualified_table}.__fts IS '{FTS_COMMENT_PREFIX}{hash}';"
+    )
+}
+
+/// Render the SQL block that rebuilds the `__fts` generated column.
+/// Used when the live hash differs from the target hash. We can't
+/// `ALTER` a generated column's expression in Postgres — it's
+/// drop-and-readd. The GIN index `idx_<table>_fts` is dropped by
+/// `DROP COLUMN ... CASCADE` and re-created from the standard index
+/// build pass that follows.
+pub fn rebuild_fts_sql(qualified_table: &str, expression: &str) -> Vec<String> {
+    vec![
+        format!("ALTER TABLE {qualified_table} DROP COLUMN IF EXISTS __fts CASCADE;"),
+        format!(
+            "ALTER TABLE {qualified_table} \
+             ADD COLUMN __fts tsvector \
+             GENERATED ALWAYS AS ({expression}) STORED;"
+        ),
+    ]
+}
+
+/// SQL to drop the `__fts` column when a schema transitions
+/// Tier-2/3 → Tier-1, or removes every `searchable` field. The
+/// GIN index is dropped by CASCADE.
+pub fn drop_fts_sql(qualified_table: &str) -> String {
+    format!("ALTER TABLE {qualified_table} DROP COLUMN IF EXISTS __fts CASCADE;")
+}
+
+/// Fetch the velocity-stamped FTS hash from the column COMMENT, or
+/// `None` when:
+///   - the table doesn't have an `__fts` column yet (first-run),
+///   - the column exists but has no COMMENT (legacy Phase-5b table),
+///   - the COMMENT exists but doesn't start with our marker
+///     (someone hand-edited it — treat as drift, force rebuild).
+///
+/// The Phase-5b path emitted a flat `to_tsvector('english', a||' '||b)`
+/// expression with no comment, so legacy tables hit the `no marker`
+/// branch and rebuild exactly once. That's the migration story for
+/// existing deployments.
+pub async fn fetch_existing_fts_hash(
+    pool: &PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT pgd.description
+         FROM pg_attribute a
+         JOIN pg_class c     ON c.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_description pgd
+                  ON pgd.objoid = a.attrelid
+                 AND pgd.objsubid = a.attnum
+         WHERE n.nspname = $1
+           AND c.relname = $2
+           AND a.attname = '__fts'
+           AND a.attnum > 0
+           AND NOT a.attisdropped",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(match row {
+        // Column doesn't exist — first-run path.
+        None => None,
+        // Column exists but no comment — legacy Phase-5b table.
+        Some((None,)) => Some(String::new()),
+        Some((Some(comment),)) => {
+            if let Some(rest) = comment.strip_prefix(FTS_COMMENT_PREFIX) {
+                Some(rest.to_string())
+            } else {
+                // User-managed comment — surfaces as drift on the next
+                // hash check so we don't silently overwrite. Empty
+                // sentinel matches the legacy branch.
+                Some(String::new())
+            }
+        }
+    })
+}
+
+/// Compute what to do with the `__fts` column given the target plan
+/// and the live state. Returns:
+///   - `Vec<String>` of SQL statements to append to the migration
+///     batch (DROP / ADD / COMMENT, in order — possibly empty);
+///   - boolean `rebuilt`: whether the index needs to be recreated
+///     by the caller (true whenever DROP CASCADE ran; the caller
+///     re-emits idx_<table>_fts unconditionally so this is mostly
+///     informational).
+///
+/// `live` is the value returned by [`fetch_existing_fts_hash`].
+/// - `None`        → no `__fts` column; ADD if target wants one.
+/// - `Some("")`    → column exists with no/foreign comment; treat
+///   as drift; rebuild + stamp hash.
+/// - `Some(hash)`  → compare against target hash.
+pub fn fts_migration_ops(
+    qualified_table: &str,
+    target_expression: Option<&str>,
+    live: Option<String>,
+) -> Vec<String> {
+    match (target_expression, live) {
+        // No FTS desired, no FTS live — nothing to do.
+        (None, None) => Vec::new(),
+        // No FTS desired, FTS live — drop it. Schema transitioned
+        // Tier-2/3 → Tier-1 or removed every `searchable` field.
+        (None, Some(_)) => vec![drop_fts_sql(qualified_table)],
+        // FTS desired, no FTS live — first-run-style ADD.
+        (Some(expr), None) => {
+            let mut sqls = vec![format!(
+                "ALTER TABLE {qualified_table} \
+                 ADD COLUMN __fts tsvector \
+                 GENERATED ALWAYS AS ({expr}) STORED;"
+            )];
+            let hash = fts_expression_hash(expr);
+            sqls.push(fts_comment_sql(qualified_table, &hash));
+            sqls
+        }
+        // FTS desired AND live — hash compare.
+        (Some(expr), Some(live_hash)) => {
+            let target_hash = fts_expression_hash(expr);
+            if target_hash == live_hash {
+                Vec::new()
+            } else {
+                let mut sqls = rebuild_fts_sql(qualified_table, expr);
+                sqls.push(fts_comment_sql(qualified_table, &target_hash));
+                sqls
+            }
+        }
+    }
 }
 
 /// Read the live column list from Postgres for a given schema/table.
@@ -464,5 +617,81 @@ mod tests {
         assert_eq!(normalise_pg_type("timestamp with time zone"), "timestamptz");
         assert_eq!(normalise_pg_type("text"), "text");
         assert_eq!(normalise_pg_type("jsonb"), "jsonb");
+    }
+
+    // ─── Phase 5d FTS migration ────────────────────────────────────
+
+    #[test]
+    fn fts_expression_hash_is_stable_and_distinct() {
+        // Same input → same hash on every call; different input → different hash.
+        let a = "setweight(to_tsvector('english', coalesce(title, '')), 'A')";
+        let b = "setweight(to_tsvector('english', coalesce(title, '')), 'D')";
+        assert_eq!(fts_expression_hash(a), fts_expression_hash(a));
+        assert_ne!(fts_expression_hash(a), fts_expression_hash(b));
+    }
+
+    #[test]
+    fn fts_migration_ops_first_run_emits_add_and_comment() {
+        let expr = "setweight(to_tsvector('english', coalesce(title, '')), 'A')";
+        let sqls = fts_migration_ops("s.t", Some(expr), None);
+        assert_eq!(sqls.len(), 2);
+        assert!(sqls[0].contains("ADD COLUMN __fts tsvector"));
+        assert!(sqls[0].contains(expr));
+        assert!(sqls[1].contains(FTS_COMMENT_PREFIX));
+        assert!(sqls[1].contains(&fts_expression_hash(expr)));
+    }
+
+    #[test]
+    fn fts_migration_ops_matching_hash_is_noop() {
+        let expr = "setweight(to_tsvector('english', coalesce(title, '')), 'A')";
+        let hash = fts_expression_hash(expr);
+        assert!(fts_migration_ops("s.t", Some(expr), Some(hash)).is_empty());
+    }
+
+    #[test]
+    fn fts_migration_ops_mismatched_hash_rebuilds() {
+        let expr = "setweight(to_tsvector('english', coalesce(title, '')), 'A')";
+        // Live hash points at the old (uniform-weight) Phase-5b expression.
+        let live = fts_expression_hash("to_tsvector('english', coalesce(title, ''))");
+        let sqls = fts_migration_ops("s.t", Some(expr), Some(live));
+        // DROP + ADD + COMMENT, in that order.
+        assert_eq!(sqls.len(), 3);
+        assert!(sqls[0].contains("DROP COLUMN IF EXISTS __fts CASCADE"));
+        assert!(sqls[1].contains("ADD COLUMN __fts"));
+        assert!(sqls[1].contains(expr));
+        assert!(sqls[2].contains(FTS_COMMENT_PREFIX));
+    }
+
+    #[test]
+    fn fts_migration_ops_legacy_table_rebuilds() {
+        // Empty live hash = Phase-5b table with no comment marker yet.
+        let expr = "setweight(to_tsvector('english', coalesce(title, '')), 'D')";
+        let sqls = fts_migration_ops("s.t", Some(expr), Some(String::new()));
+        assert_eq!(sqls.len(), 3);
+        assert!(sqls[0].contains("DROP COLUMN"));
+    }
+
+    #[test]
+    fn fts_migration_ops_drop_when_target_absent() {
+        // Schema transitioned Tier-2 → Tier-1: drop the column.
+        let live = fts_expression_hash("anything");
+        let sqls = fts_migration_ops("s.t", None, Some(live));
+        assert_eq!(sqls.len(), 1);
+        assert!(sqls[0].contains("DROP COLUMN IF EXISTS __fts CASCADE"));
+    }
+
+    #[test]
+    fn fts_migration_ops_nothing_when_both_absent() {
+        // Tier-1 with no live FTS column = no work.
+        assert!(fts_migration_ops("s.t", None, None).is_empty());
+    }
+
+    #[test]
+    fn fts_comment_sql_uses_stable_prefix() {
+        let sql = fts_comment_sql("s.t", "abcd");
+        assert_eq!(
+            sql,
+            format!("COMMENT ON COLUMN s.t.__fts IS '{FTS_COMMENT_PREFIX}abcd';")
+        );
     }
 }

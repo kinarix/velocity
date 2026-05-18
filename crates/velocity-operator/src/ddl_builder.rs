@@ -23,7 +23,9 @@
 
 use thiserror::Error;
 use velocity_types::common::{sanitize, SchemaPath};
-use velocity_types::crds::schema::{FieldKind, FieldSpec, SchemaDefinitionSpec, SearchTier};
+use velocity_types::crds::schema::{
+    FieldKind, FieldSpec, FtsWeight, SchemaDefinitionSpec, SearchTier,
+};
 
 use crate::provisioner::{validate_ident, ProvisionError};
 
@@ -100,6 +102,15 @@ pub struct DdlPlan {
     /// signal which policies apply; see [`crate::ddl_builder::build_rls_policies`]
     /// for the encoding.
     pub rls_policies: Vec<String>,
+    /// Phase 5d — the canonical `__fts` generated-column expression
+    /// (the body of `GENERATED ALWAYS AS (...) STORED`) for this
+    /// schema. `None` when the schema doesn't carry a tsvector column
+    /// (Tier 1, or Tier 2/3 with no searchable fields). Used by the
+    /// migration-diff layer to detect a searchable-set or weight
+    /// change and emit `DROP COLUMN __fts; ADD COLUMN __fts ...` —
+    /// generated columns aren't ALTER-able in Postgres, so it's
+    /// drop-and-readd or nothing.
+    pub fts_expression: Option<String>,
 }
 
 /// Structured view of one column. Used by [`DdlPlan`] and the diff layer.
@@ -129,25 +140,29 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
 
     let columns = build_columns(spec, &table)?;
     let column_specs = build_column_specs(spec)?;
-    // Phase 5b — collect searchable string/enum fields for the
-    // tsvector generated column. Only Tier 2 and Tier 3 get one; Tier
-    // 1 stays on plain B-tree filters.
-    let fts_columns: Vec<String> = match spec.search.tier {
+    // Phase 5b/5d — collect (column, weight) pairs for the tsvector
+    // generated column. Only Tier 2 and Tier 3 get one; Tier 1 stays
+    // on plain B-tree filters. Phase 5d adds per-field weights via
+    // `setweight(...)`; an absent `ftsWeight` falls back to `D` which
+    // is exactly the weight Phase 5b's uniform expression produced
+    // implicitly (no setweight() == every position weighted D).
+    let fts_columns: Vec<(String, FtsWeight)> = match spec.search.tier {
         SearchTier::Tier2 | SearchTier::Tier3 => spec
             .fields
             .iter()
             .filter(|f| {
                 f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum)
             })
-            .map(|f| sanitize(&f.name))
+            .map(|f| (sanitize(&f.name), f.fts_weight.unwrap_or_default()))
             .collect(),
         SearchTier::Tier1 => Vec::new(),
     };
+    let fts_expression = build_fts_expression(&fts_columns);
     let main_table = build_create_table_with_fts(
         &qualified,
         &columns,
         &table,
-        if fts_columns.is_empty() { None } else { Some(&fts_columns) },
+        fts_expression.as_deref(),
     )?;
     let history_table = build_history_table(&schema_name, &table)?;
     let outbox_table = match spec.search.tier {
@@ -174,7 +189,34 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
         indexes,
         triggers,
         rls_policies,
+        fts_expression,
     })
+}
+
+/// Phase 5d — build the body of the `__fts` generated column from the
+/// (sanitised column name, weight) pairs in declaration order. Returns
+/// `None` when the schema has no searchable fields; otherwise a string
+/// like `setweight(to_tsvector('english', coalesce(title, '')), 'A')
+/// || setweight(to_tsvector('english', coalesce(body, '')), 'D')`.
+///
+/// Declaration order matters: Postgres compares generated-column
+/// expressions as text, so reordering the same fields would force a
+/// rebuild on every reconcile. Keeping the order tied to spec.fields
+/// makes the hash stable.
+fn build_fts_expression(fields: &[(String, FtsWeight)]) -> Option<String> {
+    if fields.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = fields
+        .iter()
+        .map(|(col, w)| {
+            format!(
+                "setweight(to_tsvector('english', coalesce({col}, '')), '{}')",
+                w.as_pg_char()
+            )
+        })
+        .collect();
+    Some(parts.join(" || "))
 }
 
 /// Auto-provisioned columns as typed [`ColumnSpec`] values — used by the diff
@@ -394,14 +436,17 @@ fn field_default_sql(f: &FieldSpec) -> Result<Option<String>, DdlError> {
 // ─── CREATE TABLE ───────────────────────────────────────────────────────────
 
 /// Build a `CREATE TABLE IF NOT EXISTS` with an optional `__fts`
-/// column when `fts` is `Some(list_of_searchable_columns)`. Lifted out
-/// so the Phase 5b plan can opt in for Tier-2 schemas without
-/// rewriting the entire builder.
+/// column when `fts_expression` is `Some(expr)`. Lifted out so the
+/// Phase 5b plan can opt in for Tier-2 schemas without rewriting the
+/// entire builder. Phase 5d swapped the input from a column list to
+/// a pre-rendered expression so per-field weights are expressed once
+/// (in [`build_fts_expression`]) and the migration-diff layer can use
+/// the same string to detect drift.
 fn build_create_table_with_fts(
     qualified: &str,
     columns: &[ColumnDef],
     table: &str,
-    fts: Option<&[String]>,
+    fts_expression: Option<&str>,
 ) -> Result<String, DdlError> {
     // String::write_fmt is infallible — writing to a String never fails.
     let mut s = String::with_capacity(1024);
@@ -420,23 +465,16 @@ fn build_create_table_with_fts(
         }
         lines.push(line);
     }
-    // Phase 5b — Tier-2 FTS. Stored generated column built from every
-    // searchable field with `coalesce(..,'')` so a NULL anywhere
-    // doesn't blank the entire vector. Uniform weighting (no A/B/C/D)
-    // for v1; per-field weights become a CRD-level decision when
-    // someone needs them. Skipped silently when there are no
-    // searchable fields — a Tier-2 schema with `searchable: false`
-    // everywhere is well-formed; it just doesn't get FTS.
-    if let Some(cols) = fts {
-        if !cols.is_empty() {
-            let parts: Vec<String> =
-                cols.iter().map(|c| format!("coalesce({c}, '')")).collect();
-            lines.push(format!(
-                "    __fts tsvector GENERATED ALWAYS AS \
-                 (to_tsvector('english', {})) STORED",
-                parts.join(" || ' ' || ")
-            ));
-        }
+    // Phase 5b — Tier-2 FTS stored generated column. Phase 5d added
+    // per-field weights, so the expression is now `setweight(...)
+    // || setweight(...) || ...` — see [`build_fts_expression`].
+    // Skipped silently when there are no searchable fields — a
+    // Tier-2 schema with `searchable: false` everywhere is
+    // well-formed; it just doesn't get FTS.
+    if let Some(expr) = fts_expression {
+        lines.push(format!(
+            "    __fts tsvector GENERATED ALWAYS AS ({expr}) STORED"
+        ));
     }
     lines.push(format!("    CONSTRAINT {table}_pkey PRIMARY KEY (id)"));
     s.push_str(&lines.join(",\n"));
@@ -850,6 +888,7 @@ mod tests {
             filterable: false,
             sortable: false,
             searchable: false,
+            fts_weight: None,
             default: None,
             min: None,
             max: None,
@@ -965,6 +1004,48 @@ mod tests {
             .indexes
             .iter()
             .any(|s| s.contains("USING GIN (__fts)")));
+        // Phase 5d — default weight (D) emitted for every searchable field.
+        // setweight() | setweight() composition replaces the Phase-5b
+        // flat to_tsvector(... || ' ' || ...) form.
+        assert!(plan.main_table.contains("setweight(to_tsvector('english', coalesce(title, '')), 'D')"));
+        assert!(plan.main_table.contains("setweight(to_tsvector('english', coalesce(notes, '')), 'D')"));
+        assert!(plan.fts_expression.is_some());
+    }
+
+    #[test]
+    fn tier2_per_field_weights_emit_setweight_with_correct_class() {
+        let mut title = field("title", FieldKind::String);
+        title.searchable = true;
+        title.fts_weight =
+            Some(velocity_types::crds::schema::FtsWeight::A);
+        let mut body = field("body", FieldKind::String);
+        body.searchable = true;
+        body.fts_weight =
+            Some(velocity_types::crds::schema::FtsWeight::C);
+        let plan =
+            build_ddl(&minimal_spec(vec![title, body], SearchTier::Tier2), &path()).unwrap();
+        // Title gets A, body gets C — order preserved from spec.fields[].
+        let expr = plan.fts_expression.as_deref().unwrap();
+        assert!(expr.contains("setweight(to_tsvector('english', coalesce(title, '')), 'A')"));
+        assert!(expr.contains("setweight(to_tsvector('english', coalesce(body, '')), 'C')"));
+        // Concatenation order: title first.
+        let title_pos = expr.find("coalesce(title").unwrap();
+        let body_pos = expr.find("coalesce(body").unwrap();
+        assert!(title_pos < body_pos);
+    }
+
+    #[test]
+    fn fts_weight_default_when_absent_is_d() {
+        // A field declared `searchable: true` with no `ftsWeight` falls
+        // back to D. Confirms that an existing Phase-5b CRD (no weight
+        // knob) doesn't ship a different ranking just because the
+        // operator binary upgraded.
+        let mut f = field("desc", FieldKind::String);
+        f.searchable = true;
+        // f.fts_weight stays None.
+        let plan = build_ddl(&minimal_spec(vec![f], SearchTier::Tier2), &path()).unwrap();
+        let expr = plan.fts_expression.as_deref().unwrap();
+        assert!(expr.contains(", 'D')"));
     }
 
     #[test]
