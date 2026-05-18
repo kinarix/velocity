@@ -171,6 +171,7 @@ mod tests {
             policy_hash: None,
             records: None,
             conditions: vec![cond("Ready", "True", "Provisioned")],
+            search_rebuild: None,
         };
         let (p, msg) = summarise_status(Some(&s));
         assert_eq!(p, "Ready");

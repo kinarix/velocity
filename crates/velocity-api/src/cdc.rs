@@ -182,7 +182,7 @@ async fn drain_outbox(
         let payload: Option<Value> = row.try_get("payload").ok();
 
         // Always carry `id` as a string in the Typesense doc.
-        let doc = build_typesense_doc(schema, &entity_id, payload.as_ref());
+        let doc = velocity_typesense::build_doc(&schema.path, &entity_id, payload.as_ref());
 
         match op.as_str() {
             "delete" => {
@@ -274,37 +274,6 @@ async fn ensure_aliased_collection(
     Ok(())
 }
 
-/// Translate an outbox payload into a Typesense document. Drops
-/// `__fts` (binary noise) and ensures `id` is a string. Adds
-/// `__schema` so the cross-search collection can split rows by kind.
-fn build_typesense_doc(
-    schema: &ResolvedSchema,
-    entity_id: &str,
-    payload: Option<&Value>,
-) -> Value {
-    let mut obj = match payload {
-        Some(Value::Object(m)) => m.clone(),
-        _ => serde_json::Map::new(),
-    };
-    obj.remove("__fts");
-    obj.insert("id".into(), Value::String(entity_id.to_string()));
-    obj.insert("__schema".into(), Value::String(schema.path.to_string()));
-
-    // Convert timestamps to epoch seconds (int64) so Typesense can
-    // index them. Missing/unparseable values become absent rather
-    // than 0 — fewer phantom buckets in facet aggregations.
-    for key in ["created_at", "updated_at"] {
-        if let Some(v) = obj.get(key).cloned() {
-            if let Some(secs) = parse_timestamp_to_epoch(&v) {
-                obj.insert(key.into(), json!(secs));
-            } else {
-                obj.remove(key);
-            }
-        }
-    }
-    Value::Object(obj)
-}
-
 fn build_cross_doc(schema: &ResolvedSchema, doc: &Value) -> Value {
     let obj = doc.as_object().cloned().unwrap_or_default();
     // Concatenate every text-shaped field into __body. Caller queries
@@ -337,14 +306,6 @@ fn build_cross_doc(schema: &ResolvedSchema, doc: &Value) -> Value {
     })
 }
 
-fn parse_timestamp_to_epoch(v: &Value) -> Option<i64> {
-    if let Some(n) = v.as_i64() {
-        return Some(n);
-    }
-    let s = v.as_str()?;
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,54 +317,7 @@ mod tests {
         assert_eq!(cross_collection_name("acme-co"), "acme_co_search");
     }
 
-    #[test]
-    fn build_typesense_doc_drops_fts_and_stringifies_id() {
-        let path = velocity_types::common::SchemaPath::new(
-            "acme",
-            "supply-chain",
-            "procurement",
-            "purchase-order",
-            "v1",
-        );
-        let spec = velocity_types::crds::schema::SchemaDefinitionSpec {
-            version: "v1".into(),
-            partitioning: None,
-            auth: velocity_types::crds::schema::AuthSpec {
-                strategy_ref: velocity_types::common::NamespacedRef {
-                    name: "default".into(),
-                    namespace: "p".into(),
-                },
-                overrides: Vec::new(),
-            },
-            access: Default::default(),
-            fields: Vec::new(),
-            validations: Vec::new(),
-            search: velocity_types::crds::schema::SearchSpec {
-                tier: velocity_types::crds::schema::SearchTier::Tier3,
-                ..Default::default()
-            },
-            time_machine: None,
-            audit: None,
-            archive: None,
-            observability: Default::default(),
-            scaling: None,
-        };
-        let schema = ResolvedSchema::from_spec(path, spec);
-        let payload = json!({
-            "po_number": "PO-1",
-            "__fts": "tsvector data here",
-            "created_at": "2026-05-18T10:00:00Z",
-        });
-        let doc = build_typesense_doc(&schema, "abc-id", Some(&payload));
-        let obj = doc.as_object().unwrap();
-        assert_eq!(obj["id"], "abc-id");
-        assert_eq!(obj["__schema"], "acme/supply-chain/procurement/purchase-order/v1");
-        assert!(!obj.contains_key("__fts"));
-        // created_at converted to epoch seconds.
-        let ts = obj["created_at"].as_i64().unwrap();
-        assert!(ts > 1_700_000_000); // sometime after 2023
-    }
-
-    // Per-schema collection-spec construction is exercised in
-    // `velocity-typesense` directly; this module only re-exports it.
+    // build_doc / parse_timestamp_to_epoch live in velocity-typesense and
+    // are covered there; collection-spec construction is also exercised
+    // there.
 }

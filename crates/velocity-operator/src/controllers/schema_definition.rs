@@ -25,6 +25,7 @@ use velocity_typesense::{
 use crate::context::Context;
 use crate::controllers::{error_action, ReconcileError};
 use crate::ddl_builder::build_ddl;
+use crate::search_rebuild::{self, RebuildArgs};
 
 const BREAKING_CHANGE_ANN: &str = "velocity.sh/breaking-change";
 
@@ -102,12 +103,40 @@ pub async fn reconcile(
                 "ensuring Typesense concrete collection"
             );
             ts.create_collection(&spec).await?;
-            // First-time alias bind. Re-reconciles after a spec
-            // change land here with the alias already pointing at
-            // the *old* concrete — we do not flip until 5d-3b.
-            if ts.get_alias(&alias).await?.is_none() {
-                tracing::info!(alias = %alias, concrete = %concrete, "binding new Typesense alias");
-                ts.upsert_alias(&alias, &concrete).await?;
+            // Phase 5d-3b: branch on alias state.
+            //   - alias missing                 → first-time bind (no rebuild needed)
+            //   - alias points at `concrete`    → nothing to do
+            //   - alias points at older target  → spawn blue-green rebuild
+            match ts.get_alias(&alias).await? {
+                None => {
+                    tracing::info!(alias = %alias, concrete = %concrete, "binding new Typesense alias");
+                    ts.upsert_alias(&alias, &concrete).await?;
+                }
+                Some(current) if current == concrete => {
+                    tracing::debug!(alias = %alias, "alias already correct; no rebuild");
+                }
+                Some(source) => {
+                    if ctx.rebuilds.supersede(&uid, &concrete) {
+                        spawn_rebuild(
+                            ctx.clone(),
+                            &uid,
+                            &namespace,
+                            &name,
+                            &path,
+                            &provisioned.qualified,
+                            alias.clone(),
+                            source,
+                            concrete.clone(),
+                            ts.clone(),
+                        );
+                    } else {
+                        tracing::debug!(
+                            alias = %alias,
+                            concrete = %concrete,
+                            "rebuild already in flight for this target"
+                        );
+                    }
+                }
             }
         } else {
             tracing::warn!(
@@ -142,6 +171,68 @@ pub fn error_policy(
 ) -> Action {
     tracing::warn!(error = %err, "SchemaDefinition reconcile failed");
     error_action(err)
+}
+
+/// Spawn the Phase 5d-3b blue-green rebuild task. Detached — the
+/// reconcile completes immediately and search continues serving from
+/// the old concrete. The task itself patches status as it progresses.
+#[allow(clippy::too_many_arguments)]
+fn spawn_rebuild(
+    ctx: Arc<Context>,
+    uid: &str,
+    namespace: &str,
+    crd_name: &str,
+    path: &SchemaPath,
+    qualified: &str,
+    alias: String,
+    source_concrete: String,
+    target_concrete: String,
+    typesense: velocity_typesense::TypesenseClient,
+) {
+    let (pg_schema, pg_table) = match qualified.split_once('.') {
+        Some((s, t)) => (s.trim_matches('"').to_string(), t.trim_matches('"').to_string()),
+        None => {
+            tracing::error!(qualified, "spawn_rebuild: cannot parse qualified table name");
+            return;
+        }
+    };
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let uid_owned = uid.to_string();
+    let target_for_registry = target_concrete.clone();
+    let rebuilds = ctx.rebuilds.clone();
+    let args = RebuildArgs {
+        kube: ctx.kube.clone(),
+        pool: ctx.pg.clone(),
+        typesense,
+        namespace: namespace.to_string(),
+        crd_name: crd_name.to_string(),
+        path: path.clone(),
+        pg_schema,
+        pg_table,
+        alias: alias.clone(),
+        source_concrete,
+        target_concrete: target_concrete.clone(),
+        cancel: cancel.clone(),
+    };
+    let uid_for_task = uid_owned.clone();
+    let join = tokio::spawn(async move {
+        match search_rebuild::run(args).await {
+            Ok(n) => tracing::info!(
+                alias = %alias,
+                target = %target_concrete,
+                rows = n,
+                "search rebuild complete"
+            ),
+            Err(e) => tracing::error!(
+                alias = %alias,
+                target = %target_concrete,
+                error = %e,
+                "search rebuild failed; next reconcile will retry"
+            ),
+        }
+        rebuilds.forget(&uid_for_task);
+    });
+    ctx.rebuilds.record(uid_owned, target_for_registry, cancel, join);
 }
 
 /// Stable hash over spec + the bits of metadata that affect reconcile output.

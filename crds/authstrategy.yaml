@@ -245,7 +245,7 @@ spec:
                 - Ready
                 - Failed
                 - Deprecated
-                - null
+                - Rebuilding
                 nullable: true
                 type: string
             type: object

@@ -22,6 +22,7 @@ velocity-types     = { workspace = true }
 velocity-typesense = { workspace = true }
 
 tokio              = { workspace = true }
+tokio-util         = { workspace = true }
 futures            = { workspace = true }
 async-trait        = { workspace = true }
 

@@ -488,6 +488,46 @@ pub fn cross_collection_spec(org: &str) -> CollectionSpec {
     }
 }
 
+/// Build the Typesense document for a single row.
+///
+/// Drops `__fts` (binary tsvector noise) and any other column starting
+/// with `__` that isn't a system field; ensures `id` is a string;
+/// stamps `__schema` so the cross-search collection (and dashboards)
+/// can split rows by kind; converts `created_at`/`updated_at` to
+/// epoch seconds for Typesense int64 indexing.
+///
+/// Both the API's CDC worker and the operator's 5d-3b backfill call
+/// this — keeping them on the same code path is the whole reason this
+/// lives in `velocity-typesense` rather than either caller.
+pub fn build_doc(path: &SchemaPath, entity_id: &str, payload: Option<&Value>) -> Value {
+    let mut obj = match payload {
+        Some(Value::Object(m)) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    obj.remove("__fts");
+    obj.insert("id".into(), Value::String(entity_id.to_string()));
+    obj.insert("__schema".into(), Value::String(path.to_string()));
+
+    for key in ["created_at", "updated_at"] {
+        if let Some(v) = obj.get(key).cloned() {
+            if let Some(secs) = parse_timestamp_to_epoch(&v) {
+                obj.insert(key.into(), serde_json::json!(secs));
+            } else {
+                obj.remove(key);
+            }
+        }
+    }
+    Value::Object(obj)
+}
+
+fn parse_timestamp_to_epoch(v: &Value) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    let s = v.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
+}
+
 fn field_to_tsfield(f: &FieldSpec) -> TsField {
     if matches!(f.kind, FieldKind::Json) {
         // Objects are passed through as opaque strings — Typesense's
@@ -628,6 +668,29 @@ mod tests {
         let cs = concrete_collection_spec(&path, &spec);
         assert_eq!(cs.name, schema_concrete_collection_name(&path, &spec));
         assert_ne!(cs.name, schema_collection_name(&path), "concrete name != alias name");
+    }
+
+    #[test]
+    fn build_doc_drops_fts_stringifies_id_stamps_schema_and_converts_timestamps() {
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let payload = json!({
+            "po_number": "PO-1",
+            "__fts": "tsvector data here",
+            "created_at": "2026-05-18T10:00:00Z",
+            "updated_at": "not a real timestamp",
+        });
+        let doc = build_doc(&path, "abc-id", Some(&payload));
+        let obj = doc.as_object().expect("doc is object");
+        assert_eq!(obj["id"], "abc-id");
+        assert_eq!(obj["__schema"], "acme/supply-chain/procurement/purchase-order/v1");
+        assert_eq!(obj["po_number"], "PO-1");
+        assert!(!obj.contains_key("__fts"), "binary tsvector dropped");
+        let ts = obj["created_at"].as_i64().expect("created_at is int64");
+        assert!(ts > 1_700_000_000, "created_at converted to epoch seconds");
+        assert!(
+            !obj.contains_key("updated_at"),
+            "unparseable timestamp dropped, not coerced to 0"
+        );
     }
 
     #[test]

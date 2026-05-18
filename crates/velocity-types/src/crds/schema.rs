@@ -65,6 +65,40 @@ pub struct SchemaDefinitionStatus {
     pub records: Option<u64>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
+    /// Phase 5d-3b: in-flight or last-completed blue-green Typesense
+    /// rebuild. Only populated for Tier-3 schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_rebuild: Option<SearchRebuildStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRebuildStatus {
+    /// `<alias>__<hash>` Typesense concrete collection currently
+    /// receiving backfill traffic.
+    pub target_concrete: String,
+    /// `<alias>__<hash>` Typesense concrete collection that the alias
+    /// is *currently* pointing at — i.e. the live one search reads
+    /// from until the swap.
+    pub source_concrete: String,
+    /// RFC 3339 timestamp when the rebuild started.
+    pub started_at: String,
+    /// RFC 3339 timestamp when the rebuild ended (success or
+    /// abandoned). `None` while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Rows copied from Postgres to the target concrete collection
+    /// (best-effort; updated periodically).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_processed: Option<u64>,
+    /// Last delta-pass timestamp; used by the operator to scope the
+    /// next `WHERE updated_at >= …` query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delta_at: Option<String>,
+    /// Set when the rebuild ended with an error. Plain string so
+    /// `kubectl describe sd` shows it without JSON noise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ─── Partitioning ───────────────────────────────────────────────────────────

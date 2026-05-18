@@ -49,6 +49,12 @@ pub enum ReconcilePhase {
     Pending,
     Provisioning,
     Ready,
+    /// Tier-3 SchemaDefinition only: the spec changed in a way that
+    /// produced a new concrete Typesense collection (e.g. FTS field
+    /// added / weight changed) and a backfill is in progress. The
+    /// alias still points at the previous concrete, so search keeps
+    /// working at slightly stale freshness until the swap completes.
+    Rebuilding,
     Failed,
     Deprecated,
 }

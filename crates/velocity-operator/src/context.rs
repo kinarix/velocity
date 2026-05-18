@@ -10,6 +10,7 @@ use velocity_typesense::TypesenseClient;
 
 use crate::provisioner::PostgresProvisioner;
 use crate::redis_notify::RedisNotify;
+use crate::search_rebuild::RebuildRegistry;
 
 /// State shared by every controller. Cheap to `Arc::clone`.
 #[derive(Clone)]
@@ -35,6 +36,12 @@ pub struct Context {
     /// `TypesenseClient` is itself clone-cheap (the inner `reqwest::Client`
     /// is `Arc`-wrapped), so we don't double-wrap it here.
     pub typesense: Option<TypesenseClient>,
+    /// Phase 5d-3b: in-flight Tier-3 Typesense rebuilds, keyed by
+    /// SchemaDefinition uid. Lets the reconciler detect "a rebuild
+    /// for this schema is already running with the same target" and
+    /// avoid spawning a duplicate, or cancel the running one when
+    /// the user has applied a newer-yet spec.
+    pub rebuilds: Arc<RebuildRegistry>,
 }
 
 impl Context {
@@ -48,6 +55,7 @@ impl Context {
             ready_tx,
             redis: None,
             typesense: None,
+            rebuilds: Arc::new(RebuildRegistry::new()),
         }
     }
 

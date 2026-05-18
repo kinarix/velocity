@@ -606,7 +606,7 @@ spec:
                 - Ready
                 - Failed
                 - Deprecated
-                - null
+                - Rebuilding
                 nullable: true
                 type: string
               policyHash:
@@ -620,6 +620,57 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
+              searchRebuild:
+                description: |-
+                  Phase 5d-3b: in-flight or last-completed blue-green Typesense
+                  rebuild. Only populated for Tier-3 schemas.
+                nullable: true
+                properties:
+                  error:
+                    description: |-
+                      Set when the rebuild ended with an error. Plain string so
+                      `kubectl describe sd` shows it without JSON noise.
+                    nullable: true
+                    type: string
+                  finishedAt:
+                    description: |-
+                      RFC 3339 timestamp when the rebuild ended (success or
+                      abandoned). `None` while running.
+                    nullable: true
+                    type: string
+                  lastDeltaAt:
+                    description: |-
+                      Last delta-pass timestamp; used by the operator to scope the
+                      next `WHERE updated_at >= …` query.
+                    nullable: true
+                    type: string
+                  rowsProcessed:
+                    description: |-
+                      Rows copied from Postgres to the target concrete collection
+                      (best-effort; updated periodically).
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  sourceConcrete:
+                    description: |-
+                      `<alias>__<hash>` Typesense concrete collection that the alias
+                      is *currently* pointing at — i.e. the live one search reads
+                      from until the swap.
+                    type: string
+                  startedAt:
+                    description: RFC 3339 timestamp when the rebuild started.
+                    type: string
+                  targetConcrete:
+                    description: |-
+                      `<alias>__<hash>` Typesense concrete collection currently
+                      receiving backfill traffic.
+                    type: string
+                required:
+                - sourceConcrete
+                - startedAt
+                - targetConcrete
+                type: object
             type: object
         required:
         - spec
