@@ -63,10 +63,35 @@ const PAGE_SIZE: i64 = 200;
 /// and flip the alias. Each iteration is bounded by `PAGE_SIZE * N
 /// rows`. In practice steady-state systems converge in 1-2 passes.
 const MAX_DELTA_PASSES: u32 = 5;
-/// Grace period before the old concrete collection is reaped after a
-/// successful alias flip. Lets in-flight queries finish cleanly and
-/// leaves a short manual-rollback window via `upsert_alias`.
-const REAP_GRACE: Duration = Duration::from_secs(300);
+/// Default grace period before the old concrete collection is reaped
+/// after a successful alias flip. Lets in-flight queries finish
+/// cleanly and leaves a manual-rollback window via `upsert_alias`.
+/// The phases.md spec says "default 24h"; we ship 300s as the dev
+/// default because the current implementation is an in-task sleep
+/// (lost on operator restart) — a 24h sleep would leak the old
+/// concrete on every restart. Persistent reap (k8s ConfigMap or a
+/// platform table) is residual Phase 5d-3c work.
+const REAP_GRACE_DEFAULT_SECONDS: u64 = 300;
+
+/// Read the grace period from `VELOCITY_OPERATOR_REAP_GRACE_SECONDS`,
+/// falling back to the default. Parse failures fall back loud — a
+/// stale env knob shouldn't change reap timing silently.
+fn reap_grace() -> Duration {
+    match std::env::var("VELOCITY_OPERATOR_REAP_GRACE_SECONDS") {
+        Ok(raw) => match raw.parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => {
+                tracing::warn!(
+                    raw = %raw,
+                    default = REAP_GRACE_DEFAULT_SECONDS,
+                    "VELOCITY_OPERATOR_REAP_GRACE_SECONDS not a u64; using default"
+                );
+                Duration::from_secs(REAP_GRACE_DEFAULT_SECONDS)
+            }
+        },
+        Err(_) => Duration::from_secs(REAP_GRACE_DEFAULT_SECONDS),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RebuildError {
@@ -219,6 +244,26 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
         }
     }
 
+    // ── Delete sweep. `fetch_delta` excludes soft-deleted rows, so a
+    // row that was alive at snapshot time and soft-deleted during
+    // backfill (or in the same flip-race window the upsert sweep
+    // above covers) would otherwise remain as a stale doc in the
+    // target. Cutoff at `started_at` rather than `delta_cutoff` so
+    // we also catch a row whose page was scanned BEFORE its delete
+    // (the delete then never appears in any pre-flip delta either —
+    // both filters reject it). Idempotent on a row that isn't there.
+    let deleted_ids =
+        fetch_deleted_ids(&args.pool, &total_table, started_at.to_rfc3339()).await?;
+    if !deleted_ids.is_empty() {
+        info!(rows = deleted_ids.len(), "post-flip delete sweep");
+        for id in &deleted_ids {
+            if args.cancel.is_cancelled() {
+                return Err(RebuildError::Cancelled);
+            }
+            args.typesense.delete(&args.target_concrete, id).await?;
+        }
+    }
+
     let finished_at = Utc::now();
     patch_status_with_revision(
         &args,
@@ -243,8 +288,9 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     let ts = args.typesense.clone();
     let to_drop = args.source_concrete.clone();
     let alias_for_log = args.alias.clone();
+    let grace = reap_grace();
     tokio::spawn(async move {
-        tokio::time::sleep(REAP_GRACE).await;
+        tokio::time::sleep(grace).await;
         if let Err(e) = ts.delete_collection(&to_drop).await {
             warn!(
                 alias = %alias_for_log,
@@ -304,6 +350,33 @@ async fn fetch_delta(
         .bind(cutoff_rfc3339)
         .fetch_all(pool)
         .await
+}
+
+/// Fetch ids of rows that were soft-deleted at or after `cutoff`.
+/// Counterpart to [`fetch_delta`] — `fetch_delta` filters
+/// `deleted_at IS NULL`, so deletes don't appear there even when
+/// `updated_at` was bumped by the delete itself. Without a separate
+/// scan a delete during backfill leaves a stale row in the target
+/// collection: snapshot copied it, then the delete CDC went to the
+/// OLD concrete via the still-old alias, and the target never hears
+/// about it.
+async fn fetch_deleted_ids(
+    pool: &PgPool,
+    table: &str,
+    cutoff_rfc3339: String,
+) -> Result<Vec<String>, sqlx::Error> {
+    let sql = format!(
+        "SELECT id::text AS id \
+         FROM {table} t \
+         WHERE deleted_at IS NOT NULL AND deleted_at >= $1::timestamptz \
+         ORDER BY id ASC \
+         LIMIT 5000"
+    );
+    let rows: Vec<(String,)> = sqlx::query_as(&sql)
+        .bind(cutoff_rfc3339)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 async fn patch_status(
