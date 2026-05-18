@@ -69,6 +69,13 @@ pub struct SchemaDefinitionStatus {
     /// rebuild. Only populated for Tier-3 schemas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_rebuild: Option<SearchRebuildStatus>,
+    /// Phase 5d-3c: the Typesense concrete collection name that the
+    /// schema's alias currently points at. Surfaces in
+    /// `kubectl describe sd` so an SRE can answer "which underlying
+    /// collection is serving search right now" without an out-of-band
+    /// `GET /aliases` call. Only populated for Tier-3 schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

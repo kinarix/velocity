@@ -172,6 +172,7 @@ mod tests {
             records: None,
             conditions: vec![cond("Ready", "True", "Provisioned")],
             search_rebuild: None,
+            active_revision: None,
         };
         let (p, msg) = summarise_status(Some(&s));
         assert_eq!(p, "Ready");

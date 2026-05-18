@@ -97,6 +97,11 @@ pub async fn reconcile(
     // patch `phase` itself — the task sets `Rebuilding` and later
     // `Ready`, and a race here would clobber that state.
     let mut rebuild_spawned = false;
+    // `active_revision` — the concrete the alias points at when the
+    // reconciler finishes. While a rebuild is in flight this is still
+    // the *source* (pre-flip); the rebuild task overwrites this field
+    // with the new target on successful flip.
+    let mut active_revision: Option<String> = None;
     if matches!(obj.spec.search.tier, SearchTier::Tier3) {
         if let Some(ts) = ctx.typesense.as_ref() {
             let alias = schema_collection_name(&path);
@@ -117,11 +122,14 @@ pub async fn reconcile(
                 None => {
                     tracing::info!(alias = %alias, concrete = %concrete, "binding new Typesense alias");
                     ts.upsert_alias(&alias, &concrete).await?;
+                    active_revision = Some(concrete.clone());
                 }
                 Some(current) if current == concrete => {
                     tracing::debug!(alias = %alias, "alias already correct; no rebuild");
+                    active_revision = Some(current);
                 }
                 Some(source) => {
+                    active_revision = Some(source.clone());
                     if ctx.rebuilds.supersede(&uid, &concrete) {
                         spawn_rebuild(
                             ctx.clone(),
@@ -167,6 +175,9 @@ pub async fn reconcile(
     status_fields.insert("provisionedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
     if !rebuild_spawned {
         status_fields.insert("phase".into(), json!(ReconcilePhase::Ready));
+    }
+    if let Some(rev) = &active_revision {
+        status_fields.insert("activeRevision".into(), json!(rev));
     }
     let status_patch = json!({ "status": serde_json::Value::Object(status_fields) });
     api.patch_status(&name, &PatchParams::apply("velocity-operator"), &Patch::Merge(&status_patch))

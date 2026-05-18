@@ -197,8 +197,30 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     );
     args.typesense.upsert_alias(&args.alias, &args.target_concrete).await?;
 
+    // ── Post-flip sweep. Closes the race between the last pre-flip
+    // delta SELECT and the alias PUT: any row written in that window
+    // either (a) was published by CDC to the OLD concrete via the
+    // alias (which still pointed there), or (b) had an outbox row
+    // CDC hadn't yet drained. (b) is self-healing — after the flip,
+    // CDC resolves the alias to the new concrete on its own. (a)
+    // would be a silent loss without this sweep. Idempotent upserts
+    // make this safe even if a row is in both places already.
+    let post_flip_rows =
+        fetch_delta(&args.pool, &total_table, delta_cutoff.to_rfc3339()).await?;
+    if !post_flip_rows.is_empty() {
+        info!(rows = post_flip_rows.len(), "post-flip sweep");
+        for (id, payload) in &post_flip_rows {
+            if args.cancel.is_cancelled() {
+                return Err(RebuildError::Cancelled);
+            }
+            let doc = build_doc(&args.path, id, Some(payload));
+            args.typesense.upsert(&args.target_concrete, &doc).await?;
+            rows_processed += 1;
+        }
+    }
+
     let finished_at = Utc::now();
-    patch_status(
+    patch_status_with_revision(
         &args,
         Some(ReconcilePhase::Ready),
         json!({
@@ -209,6 +231,7 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
             "rowsProcessed": rows_processed,
             "lastDeltaAt": delta_cutoff.to_rfc3339(),
         }),
+        Some(&args.target_concrete),
     )
     .await?;
 
@@ -288,12 +311,28 @@ async fn patch_status(
     phase: Option<ReconcilePhase>,
     search_rebuild: Value,
 ) -> Result<(), RebuildError> {
+    patch_status_with_revision(args, phase, search_rebuild, None).await
+}
+
+/// Like [`patch_status`] but also stamps `activeRevision` — used on
+/// the successful alias flip so a `kubectl describe sd` reader sees
+/// the new live concrete immediately, not on the next reconcile pass.
+async fn patch_status_with_revision(
+    args: &RebuildArgs,
+    phase: Option<ReconcilePhase>,
+    search_rebuild: Value,
+    active_revision: Option<&str>,
+) -> Result<(), RebuildError> {
     let api: Api<SchemaDefinition> = Api::namespaced(args.kube.clone(), &args.namespace);
-    let body = if let Some(p) = phase {
-        json!({ "status": { "phase": p, "searchRebuild": search_rebuild } })
-    } else {
-        json!({ "status": { "searchRebuild": search_rebuild } })
-    };
+    let mut status = serde_json::Map::new();
+    status.insert("searchRebuild".into(), search_rebuild);
+    if let Some(p) = phase {
+        status.insert("phase".into(), json!(p));
+    }
+    if let Some(rev) = active_revision {
+        status.insert("activeRevision".into(), json!(rev));
+    }
+    let body = json!({ "status": Value::Object(status) });
     api.patch_status(
         &args.crd_name,
         &PatchParams::apply("velocity-operator-rebuild"),
