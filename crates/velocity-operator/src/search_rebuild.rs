@@ -353,8 +353,14 @@ impl RebuildRegistry {
         );
     }
 
-    pub fn forget(&self, uid: &str) {
-        self.inner.remove(uid);
+    /// Remove the registry entry for `uid` **only if** its target
+    /// matches `expected_target`. Without this guard a slow-to-exit
+    /// cancelled task would clobber the entry of the task that
+    /// superseded it, and the next reconcile would happily spawn a
+    /// third task racing against the still-running second one.
+    pub fn forget_if(&self, uid: &str, expected_target: &str) {
+        self.inner
+            .remove_if(uid, |_, h| h.target_concrete == expected_target);
     }
 
     pub fn len(&self) -> usize {
@@ -390,6 +396,39 @@ mod tests {
     fn registry_supersede_on_unknown_uid_returns_true() {
         let r = RebuildRegistry::new();
         assert!(r.supersede("never-seen", "alias__deadbeef"));
+        assert!(r.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forget_if_is_compare_and_swap_on_target() {
+        // Simulates the supersede race: task A (older target) finishes
+        // *after* task B has replaced it in the registry. A's cleanup
+        // must NOT evict B's entry.
+        let r = RebuildRegistry::new();
+        let cancel_a = CancellationToken::new();
+        r.record(
+            "uid-1".into(),
+            "alias__aaaa1111".into(),
+            cancel_a.clone(),
+            tokio::spawn(async {}),
+        );
+
+        // Supersede with a newer target — A is cancelled, B records.
+        assert!(r.supersede("uid-1", "alias__bbbb2222"));
+        let cancel_b = CancellationToken::new();
+        r.record(
+            "uid-1".into(),
+            "alias__bbbb2222".into(),
+            cancel_b.clone(),
+            tokio::spawn(async {}),
+        );
+
+        // Late cleanup from A: must be a no-op.
+        r.forget_if("uid-1", "alias__aaaa1111");
+        assert_eq!(r.len(), 1, "A's late forget must not evict B");
+
+        // B finishes; its own forget evicts.
+        r.forget_if("uid-1", "alias__bbbb2222");
         assert!(r.is_empty());
     }
 }

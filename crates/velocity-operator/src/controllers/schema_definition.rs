@@ -91,6 +91,12 @@ pub async fn reconcile(
     // a Typesense URL; the API's CDC worker handles lazy creation as
     // a backstop. If the client is present and Typesense errors,
     // the reconcile fails — kube-runtime requeues.
+    //
+    // `rebuild_spawned` tracks whether we handed `phase` ownership to
+    // a background rebuild task. If we did, the reconciler MUST NOT
+    // patch `phase` itself — the task sets `Rebuilding` and later
+    // `Ready`, and a race here would clobber that state.
+    let mut rebuild_spawned = false;
     if matches!(obj.spec.search.tier, SearchTier::Tier3) {
         if let Some(ts) = ctx.typesense.as_ref() {
             let alias = schema_collection_name(&path);
@@ -129,12 +135,16 @@ pub async fn reconcile(
                             concrete.clone(),
                             ts.clone(),
                         );
+                        rebuild_spawned = true;
                     } else {
                         tracing::debug!(
                             alias = %alias,
                             concrete = %concrete,
                             "rebuild already in flight for this target"
                         );
+                        // A rebuild for this exact target is already running;
+                        // it owns the `phase` field. Don't clobber it.
+                        rebuild_spawned = true;
                     }
                 }
             }
@@ -147,14 +157,18 @@ pub async fn reconcile(
     }
 
     let api: Api<SchemaDefinition> = Api::namespaced(ctx.kube.clone(), &namespace);
-    let status_patch = json!({
-        "status": {
-            "phase": ReconcilePhase::Ready,
-            "pgTable": provisioned.qualified,
-            "policyHash": hash,
-            "provisionedAt": chrono::Utc::now().to_rfc3339(),
-        }
-    });
+    // Skip `phase` when a rebuild task owns it (see comment on
+    // `rebuild_spawned`). The other fields are safe to write — they
+    // reflect the PG/spec state that just succeeded, independent of
+    // the search-tier convergence the task is driving.
+    let mut status_fields = serde_json::Map::new();
+    status_fields.insert("pgTable".into(), json!(provisioned.qualified));
+    status_fields.insert("policyHash".into(), json!(hash));
+    status_fields.insert("provisionedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
+    if !rebuild_spawned {
+        status_fields.insert("phase".into(), json!(ReconcilePhase::Ready));
+    }
+    let status_patch = json!({ "status": serde_json::Value::Object(status_fields) });
     api.patch_status(&name, &PatchParams::apply("velocity-operator"), &Patch::Merge(&status_patch))
         .await?;
 
@@ -200,6 +214,7 @@ fn spawn_rebuild(
     let uid_owned = uid.to_string();
     let target_for_registry = target_concrete.clone();
     let rebuilds = ctx.rebuilds.clone();
+    let last_hash = ctx.last_hash.clone();
     let args = RebuildArgs {
         kube: ctx.kube.clone(),
         pool: ctx.pg.clone(),
@@ -215,6 +230,7 @@ fn spawn_rebuild(
         cancel: cancel.clone(),
     };
     let uid_for_task = uid_owned.clone();
+    let target_for_task = target_concrete.clone();
     let join = tokio::spawn(async move {
         match search_rebuild::run(args).await {
             Ok(n) => tracing::info!(
@@ -223,14 +239,27 @@ fn spawn_rebuild(
                 rows = n,
                 "search rebuild complete"
             ),
-            Err(e) => tracing::error!(
-                alias = %alias,
-                target = %target_concrete,
-                error = %e,
-                "search rebuild failed; next reconcile will retry"
-            ),
+            Err(e) => {
+                tracing::error!(
+                    alias = %alias,
+                    target = %target_concrete,
+                    error = %e,
+                    "search rebuild failed; next reconcile will retry"
+                );
+                // Drop the in-memory reconcile-skip hash so the very
+                // next reconcile for this CRD doesn't short-circuit
+                // on "spec unchanged". Without this, an in-process
+                // failure leaves the alias pointing at the stale
+                // concrete and the reconciler refuses to re-evaluate
+                // until a real spec edit comes in.
+                last_hash.remove(&uid_for_task);
+            }
         }
-        rebuilds.forget(&uid_for_task);
+        // Compare-and-swap on target: only clear our own registry
+        // entry. A superseding spawn will have replaced us under the
+        // same uid with a different target, and clobbering it would
+        // race a third reconcile into spawning a duplicate.
+        rebuilds.forget_if(&uid_for_task, &target_for_task);
     });
     ctx.rebuilds.record(uid_owned, target_for_registry, cancel, join);
 }
