@@ -16,7 +16,9 @@ use kube::ResourceExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use velocity_types::common::SchemaPath;
+use velocity_types::crds::schema::SearchTier;
 use velocity_types::crds::{ReconcilePhase, SchemaDefinition};
+use velocity_typesense::{collection_spec, schema_collection_name};
 
 use crate::context::Context;
 use crate::controllers::{error_action, ReconcileError};
@@ -74,6 +76,32 @@ pub async fn reconcile(
 
     let plan = build_ddl(&obj.spec, &path).map_err(|e| ReconcileError::Invalid(e.to_string()))?;
     let provisioned = ctx.provisioner.sync_schema_tables(&plan, allow_breaking).await?;
+
+    // Phase 5d-2: eagerly provision the Typesense collection for Tier-3
+    // schemas. If `ctx.typesense` is `None`, the operator was started
+    // without a Typesense URL; the API's CDC worker handles lazy
+    // creation as a backstop. If the client is present and Typesense is
+    // unreachable / errors, the reconcile fails — kube-runtime requeues
+    // and the next attempt retries. Spec drift on an existing collection
+    // is **not** handled here (create_collection returns Ok on 409);
+    // Phase 5d-3 blue-green is the only safe path for field changes.
+    if matches!(obj.spec.search.tier, SearchTier::Tier3) {
+        if let Some(ts) = ctx.typesense.as_ref() {
+            let spec = collection_spec(&path, &obj.spec);
+            let coll = schema_collection_name(&path);
+            tracing::info!(
+                collection = %coll,
+                schema = %path,
+                "ensuring Typesense collection"
+            );
+            ts.create_collection(&spec).await?;
+        } else {
+            tracing::warn!(
+                schema = %path,
+                "Tier-3 schema reconciled without VELOCITY_OPERATOR_TYPESENSE_URL — relying on CDC lazy collection creation"
+            );
+        }
+    }
 
     let api: Api<SchemaDefinition> = Api::namespaced(ctx.kube.clone(), &namespace);
     let status_patch = json!({

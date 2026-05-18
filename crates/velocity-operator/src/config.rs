@@ -35,6 +35,17 @@ pub struct OperatorConfig {
     /// fail-loud: warm-tier is optional configuration, unlike
     /// `velocity-warm-reader` which can't run without it.
     pub warm_storage_url: Option<String>,
+    /// Typesense base URL, e.g. `http://typesense:8108` (Phase 5d-2).
+    /// When set, the SchemaDefinition reconciler creates per-schema
+    /// Typesense collections eagerly for `search.tier: Tier3` schemas.
+    /// When `None`, the operator skips eager provisioning and the API's
+    /// CDC worker falls back to lazy creation. Dev / single-tier
+    /// installs can leave this unset.
+    pub typesense_url: Option<String>,
+    /// API key sent as `X-TYPESENSE-API-KEY` on every operator-side
+    /// Typesense call. Required when `typesense_url` is set; missing
+    /// here while `typesense_url` is set fails boot.
+    pub typesense_api_key: Option<String>,
 }
 
 impl OperatorConfig {
@@ -71,6 +82,14 @@ impl OperatorConfig {
 
         let warm_storage_url = std::env::var("VELOCITY_OPERATOR_WARM_STORAGE_URL").ok();
 
+        let typesense_url = std::env::var("VELOCITY_OPERATOR_TYPESENSE_URL").ok();
+        let typesense_api_key = std::env::var("VELOCITY_OPERATOR_TYPESENSE_API_KEY").ok();
+        if typesense_url.is_some() && typesense_api_key.is_none() {
+            anyhow::bail!(
+                "VELOCITY_OPERATOR_TYPESENSE_URL is set but VELOCITY_OPERATOR_TYPESENSE_API_KEY is missing"
+            );
+        }
+
         Ok(Self {
             pg_url,
             health_addr,
@@ -81,6 +100,8 @@ impl OperatorConfig {
             redis_url,
             redis_revoked_key,
             warm_storage_url,
+            typesense_url,
+            typesense_api_key,
         })
     }
 

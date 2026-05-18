@@ -32,123 +32,33 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
-use velocity_types::common::sanitize;
-use velocity_types::crds::schema::{FieldKind, SearchTier};
+use velocity_types::crds::schema::SearchTier;
 
 use crate::registry::{ResolvedSchema, SchemaRegistry};
-use crate::typesense::{CollectionSpec, TsField, TypesenseClient};
+use crate::typesense::{CollectionSpec, TypesenseClient};
+use velocity_typesense::{
+    collection_spec as ts_collection_spec, cross_collection_spec,
+    schema_collection_name as ts_schema_collection_name,
+};
+pub use velocity_typesense::cross_collection_name;
 
 /// Hard cap per batch — bounds the worst-case Typesense round-trip
 /// cost per tick when an outbox table backs up.
 const BATCH_SIZE: i64 = 100;
 const IDLE_INTERVAL: Duration = Duration::from_millis(1_000);
 
-/// Cross-schema collection name for an org. One per org so a `search?
-/// schema=*` query hits a single index. `schema_kind` is a facet so
-/// callers (and RBAC filtering) can scope down to a list of schemas.
-pub fn cross_collection_name(org: &str) -> String {
-    format!("{}_search", sanitize(org))
-}
-
-/// Per-schema collection name. Matches the Postgres table the rows
-/// live in so dashboards line up `<pg_schema>_<object>_<version>`.
+/// Per-schema collection name for a `ResolvedSchema` — thin wrapper
+/// over `velocity_typesense::schema_collection_name(&path)` so callers
+/// don't have to spell out the field access.
 pub fn schema_collection_name(schema: &ResolvedSchema) -> String {
-    format!(
-        "{}_{}",
-        schema.pg_schema,
-        schema.pg_table.trim_start_matches(&format!("{}_", schema.pg_schema))
-    )
+    ts_schema_collection_name(&schema.path)
 }
 
-/// Build the Typesense collection schema for a Velocity schema. Only
-/// `searchable` fields become indexed fields; non-searchable fields
-/// still land in the doc as `optional: true` so the response carries
-/// them through without indexing cost.
+/// Collection spec built from a `ResolvedSchema`. Forwards to
+/// `velocity_typesense::collection_spec(&path, &spec)` — the operator
+/// uses the same builder over `SchemaDefinitionSpec` directly.
 pub fn collection_spec(schema: &ResolvedSchema) -> CollectionSpec {
-    let mut fields = vec![
-        TsField { name: "id".into(), kind: "string".into(), facet: None, optional: None },
-        TsField {
-            name: "__schema".into(),
-            kind: "string".into(),
-            facet: Some(true),
-            optional: None,
-        },
-        TsField {
-            name: "created_at".into(),
-            kind: "int64".into(),
-            facet: None,
-            optional: Some(true),
-        },
-        TsField {
-            name: "updated_at".into(),
-            kind: "int64".into(),
-            facet: None,
-            optional: Some(true),
-        },
-    ];
-    for f in schema.fields.ordered.iter() {
-        if matches!(f.kind, FieldKind::Json) {
-            // Typesense indexes objects awkwardly — pass through as
-            // string and skip indexing for v1.
-            fields.push(TsField {
-                name: f.name.clone(),
-                kind: "string".into(),
-                facet: None,
-                optional: Some(true),
-            });
-            continue;
-        }
-        let ts_kind = match f.kind {
-            FieldKind::Integer => "int64",
-            FieldKind::Number => "float",
-            FieldKind::Boolean => "bool",
-            _ => "string",
-        };
-        fields.push(TsField {
-            name: f.name.clone(),
-            kind: ts_kind.into(),
-            facet: Some(f.filterable),
-            optional: Some(!f.required),
-        });
-    }
-    CollectionSpec {
-        name: schema_collection_name(schema),
-        fields,
-        default_sorting_field: None,
-    }
-}
-
-/// Cross-search collection schema. Carries the union of every Tier-3
-/// schema's `searchable` text fields as a single `__body` blob so the
-/// index stays simple. We don't try to project arbitrary user fields
-/// here — those live in the per-schema collection.
-pub fn cross_collection_spec(org: &str) -> CollectionSpec {
-    CollectionSpec {
-        name: cross_collection_name(org),
-        fields: vec![
-            TsField { name: "id".into(), kind: "string".into(), facet: None, optional: None },
-            TsField {
-                name: "__schema".into(),
-                kind: "string".into(),
-                facet: Some(true),
-                optional: None,
-            },
-            TsField { name: "__body".into(), kind: "string".into(), facet: None, optional: None },
-            TsField {
-                name: "title".into(),
-                kind: "string".into(),
-                facet: None,
-                optional: Some(true),
-            },
-            TsField {
-                name: "org".into(),
-                kind: "string".into(),
-                facet: Some(true),
-                optional: None,
-            },
-        ],
-        default_sorting_field: None,
-    }
+    ts_collection_spec(&schema.path, &schema.spec)
 }
 
 /// Spawn the CDC loop. Returns immediately; the loop runs forever
@@ -458,52 +368,6 @@ mod tests {
         assert!(ts > 1_700_000_000); // sometime after 2023
     }
 
-    #[test]
-    fn collection_spec_indexes_searchable_fields() {
-        let path = velocity_types::common::SchemaPath::new(
-            "acme",
-            "supply-chain",
-            "procurement",
-            "purchase-order",
-            "v1",
-        );
-        let mut f1: velocity_types::crds::schema::FieldSpec =
-            serde_json::from_value(json!({ "name": "po_number", "type": "string" })).unwrap();
-        f1.kind = FieldKind::String;
-        f1.required = true;
-        let mut f2: velocity_types::crds::schema::FieldSpec =
-            serde_json::from_value(json!({ "name": "description", "type": "string" })).unwrap();
-        f2.kind = FieldKind::String;
-        f2.searchable = true;
-        let spec = velocity_types::crds::schema::SchemaDefinitionSpec {
-            version: "v1".into(),
-            partitioning: None,
-            auth: velocity_types::crds::schema::AuthSpec {
-                strategy_ref: velocity_types::common::NamespacedRef {
-                    name: "default".into(),
-                    namespace: "p".into(),
-                },
-                overrides: Vec::new(),
-            },
-            access: Default::default(),
-            fields: vec![f1, f2],
-            validations: Vec::new(),
-            search: velocity_types::crds::schema::SearchSpec {
-                tier: velocity_types::crds::schema::SearchTier::Tier3,
-                ..Default::default()
-            },
-            time_machine: None,
-            audit: None,
-            archive: None,
-            observability: Default::default(),
-            scaling: None,
-        };
-        let schema = ResolvedSchema::from_spec(path, spec);
-        let cspec = collection_spec(&schema);
-        let names: Vec<&str> = cspec.fields.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"id"));
-        assert!(names.contains(&"__schema"));
-        assert!(names.contains(&"po_number"));
-        assert!(names.contains(&"description"));
-    }
+    // Per-schema collection-spec construction is exercised in
+    // `velocity-typesense` directly; this module only re-exports it.
 }

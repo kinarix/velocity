@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 velocity-types     = { workspace = true }
+velocity-typesense = { workspace = true }
 
 tokio              = { workspace = true }
 futures            = { workspace = true }

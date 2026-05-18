@@ -77,9 +77,49 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Typesense client for eager per-schema collection provisioning
+    // (Phase 5d-2). Boot stays alive whether or not Typesense is reachable
+    // at this point — a Tier-3 reconcile that can't hit Typesense will
+    // return Err, kube-runtime will requeue, and the status condition
+    // reflects the failure. Only the construction step gates here.
+    // Note: `health()` uses the client's default 5s timeout, so an
+    // unreachable Typesense delays boot by up to that long but never
+    // fails it.
+    let typesense = match (cfg.typesense_url.as_ref(), cfg.typesense_api_key.as_ref()) {
+        (Some(url), Some(key)) => {
+            match velocity_typesense::TypesenseClient::new(url.clone(), key.clone()) {
+                Ok(c) => {
+                    if let Err(e) = c.health().await {
+                        tracing::warn!(
+                            url = %url,
+                            error = %e,
+                            "typesense health probe failed at startup — Tier-3 reconciles will retry"
+                        );
+                    } else {
+                        tracing::info!(url = %url, "typesense client initialised");
+                    }
+                    Some(c)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to construct typesense client — Tier-3 schemas will not be eagerly provisioned");
+                    None
+                }
+            }
+        }
+        _ => {
+            tracing::warn!(
+                "VELOCITY_OPERATOR_TYPESENSE_URL is unset — Tier-3 collections will be created lazily by velocity-api CDC instead"
+            );
+            None
+        }
+    };
+
     let mut ctx_inner = Context::new(kube.clone(), pg, ready_tx);
     if let Some(r) = redis {
         ctx_inner = ctx_inner.with_redis(r);
+    }
+    if let Some(ts) = typesense {
+        ctx_inner = ctx_inner.with_typesense(ts);
     }
     let ctx = Arc::new(ctx_inner);
 

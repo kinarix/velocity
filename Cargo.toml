@@ -10,6 +10,7 @@ members = [
     "crates/velocity-log-collector",
     "crates/velocity-archive-worker",
     "crates/velocity-warm-reader",
+    "crates/velocity-typesense",
 ]
 
 [workspace.package]
@@ -138,6 +139,7 @@ testcontainers  = "0.27"
 velocity-types       = { path = "crates/velocity-types" }
 velocity-operator    = { path = "crates/velocity-operator" }
 velocity-warm-reader = { path = "crates/velocity-warm-reader" }
+velocity-typesense   = { path = "crates/velocity-typesense" }
 
 [profile.release]
 lto             = "thin"

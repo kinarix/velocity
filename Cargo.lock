@@ -5339,6 +5339,7 @@ dependencies = [
  "uuid",
  "velocity-operator",
  "velocity-types",
+ "velocity-typesense",
  "velocity-warm-reader",
 ]
 
@@ -5429,6 +5430,7 @@ dependencies = [
  "url",
  "uuid",
  "velocity-types",
+ "velocity-typesense",
 ]
 
 [[package]]
@@ -5445,6 +5447,20 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "velocity-typesense"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "velocity-types",
 ]
 
 [[package]]

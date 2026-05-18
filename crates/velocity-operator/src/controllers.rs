@@ -23,6 +23,9 @@ pub enum ReconcileError {
 
     #[error("invalid object: {0}")]
     Invalid(String),
+
+    #[error("typesense: {0}")]
+    Typesense(#[from] velocity_typesense::TypesenseError),
 }
 
 /// Backoff applied when a reconcile errors. Conservative for Phase 0;
