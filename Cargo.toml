@@ -135,8 +135,9 @@ subtle          = "2"
 testcontainers  = "0.27"
 
 # Internal crates
-velocity-types    = { path = "crates/velocity-types" }
-velocity-operator = { path = "crates/velocity-operator" }
+velocity-types       = { path = "crates/velocity-types" }
+velocity-operator    = { path = "crates/velocity-operator" }
+velocity-warm-reader = { path = "crates/velocity-warm-reader" }
 
 [profile.release]
 lto             = "thin"

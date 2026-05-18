@@ -29,5 +29,5 @@ pub mod warm_reader;
 
 pub use event_reader::{EventReader, EventRow, TierError};
 pub use postgres_reader::PostgresEventReader;
-pub use router::{Tier, TieredEventReader};
+pub use router::{Tier, TieredEventReader, TierWindows};
 pub use warm_reader::WarmEventReader;

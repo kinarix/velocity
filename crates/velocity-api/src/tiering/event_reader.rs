@@ -38,8 +38,10 @@ pub trait EventReader: Send + Sync {
     /// capped at `limit`. The caller folds the returned slice into
     /// reconstructed state.
     ///
-    /// `path` is the canonical `schema_org` (`org/app/domain`).
-    /// Implementations validate it; callers shouldn't pre-sanitize.
+    /// `path` is the canonical `schema_org` —
+    /// `org/app/domain/object/version` as produced by
+    /// `crate::registry::registry_key`. Implementations validate it;
+    /// callers shouldn't pre-sanitize.
     async fn events_for(
         &self,
         path: &str,

@@ -57,4 +57,17 @@ mod tests {
         let k = month_key("a/b/c", 2027, 1);
         assert_eq!(k.to_string(), "a/b/c/event_log_2027_01.parquet");
     }
+
+    #[test]
+    fn month_key_handles_five_segment_registry_key() {
+        // schema_org in event_log is the 5-segment registry_key
+        // (org/app/domain/object/version). The exporter passes it
+        // through verbatim — warm-reader's object_layout::validate_path
+        // accepts the 5-segment form for this reason.
+        let k = month_key("acme/supply-chain/procurement/purchase-order/v1", 2026, 3);
+        assert_eq!(
+            k.to_string(),
+            "acme/supply-chain/procurement/purchase-order/v1/event_log_2026_03.parquet"
+        );
+    }
 }

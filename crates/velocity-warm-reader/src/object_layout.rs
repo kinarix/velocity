@@ -1,54 +1,71 @@
 //! Mapping from `(path, time-range)` to Parquet object keys.
 //!
 //! The operator's exporter (Phase 4.2) writes one Parquet object per
-//! (org/app/domain, calendar-month) at:
+//! (`schema_org`, calendar-month) at:
 //!
 //! ```text
-//!   <prefix>/<org>/<app>/<domain>/event_log_YYYY_MM.parquet
+//!   <prefix>/<schema_org>/event_log_YYYY_MM.parquet
 //! ```
 //!
-//! The leading `<prefix>` is the `storage_url`'s path component and is
-//! baked into the `object_store` instance — we only deal in keys
-//! *relative* to that prefix here.
+//! where `<schema_org>` is the canonical
+//! `org/app/domain/object/version` path the API writes into
+//! `platform.event_log.schema_org`. The leading `<prefix>` is the
+//! `storage_url`'s path component and is baked into the `object_store`
+//! instance — we only deal in keys *relative* to that prefix here.
 //!
-//! `path` is the canonical `schema_org` form (`org/app/domain`). It is
-//! validated by the caller (the HTTP handler) before it reaches this
-//! module, but defensive sanitization is cheap and guards against
-//! caller bugs that could otherwise let a malformed `path` escape the
-//! storage prefix.
+//! `path` is validated by the caller (the HTTP handler) before it
+//! reaches this module, but defensive sanitization is cheap and guards
+//! against caller bugs that could otherwise let a malformed `path`
+//! escape the storage prefix.
 
 use chrono::{DateTime, Datelike, Months, NaiveDate, TimeZone, Utc};
 use object_store::path::Path as ObjPath;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LayoutError {
-    #[error("invalid schema path: expected `org/app/domain`, got `{0}`")]
+    #[error("invalid schema path `{0}` (expected segments matching [a-z0-9_-]+)")]
     InvalidPath(String),
     #[error("invalid `until` timestamp")]
     InvalidUntil,
 }
 
-/// Validate a `schema_org` of the form `org/app/domain`. Each segment
-/// must be `[a-z0-9][a-z0-9-]*` (the same surface the operator uses for
-/// k8s namespace derivation and Postgres schema sanitization).
-pub fn validate_path(path: &str) -> Result<(&str, &str, &str), LayoutError> {
+/// Minimum + maximum segments accepted in a `schema_org` path. The
+/// API writes 5-segment values (`org/app/domain/object/version`) via
+/// `velocity_api::registry::registry_key`. We accept 3 too because
+/// historical fixtures + a few operator tests use the 3-segment form
+/// (`org/app/domain`) and there's no harm in allowing it — the on-disk
+/// key uses the raw path either way.
+const MIN_SEGMENTS: usize = 3;
+const MAX_SEGMENTS: usize = 5;
+
+/// Validate a `schema_org` of the form `org/app/domain[/object/version]`.
+/// Each segment must match `[a-z0-9_-]+`. This is the same surface the
+/// operator uses for k8s namespace derivation and Postgres schema
+/// sanitization, and matches what `velocity_api::registry::registry_key`
+/// emits.
+pub fn validate_path(path: &str) -> Result<(), LayoutError> {
     let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() != 3 {
+    if !(MIN_SEGMENTS..=MAX_SEGMENTS).contains(&parts.len()) {
         return Err(LayoutError::InvalidPath(path.to_string()));
     }
     for seg in &parts {
-        if seg.is_empty() || !seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+        if seg.is_empty()
+            || !seg
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
             return Err(LayoutError::InvalidPath(path.to_string()));
         }
     }
-    Ok((parts[0], parts[1], parts[2]))
+    Ok(())
 }
 
-/// Object key for one (org/app/domain, month).
+/// Object key for one (`schema_org`, month). Layout MUST match the
+/// operator's exporter (`velocity_operator::tiering::object_store_url::month_key`).
 pub fn object_key_for_month(path: &str, year: i32, month: u32) -> Result<ObjPath, LayoutError> {
-    let (org, app, domain) = validate_path(path)?;
-    // ObjPath::from is safe because all components have been validated.
-    let key = format!("{org}/{app}/{domain}/event_log_{year:04}_{month:02}.parquet");
+    validate_path(path)?;
+    // ObjPath::from is safe because the path has been validated.
+    let key = format!("{path}/event_log_{year:04}_{month:02}.parquet");
     Ok(ObjPath::from(key))
 }
 
@@ -101,15 +118,18 @@ mod tests {
 
     #[test]
     fn validates_well_formed_path() {
+        // 3-segment legacy form.
         assert!(validate_path("acme/supply/procurement").is_ok());
         assert!(validate_path("a/b/c").is_ok());
-        assert!(validate_path("with-dashes/and_underscores/v1").is_ok());
+        // 5-segment canonical form used by velocity-api's registry_key.
+        assert!(validate_path("acme/supply-chain/procurement/purchase-order/v1").is_ok());
+        assert!(validate_path("with-dashes/and_underscores/v1/obj/v2").is_ok());
     }
 
     #[test]
     fn rejects_bad_paths() {
         assert!(validate_path("acme/supply").is_err()); // too few
-        assert!(validate_path("acme/supply/proc/extra").is_err()); // too many
+        assert!(validate_path("a/b/c/d/e/f").is_err()); // too many
         assert!(validate_path("acme//procurement").is_err()); // empty middle
         assert!(validate_path("Acme/supply/procurement").is_err()); // uppercase
         assert!(validate_path("../etc/passwd").is_err()); // escape attempt
@@ -117,12 +137,24 @@ mod tests {
     }
 
     #[test]
-    fn object_key_layout_matches_exporter() {
+    fn object_key_layout_matches_exporter_three_segment() {
         // This layout MUST stay in lockstep with the operator's
         // exporter. If you're changing it, change both sides and grep
         // the integration test.
         let k = object_key_for_month("acme/supply/procurement", 2026, 3).unwrap();
         assert_eq!(k.to_string(), "acme/supply/procurement/event_log_2026_03.parquet");
+    }
+
+    #[test]
+    fn object_key_layout_matches_exporter_five_segment() {
+        // Canonical 5-segment form: registry_key value the API actually
+        // writes into event_log.schema_org.
+        let k = object_key_for_month("acme/supply-chain/procurement/purchase-order/v1", 2026, 3)
+            .unwrap();
+        assert_eq!(
+            k.to_string(),
+            "acme/supply-chain/procurement/purchase-order/v1/event_log_2026_03.parquet"
+        );
     }
 
     #[test]

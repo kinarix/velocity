@@ -53,7 +53,7 @@ async fn write_test_object(store: Arc<dyn ObjectStore>, key: &str, entity: Uuid)
 
     let occurred = TimestampMicrosecondArray::from(vec![Some(create_ts), Some(update_ts)])
         .with_timezone("UTC");
-    let so = StringArray::from(vec!["acme/supply/procurement", "acme/supply/procurement"]);
+    let so = StringArray::from(vec!["acme/supply-chain/procurement/purchase-order/v1", "acme/supply-chain/procurement/purchase-order/v1"]);
     let eid_s = entity.hyphenated().to_string();
     let eid = StringArray::from(vec![Some(eid_s.clone()), Some(eid_s.clone())]);
     let op = StringArray::from(vec!["create", "update"]);
@@ -100,8 +100,12 @@ async fn bring_up() -> Harness {
     };
 
     let entity = Uuid::new_v4();
-    write_test_object(prefixed.clone(), "acme/supply/procurement/event_log_2026_03.parquet", entity)
-        .await;
+    write_test_object(
+        prefixed.clone(),
+        "acme/supply-chain/procurement/purchase-order/v1/event_log_2026_03.parquet",
+        entity,
+    )
+    .await;
 
     let runtime = Arc::new(RuntimeEnv::default());
     runtime.register_object_store(&parsed, raw_store.clone());
@@ -145,7 +149,7 @@ async fn round_trip_reads_events_back() {
     let resp = post_events(
         h.addr,
         serde_json::json!({
-            "path": "acme/supply/procurement",
+            "path": "acme/supply-chain/procurement/purchase-order/v1",
             "entity_id": h.entity.hyphenated().to_string(),
             "until": "2026-03-01T16:00:00Z",
             "limit": 100,
@@ -177,7 +181,7 @@ async fn until_clamp_excludes_later_events() {
     let resp = post_events(
         h.addr,
         serde_json::json!({
-            "path": "acme/supply/procurement",
+            "path": "acme/supply-chain/procurement/purchase-order/v1",
             "entity_id": h.entity.hyphenated().to_string(),
             // Between the two events — should return only the create.
             "until": "2026-03-01T14:30:00Z",
@@ -203,7 +207,7 @@ async fn wrong_entity_id_returns_empty() {
     let resp = post_events(
         h.addr,
         serde_json::json!({
-            "path": "acme/supply/procurement",
+            "path": "acme/supply-chain/procurement/purchase-order/v1",
             "entity_id": other_entity.hyphenated().to_string(),
             "until": "2026-03-01T16:00:00Z",
             "limit": 100,
