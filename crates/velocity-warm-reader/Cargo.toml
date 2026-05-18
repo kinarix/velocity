@@ -1,0 +1,59 @@
+[package]
+name        = "velocity-warm-reader"
+description = "Read-only HTTP service exposing warm-tier Parquet events to the API (Phase 4, ADR-004 revision 2026-05-18)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+publish.workspace      = true
+
+[[bin]]
+name = "velocity-warm-reader"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+velocity-types     = { workspace = true }
+
+# Async / HTTP
+tokio              = { workspace = true }
+axum               = { workspace = true }
+tower-http         = { workspace = true }
+hyper              = { workspace = true }
+
+# Serialization / errors
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+
+# Observability
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Time / IDs
+chrono             = { workspace = true }
+uuid               = { workspace = true }
+
+# Warm-tier IO. DataFusion is the query engine; arrow + parquet still
+# show up because the result `RecordBatch`es are decoded directly here
+# (we don't materialise SQL-shaped Rust structs through serde).
+arrow              = { workspace = true }
+parquet            = { workspace = true, features = ["async", "object_store"] }
+object_store       = { workspace = true }
+datafusion         = { workspace = true }
+url                = { workspace = true }
+futures            = { workspace = true }
+
+# Constant-time service token comparison
+subtle             = { workspace = true }
+
+[dev-dependencies]
+reqwest            = { workspace = true }
+tower              = { workspace = true }
+tempfile           = "3"
