@@ -252,16 +252,42 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     // we also catch a row whose page was scanned BEFORE its delete
     // (the delete then never appears in any pre-flip delta either —
     // both filters reject it). Idempotent on a row that isn't there.
-    let deleted_ids =
-        fetch_deleted_ids(&args.pool, &total_table, started_at.to_rfc3339()).await?;
-    if !deleted_ids.is_empty() {
-        info!(rows = deleted_ids.len(), "post-flip delete sweep");
-        for id in &deleted_ids {
+    //
+    // Paginated end-to-end. A single-batch implementation would
+    // silently leak whatever doesn't fit in one page when churn is
+    // high; this loop converges however many deletes accumulated.
+    let started_rfc = started_at.to_rfc3339();
+    let mut delete_cursor: Option<String> = None;
+    let mut deletes_swept: u64 = 0;
+    loop {
+        if args.cancel.is_cancelled() {
+            return Err(RebuildError::Cancelled);
+        }
+        let page = fetch_deleted_ids_page(
+            &args.pool,
+            &total_table,
+            &started_rfc,
+            delete_cursor.as_deref(),
+        )
+        .await?;
+        if page.is_empty() {
+            break;
+        }
+        for id in &page {
             if args.cancel.is_cancelled() {
                 return Err(RebuildError::Cancelled);
             }
             args.typesense.delete(&args.target_concrete, id).await?;
+            deletes_swept += 1;
         }
+        let page_len = page.len();
+        delete_cursor = page.into_iter().next_back();
+        if (page_len as i64) < PAGE_SIZE {
+            break;
+        }
+    }
+    if deletes_swept > 0 {
+        info!(rows = deletes_swept, "post-flip delete sweep");
     }
 
     let finished_at = Utc::now();
@@ -352,7 +378,7 @@ async fn fetch_delta(
         .await
 }
 
-/// Fetch ids of rows that were soft-deleted at or after `cutoff`.
+/// Fetch a page of ids that were soft-deleted at or after `cutoff`.
 /// Counterpart to [`fetch_delta`] — `fetch_delta` filters
 /// `deleted_at IS NULL`, so deletes don't appear there even when
 /// `updated_at` was bumped by the delete itself. Without a separate
@@ -360,22 +386,40 @@ async fn fetch_delta(
 /// collection: snapshot copied it, then the delete CDC went to the
 /// OLD concrete via the still-old alias, and the target never hears
 /// about it.
-async fn fetch_deleted_ids(
+///
+/// Paginated by id-keyset (`id::text > $cursor`) rather than capped
+/// at a single 5000-row batch: unlike the upsert delta loop (which
+/// self-converges across delta passes), the post-flip delete sweep
+/// is one-shot. A hard limit would silently leak whatever doesn't
+/// fit when churn is high.
+async fn fetch_deleted_ids_page(
     pool: &PgPool,
     table: &str,
-    cutoff_rfc3339: String,
+    cutoff_rfc3339: &str,
+    cursor: Option<&str>,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let sql = format!(
-        "SELECT id::text AS id \
-         FROM {table} t \
-         WHERE deleted_at IS NOT NULL AND deleted_at >= $1::timestamptz \
-         ORDER BY id ASC \
-         LIMIT 5000"
-    );
-    let rows: Vec<(String,)> = sqlx::query_as(&sql)
-        .bind(cutoff_rfc3339)
-        .fetch_all(pool)
-        .await?;
+    let sql = match cursor {
+        None => format!(
+            "SELECT id::text AS id \
+             FROM {table} t \
+             WHERE deleted_at IS NOT NULL AND deleted_at >= $1::timestamptz \
+             ORDER BY id ASC \
+             LIMIT {PAGE_SIZE}"
+        ),
+        Some(_) => format!(
+            "SELECT id::text AS id \
+             FROM {table} t \
+             WHERE deleted_at IS NOT NULL AND deleted_at >= $1::timestamptz \
+               AND id::text > $2 \
+             ORDER BY id ASC \
+             LIMIT {PAGE_SIZE}"
+        ),
+    };
+    let mut q = sqlx::query_as::<_, (String,)>(&sql).bind(cutoff_rfc3339);
+    if let Some(c) = cursor {
+        q = q.bind(c);
+    }
+    let rows = q.fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
