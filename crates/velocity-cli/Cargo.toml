@@ -22,3 +22,15 @@ velocity-types = { workspace = true }
 clap           = { workspace = true }
 tokio          = { workspace = true }
 anyhow         = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+chrono         = { workspace = true }
+sqlx           = { workspace = true }
+kube           = { workspace = true }
+k8s-openapi    = { workspace = true }
+tracing        = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid           = { workspace = true }
+serde_yaml     = { workspace = true }
+# Pinned for kube-rs's rustls feature path (matches velocity-api's choice).
+rustls         = { version = "0.23", features = ["aws-lc-rs"] }
