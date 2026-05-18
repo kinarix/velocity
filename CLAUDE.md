@@ -71,8 +71,9 @@ velocity/
 | JSONPath | `jsonpath-rust` | Claim mapping |
 | JSON Patch | `json-patch` | Time machine diffs |
 | Hashing | `sha2` | Audit chain |
-| DuckDB | `duckdb` (Rust bindings) | Warm tier Parquet queries |
-| Parquet writer | `arrow` + `parquet` | Warm tier export |
+| Parquet read/write | `arrow` + `parquet` | Warm-tier export (operator) and decoded `RecordBatch`es (warm-reader). Pure Rust, shared types. |
+| Object store abstraction | `object_store` | `s3://`, `file://`, `gs://` behind one API; keeps tests local. |
+| Warm-tier query engine | `datafusion` | Used inside `velocity-warm-reader` for the warm-tier read path. Predicate pushdown + multi-file scans + a free SQL endpoint when we want it. See ADR-004 revision 2026-05-18. |
 
 ---
 
@@ -696,6 +697,66 @@ span.set_attribute(KeyValue::new("velocity.org", schema.org.clone()));
 // Inject trace context into outgoing Kafka/HTTP for hooks
 let traceparent = current_span_context().to_traceparent();
 ```
+
+---
+
+## Inter-Service RPC (Phase 4 onward)
+
+Velocity services historically coordinated only via Postgres + Redis. Phase 4 introduces the first internal HTTP RPC (`velocity-api` → `velocity-warm-reader`). The conventions below apply to every internal service-to-service call we add from here on.
+
+### Transport
+
+HTTP over `axum` (server) and `reqwest` (client). Both are already workspace deps. No gRPC unless a future ADR justifies it (bidirectional streams, strict schemas, polyglot consumers).
+
+### Auth
+
+Service token via `Authorization: Bearer <token>` header. Token lives in a k8s Secret, mounted as env var. Comparison must be constant-time (`subtle::ConstantTimeEq`). On missing config: fail loud (503 with a specific code), never silently allow.
+
+```rust
+fn verify_bearer(headers: &HeaderMap, expected: &str) -> Result<(), AuthError> {
+    let h = headers.get(AUTHORIZATION).ok_or(AuthError::Missing)?;
+    let s = h.to_str().map_err(|_| AuthError::Malformed)?;
+    let token = s.strip_prefix("Bearer ").ok_or(AuthError::Malformed)?;
+    use subtle::ConstantTimeEq;
+    if token.as_bytes().ct_eq(expected.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(AuthError::Invalid)
+    }
+}
+```
+
+### Trace propagation
+
+Server extracts `traceparent` from headers and attaches to its root span. Client injects the current span's `traceparent` into outgoing requests. A request that crosses the hop must appear as a single trace in the collector.
+
+### Timeouts
+
+15 s default per request, configurable per call-site. Timeouts MUST be set on the `reqwest::Client` builder, not per-call, so we don't accidentally ship a path with no upper bound.
+
+### Failure semantics (ADR-003 alignment)
+
+When the called service is unreachable, returns 5xx, or times out: the caller returns 5xx to its own caller with a structured error code (`WARM_TIER_UNAVAILABLE`, etc.). Never silently degrade to empty results, never invent data. Surface the dependency failure to the user.
+
+### Error envelope
+
+Identical shape across services:
+
+```json
+{ "code": "WARM_READER_TOKEN_INVALID", "message": "...", "request_id": "..." }
+```
+
+`code` is a stable SCREAMING_SNAKE_CASE identifier; `message` is human-readable; `request_id` propagates from the inbound request so logs across services chain.
+
+### Body size
+
+Bounded explicitly on the server side (`DefaultBodyLimit::max(...)`). Internal endpoints do not need API-sized 10 MiB limits — pick the smallest limit that fits the workload (warm-reader: 1 MiB).
+
+### What this is NOT
+
+- Not a service mesh — no Istio, Linkerd, or sidecar required.
+- Not mTLS — service token + k8s NetworkPolicy is v1; mTLS is a follow-up under a security ADR.
+- Not for hot-path fan-out — services are still primarily DB-coordinated.
 
 ---
 

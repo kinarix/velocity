@@ -7,6 +7,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::common::NamespacedRef;
 use crate::crds::{Condition, ReconcilePhase};
 
 // ─── AuthStrategy ───────────────────────────────────────────────────────────
@@ -42,6 +43,13 @@ pub enum AuthStrategyType {
 pub struct AuthStrategyConfig {
     #[serde(default)]
     pub issuers: Vec<IssuerConfig>,
+    /// OIDC authorization-code flow configuration. Only meaningful when
+    /// [`AuthStrategySpec::kind`] is [`AuthStrategyType::Oidc`]. The
+    /// strategy still uses `issuers[].jwks_url` to verify the ID token's
+    /// signature; this block carries the client-side endpoints and
+    /// credentials needed to drive the redirect dance.
+    #[serde(default)]
+    pub oidc: Option<OidcConfig>,
     #[serde(default)]
     pub revocation: Option<RevocationConfig>,
     #[serde(default)]
@@ -50,6 +58,16 @@ pub struct AuthStrategyConfig {
     pub ttl_max: Option<u32>,
     #[serde(default)]
     pub clock_skew: Option<u32>,
+    /// Ordered child strategy refs — only meaningful when [`AuthStrategySpec::kind`]
+    /// is [`AuthStrategyType::Composite`]. The middleware walks this list in
+    /// order, picks the first child whose credential scheme is present on
+    /// the request, and runs *that* child's verification. There is no
+    /// fall-through after a verification failure — JWT-fails-then-API-key
+    /// is read as "no `Bearer` header, `ApiKey` header present", not "try
+    /// JWT, then if it 401s try API key". (Defends against an attacker
+    /// trading off two schemes' error oracles.)
+    #[serde(default)]
+    pub children: Vec<NamespacedRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -81,6 +99,53 @@ pub struct ClaimMapping {
     #[serde(default)]
     #[schemars(schema_with = "crate::common::preserve_unknown_fields")]
     pub attributes: BTreeMap<String, serde_json::Value>,
+}
+
+/// OIDC authorization-code flow configuration.
+///
+/// Endpoints are explicit (rather than via OIDC discovery) so a misconfigured
+/// IdP can't change the redirect target at runtime. `client_secret_ref` names
+/// a Kubernetes Secret holding the OAuth2 client secret — never inlined.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcConfig {
+    /// IdP authorization endpoint — the user-agent is redirected here.
+    pub authorization_endpoint: String,
+    /// IdP token endpoint — back-channel exchange of the authorization code.
+    pub token_endpoint: String,
+    /// IdP userinfo endpoint — optional; when set, the callback fetches
+    /// additional claims after token exchange. The middleware merges them
+    /// over ID-token claims (later wins) before claim mapping runs.
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+    /// OAuth2 client id registered with the IdP.
+    pub client_id: String,
+    /// Reference to a Secret containing the OAuth2 client secret. The
+    /// operator reads it; the API server reads it via env at startup. The
+    /// CRD never carries the plaintext.
+    pub client_secret_ref: SecretRef,
+    /// Where the IdP must redirect after authorization — must exactly match
+    /// the value the IdP has registered for `client_id`.
+    pub redirect_uri: String,
+    /// Scopes requested at authorization time. Always includes `openid`.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Issuer string expected on the ID token — must match one of
+    /// [`AuthStrategyConfig::issuers`]. Selects which JWKS to verify with.
+    pub issuer: String,
+    /// Browser-session lifetime in seconds. Defaults to 8 hours.
+    #[serde(default)]
+    pub session_ttl: Option<u32>,
+}
+
+/// Reference to a `kind: Secret` in the same namespace, with a specific
+/// data key. Kubernetes-native — operators read it, the API server gets
+/// the resolved value via env injection from the StatefulSet manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretRef {
+    pub name: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

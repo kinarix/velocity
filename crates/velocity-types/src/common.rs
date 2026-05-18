@@ -121,12 +121,14 @@ pub fn kebab(s: &str) -> String {
 /// on a `serde_json::Value` or `BTreeMap<String, Value>` field — without this,
 /// kube's CRD generator emits a properties block without a parent `type`,
 /// which the apiserver rejects with `must not be empty for specified object fields`.
-pub fn preserve_unknown_fields(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    use schemars::schema::{Schema, SchemaObject};
-    use serde_json::json;
-    let mut extensions = schemars::Map::new();
-    extensions.insert("x-kubernetes-preserve-unknown-fields".into(), json!(true));
-    Schema::Object(SchemaObject { extensions, ..Default::default() })
+///
+/// schemars 1.x dropped the `SchemaObject`/`extensions` API in favour of a
+/// single `Schema` that wraps a `serde_json::Value`; we build the same
+/// extension directly via the `json_schema!` macro.
+pub fn preserve_unknown_fields(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "x-kubernetes-preserve-unknown-fields": true
+    })
 }
 
 /// Errors raised by parsers in this module.

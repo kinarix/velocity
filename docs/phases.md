@@ -199,6 +199,7 @@ velocity/
 **Layer 3: Cross-schema RBAC (review fix):**
 - Before adding joins/includes, verify identity has read on target schema
 - Test case: actor with `procurement-reader` cannot include `supplier` data
+- **Status: deferred to Phase 5.** The query engine does not yet parse `include[]` or build joins, so there is no code path that could leak cross-schema data. Implementing Layer 3 now would be a stub against an unused entry point. Phase 5's PR that adds include semantics MUST land the cross-schema RBAC check in the same commit (default-deny: actor without `read` on the referenced schema → 403 before SQL is built). The query module's `build_list` carries a TODO comment at the future include-parse site to ensure that PR cannot land without this gate.
 
 **Layer 4: Row filter:**
 - Inject scope from RoleBinding into every query (cannot be removed)
@@ -219,8 +220,8 @@ velocity/
 - Test: bypass app, connect to Postgres as `velocity_api` directly → RLS blocks
 
 **Acceptance criteria:**
-- All 7 layers verified independently
-- Role with read access on parent but not child schema → include rejected
+- All 7 layers verified independently (Layer 3 deferred to Phase 5 — see above)
+- Role with read access on parent but not child schema → include rejected *(Phase 5 gate; not currently exercised because includes don't exist)*
 - Postgres-direct query as `velocity_api` → RLS enforced
 - ABAC CEL with deliberate infinite loop → terminated at 10ms
 

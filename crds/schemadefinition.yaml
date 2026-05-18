@@ -213,6 +213,37 @@ spec:
                     indexed:
                       default: false
                       type: boolean
+                    mask:
+                      description: |-
+                        Layer-6 masking. When set, the field's value is transformed before
+                        being written to the response — unless the caller carries a role in
+                        `unmaskedFor`. Strip (Layer 5) runs first; masking only transforms
+                        values the caller is already entitled to read.
+                      nullable: true
+                      properties:
+                        keepLast:
+                          description: Required when `strategy = partial`; ignored otherwise.
+                          format: uint32
+                          minimum: 0.0
+                          nullable: true
+                          type: integer
+                        strategy:
+                          enum:
+                          - redact
+                          - partial
+                          - hash
+                          type: string
+                        unmaskedFor:
+                          default: []
+                          description: |-
+                            Roles whose holders see the raw value. Empty list ⇒ everyone is
+                            masked. The unmask check is OR across the caller's roles.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - strategy
+                      type: object
                     max:
                       format: double
                       nullable: true
@@ -269,6 +300,7 @@ spec:
                       - confidential
                       - pii
                       - financial
+                      - null
                       nullable: true
                       type: string
                     sortable:
@@ -388,6 +420,7 @@ spec:
                     type: boolean
                   crossSearchWeight:
                     format: uint8
+                    maximum: 255.0
                     minimum: 0.0
                     nullable: true
                     type: integer
@@ -476,7 +509,10 @@ spec:
               validations:
                 default: []
                 items:
-                  description: Validation rule. The discriminator is `type`; the meaningful fields depend on it (`compare` → left/operator/right, `cel` → rule). Modeled as a flat struct because kube's CRD generator can't express internally-tagged enums.
+                  description: |-
+                    Validation rule. The discriminator is `type`; the meaningful fields depend
+                    on it (`compare` → left/operator/right, `cel` → rule). Modeled as a flat
+                    struct because kube's CRD generator can't express internally-tagged enums.
                   properties:
                     left:
                       nullable: true
@@ -554,6 +590,7 @@ spec:
                 - Ready
                 - Failed
                 - Deprecated
+                - null
                 nullable: true
                 type: string
               policyHash:

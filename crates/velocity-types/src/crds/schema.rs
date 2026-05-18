@@ -215,6 +215,46 @@ pub struct FieldSpec {
     /// Per-role read/write access on the field.
     #[serde(default)]
     pub access: Option<FieldAccess>,
+
+    /// Layer-6 masking. When set, the field's value is transformed before
+    /// being written to the response — unless the caller carries a role in
+    /// `unmaskedFor`. Strip (Layer 5) runs first; masking only transforms
+    /// values the caller is already entitled to read.
+    #[serde(default)]
+    pub mask: Option<MaskingSpec>,
+}
+
+/// Per-field masking configuration. The discriminator is `strategy`; the
+/// meaningful auxiliary fields depend on it (`partial` → `keepLast`).
+/// Modelled flat because kube's CRD generator can't express
+/// internally-tagged enums.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskingSpec {
+    pub strategy: MaskingStrategyKind,
+    /// Required when `strategy = partial`; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<u32>,
+    /// Roles whose holders see the raw value. Empty list ⇒ everyone is
+    /// masked. The unmask check is OR across the caller's roles.
+    #[serde(default)]
+    pub unmasked_for: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskingStrategyKind {
+    /// Replace the value with an opaque marker.
+    Redact,
+    /// Keep the trailing N chars verbatim; mask the rest with `*`.
+    Partial,
+    /// Replace with `sha256:<hex>` so equal values still compare equal.
+    Hash,
+    // NOTE: a future `Range` variant will bucket the value into a coarse
+    // band. It isn't declared here yet — adding it without an
+    // implementation makes deserialize succeed on configs the runtime
+    // can't honour. A CRD with `strategy: range` should fail to parse
+    // until the runtime support lands.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

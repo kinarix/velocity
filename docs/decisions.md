@@ -158,7 +158,40 @@ Migration is operator-driven:
 - Per-schema configuration via `timeMachine.storage.{hot,warm,cold}.retention`
 
 **Implementation note:**
-Hot partitioning uses Postgres native partitioning (PARTITION BY RANGE on `occurred_at`, monthly). Warm queries use DuckDB to query Parquet on S3 (much faster than Athena for point queries). Cold tier retrieval uses Glacier Initiate Retrieval API; completion notification via SNS → Kafka → user callback.
+Hot partitioning uses Postgres native partitioning (PARTITION BY RANGE on `occurred_at`, monthly). Warm queries originally specified DuckDB to query Parquet on S3; see the revision below for the current choice. Cold tier retrieval uses Glacier Initiate Retrieval API; completion notification via SNS → Kafka → user callback.
+
+**Revised 2026-05-18 — warm-tier query engine and process boundary:**
+
+Two changes from the original note.
+
+*Engine.* The original comparison was DuckDB to Athena only; DataFusion was not considered. After evaluation, the warm-tier reader uses **DataFusion** on top of `parquet` + `arrow` + `object_store`. The query path today is the narrow DataFrame shape (filter + sort + limit + project); the SQL surface comes for free when we want it.
+
+Reasoning:
+- The API's warm-read query shape is fixed and narrow today — range scan on `occurred_at`, filter on `(schema_org, entity_id)`, project a handful of columns, fold to state via existing JSON Patch logic. DataFusion expresses that as a few `DataFrame::filter` calls; it does NOT obligate us to expose SQL.
+- DataFusion gives us Parquet predicate pushdown via row-group statistics automatically — no hand-rolled `cmp::eq` + `filter_record_batch` we'd otherwise have to maintain per column.
+- DataFusion is pure-Rust, builds in seconds, shares the same `arrow` + `parquet` + `object_store` versions the operator already pins. Zero new core deps; one extra crate (the query planner) on top of stack we already have.
+- DataFusion's `ListingTable` / `read_parquet` handles multi-file scans natively, so we don't write a per-file orchestrator on the reader side.
+- DuckDB's strengths — mature SQL optimizer, extension ecosystem, REPL — accrue to humans doing ad-hoc analytics, not to the API path. Those use cases can run the `duckdb` CLI against the same S3 Parquet objects without it being a dependency of the API binary.
+- When SQL-over-warm becomes a concrete API requirement (admin console, customer-facing audit explorer), it lands as `ctx.sql("...")` against the same `SessionContext` we already maintain. No rewrite of the simple reader.
+
+Operationally, ops/analysts may still use the `duckdb` CLI ad-hoc against warm-tier S3 objects — it is a human tool, not a service dependency.
+
+*Process boundary.* The warm-tier reader runs in its own service, **`velocity-warm-reader`**, not in-process inside `velocity-api`. Rationale:
+
+- Resource profile differs — warm scans are IO and memory-heavy (row-group decode into Arrow), API hot path is QPS-heavy. Mixing them puts warm scans on the API's memory budget.
+- Failure isolation — an S3 degradation contaminates the warm service's tail, not the API's hot-path tail. The hot path stays clean even when warm tier is sick.
+- Future engine growth (DataFusion, Parquet metadata cache, parallelism) does not bloat every API replica.
+- Reads and writes of warm tier are separate concerns: write lives in `velocity-archive-worker` (export), read lives in `velocity-warm-reader` (query). Co-locating would conflate two failure domains under one binary name.
+
+The API talks to `velocity-warm-reader` over **HTTP** (axum server, reqwest client — both already workspace dependencies, no new transport framework). This is the codebase's first internal service-to-service RPC; the pattern established here becomes the template for future internal services:
+
+- Service-token auth (`Authorization: Bearer <token>`), token in a k8s Secret.
+- OTel trace propagation via the `traceparent` header.
+- Fail-closed defaults consistent with ADR-003 — when warm-reader is unavailable, the API returns 503 to the caller, never silently degrades to empty results.
+- 15 s default request timeout; configurable per call-site.
+- Structured error envelope: `{ "code": "...", "message": "...", "request_id": "..." }` mirroring the API's existing error shape.
+
+When the trigger arises (mTLS, mutual SPIFFE, multi-region request routing), it lands as a follow-up ADR rather than a Phase 4 detour.
 
 ---
 

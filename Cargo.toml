@@ -9,12 +9,13 @@ members = [
     "crates/velocity-log-processor",
     "crates/velocity-log-collector",
     "crates/velocity-archive-worker",
+    "crates/velocity-warm-reader",
 ]
 
 [workspace.package]
 version      = "0.1.0"
 edition      = "2021"
-rust-version = "1.85"
+rust-version = "1.95"
 license      = "Apache-2.0"
 authors      = ["Velocity Contributors"]
 repository   = "https://github.com/kinarix/velocity"
@@ -46,17 +47,17 @@ async-trait    = "0.1"
 pin-project    = "1"
 
 # HTTP / web
-axum           = { version = "0.7", features = ["macros"] }
+axum           = { version = "0.8", features = ["macros"] }
 tower          = "0.5"
 tower-http     = { version = "0.6", features = ["trace", "cors", "limit", "request-id"] }
 axum-server    = { version = "0.7", features = ["tls-rustls"] }
 hyper          = "1"
-reqwest        = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest        = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # Kubernetes
-kube           = { version = "0.96", default-features = false, features = ["client", "derive", "runtime", "rustls-tls"] }
-k8s-openapi    = { version = "0.23", features = ["latest"] }
-schemars       = { version = "0.8", features = ["chrono", "uuid1"] }
+kube           = { version = "3.1", default-features = false, features = ["client", "derive", "runtime", "rustls-tls"] }
+k8s-openapi    = { version = "0.27", features = ["latest"] }
+schemars       = { version = "1", features = ["chrono04", "uuid1"] }
 
 # Database
 sqlx           = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "chrono", "uuid", "json"] }
@@ -66,6 +67,10 @@ arc-swap       = "1.7"
 dashmap        = "6"
 parking_lot    = "0.12"
 
+# Redis (revocation, idempotency, rate limit) — async via tokio-comp,
+# connection-manager keeps the link healed without per-call reconnect cost.
+redis          = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+
 # Serialization
 serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
@@ -73,30 +78,33 @@ serde_yaml     = "0.9"
 
 # Errors
 anyhow         = "1"
-thiserror      = "1"
+thiserror      = "2"
 
 # Observability
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.27"
-opentelemetry       = "0.26"
-opentelemetry_sdk   = { version = "0.26", features = ["rt-tokio"] }
-opentelemetry-otlp  = { version = "0.26", features = ["grpc-tonic"] }
-prometheus          = "0.13"
+tracing-opentelemetry = "0.32"
+opentelemetry       = "0.32"
+opentelemetry_sdk   = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp  = { version = "0.32", features = ["grpc-tonic"] }
+prometheus          = "0.14"
 
 # Expression / data
-cel-interpreter = "0.9"
-jsonpath-rust   = "0.7"
-json-patch      = "3"
+cel-interpreter = "0.10"
+jsonpath-rust   = "1"
+json-patch      = "4"
 regex           = "1"
 
 # Crypto
 sha2            = "0.10"
 hex             = "0.4"
-jsonwebtoken    = "9"
-rand            = "0.8"
+hmac            = "0.12"
+jsonwebtoken    = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+rand            = "0.8"      # rsa 0.9 (current latest stable) requires rand 0.8 traits;
+                              # bumping rand to 0.9/0.10 requires rsa 0.10-rc, skip until rsa GAs
 argon2          = "0.5"
 base64          = "0.22"
+ipnet           = "2"
 
 # CLI
 clap            = { version = "4", features = ["derive", "env", "wrap_help"] }
@@ -105,8 +113,26 @@ clap            = { version = "4", features = ["derive", "env", "wrap_help"] }
 chrono          = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 uuid            = { version = "1", features = ["v4", "v7", "serde"] }
 
+# Warm-tier storage (Phase 4) — pure-Rust columnar IO. DataFusion is the
+# query engine for the warm reader: it composes over arrow + parquet +
+# object_store (same versions), gives us predicate pushdown via Parquet
+# row-group statistics for free, and lets us bolt on SQL-over-warm later
+# without rewriting the reader (ADR-004 revision 2026-05-18).
+arrow           = "58"
+parquet         = "58"
+url             = "2"
+# object_store: s3:// + file:// + gs:// behind one trait. AWS feature pulls in
+# the S3 client; tests stay local via the file:// scheme.
+object_store    = { version = "0.13", features = ["aws"] }
+# DataFusion's version is kept lockstep with arrow/parquet — release 53.x
+# tracks the arrow 58.x series. Don't bump one without the other.
+datafusion      = "53"
+# Constant-time service-token comparison for the inter-service RPC pattern
+# established in Phase 4 (CLAUDE.md §Inter-Service RPC).
+subtle          = "2"
+
 # Testing
-testcontainers  = "0.23"
+testcontainers  = "0.27"
 
 # Internal crates
 velocity-types    = { path = "crates/velocity-types" }

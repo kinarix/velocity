@@ -75,6 +75,7 @@ spec:
                 - Ready
                 - Failed
                 - Deprecated
+                - null
                 nullable: true
                 type: string
             type: object
