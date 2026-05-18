@@ -710,7 +710,7 @@ pub async fn restore(
         move |tx| {
             Box::pin(async move {
                 let sql = format!(
-                    "SELECT row_to_json({table}.*) AS row FROM {table} \
+                    "SELECT (to_jsonb({table}.*) - '__fts') AS row FROM {table} \
                      WHERE id = $1::uuid AND deleted_at IS NULL"
                 );
                 let row: Option<sqlx::postgres::PgRow> = sqlx::query(&sql)
@@ -779,7 +779,7 @@ pub async fn restore(
          updated_at = now(), \
          updated_by = current_setting('app.current_user', true) \
          WHERE id = ${next_param}::uuid AND deleted_at IS NULL \
-         RETURNING row_to_json({table}.*) AS row"
+         RETURNING (to_jsonb({table}.*) - '__fts') AS row"
     );
 
     let event_schema = schema.clone();

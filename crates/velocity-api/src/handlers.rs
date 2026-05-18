@@ -113,8 +113,11 @@ async fn fetch_one_json(
     scope: Option<&row_filter::Predicate>,
 ) -> Result<Option<Value>, sqlx::Error> {
     let scope_sql = scope.map(|p| format!(" AND {}", p.sql)).unwrap_or_default();
+    // Subtract `__fts` so the Phase-5b generated tsvector column
+    // never leaks to clients. The jsonb `-` operator is a no-op when
+    // the key is absent, so this is correct on Tier-1 tables too.
     let sql = format!(
-        "SELECT row_to_json(t) AS row FROM {qualified_table} t \
+        "SELECT (to_jsonb(t) - '__fts') AS row FROM {qualified_table} t \
          WHERE id = $1::uuid AND deleted_at IS NULL{scope_sql}"
     );
     let mut q = sqlx::query(&sql).bind(id);
@@ -152,7 +155,7 @@ pub async fn list(
                 // mapping.
                 let select = compiled.sql.replacen(
                     "SELECT * FROM",
-                    "SELECT row_to_json(t.*) AS row FROM",
+                    "SELECT (to_jsonb(t.*) - '__fts') AS row FROM",
                     1,
                 );
                 let mut q = sqlx::query(&select);
@@ -377,7 +380,7 @@ async fn insert_row(
     };
     let sql = format!(
         "INSERT INTO {qualified_table} {col_list} \
-         RETURNING row_to_json({qualified_table}.*) AS row"
+         RETURNING (to_jsonb({qualified_table}.*) - '__fts') AS row"
     );
     let mut q = sqlx::query(&sql);
     for v in vals {
@@ -528,7 +531,7 @@ pub async fn update(
         .unwrap_or_default();
     let sql = format!(
         "UPDATE {table} SET {} WHERE id = ${id_idx}::uuid AND version = ${ver_idx} AND deleted_at IS NULL{scope_sql} \
-         RETURNING row_to_json({table}.*) AS row",
+         RETURNING (to_jsonb({table}.*) - '__fts') AS row",
         sets.join(", ")
     );
 
@@ -540,7 +543,7 @@ pub async fn update(
     let event_schema = schema.clone();
     let event_identity = identity.clone();
     let pre_select_sql = format!(
-        "SELECT row_to_json({table}.*) AS row FROM {table} \
+        "SELECT (to_jsonb({table}.*) - '__fts') AS row FROM {table} \
          WHERE id = $1::uuid AND deleted_at IS NULL"
     );
 

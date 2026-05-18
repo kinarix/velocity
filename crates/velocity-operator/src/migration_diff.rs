@@ -257,6 +257,12 @@ fn is_system_column(name: &str) -> bool {
             | "updated_by"
             | "archived_at"
             | "archive_ref"
+            // Phase 5b — generated FTS column. Not declared by the
+            // user but always present on Tier-2+ schemas with
+            // searchable fields. Treated as system so the diff layer
+            // ignores it (and so `velocity drift check` doesn't flag
+            // it as an orphan).
+            | "__fts"
     )
 }
 

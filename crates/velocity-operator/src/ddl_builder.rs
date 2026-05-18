@@ -129,13 +129,39 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
 
     let columns = build_columns(spec, &table)?;
     let column_specs = build_column_specs(spec)?;
-    let main_table = build_create_table(&qualified, &columns, &table)?;
+    // Phase 5b — collect searchable string/enum fields for the
+    // tsvector generated column. Only Tier 2 and Tier 3 get one; Tier
+    // 1 stays on plain B-tree filters.
+    let fts_columns: Vec<String> = match spec.search.tier {
+        SearchTier::Tier2 | SearchTier::Tier3 => spec
+            .fields
+            .iter()
+            .filter(|f| {
+                f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum)
+            })
+            .map(|f| sanitize(&f.name))
+            .collect(),
+        SearchTier::Tier1 => Vec::new(),
+    };
+    let main_table = build_create_table_with_fts(
+        &qualified,
+        &columns,
+        &table,
+        if fts_columns.is_empty() { None } else { Some(&fts_columns) },
+    )?;
     let history_table = build_history_table(&schema_name, &table)?;
     let outbox_table = match spec.search.tier {
         SearchTier::Tier3 => Some(build_outbox_table(&schema_name, &table)),
         _ => None,
     };
-    let indexes = build_indexes(spec, &schema_name, &table)?;
+    let mut indexes = build_indexes(spec, &schema_name, &table)?;
+    if !fts_columns.is_empty() {
+        // Phase 5b — GIN on __fts. Standard tsvector index; matches
+        // websearch_to_tsquery() at query time.
+        indexes.push(format!(
+            "CREATE INDEX IF NOT EXISTS idx_{table}_fts ON {qualified} USING GIN (__fts);"
+        ));
+    }
     let triggers = build_triggers(spec, &schema_name, &table);
     let rls_policies = build_rls_policies(spec, &schema_name, &table)?;
 
@@ -367,10 +393,15 @@ fn field_default_sql(f: &FieldSpec) -> Result<Option<String>, DdlError> {
 
 // ─── CREATE TABLE ───────────────────────────────────────────────────────────
 
-fn build_create_table(
+/// Build a `CREATE TABLE IF NOT EXISTS` with an optional `__fts`
+/// column when `fts` is `Some(list_of_searchable_columns)`. Lifted out
+/// so the Phase 5b plan can opt in for Tier-2 schemas without
+/// rewriting the entire builder.
+fn build_create_table_with_fts(
     qualified: &str,
     columns: &[ColumnDef],
     table: &str,
+    fts: Option<&[String]>,
 ) -> Result<String, DdlError> {
     // String::write_fmt is infallible — writing to a String never fails.
     let mut s = String::with_capacity(1024);
@@ -388,6 +419,24 @@ fn build_create_table(
             line.push_str(&format!(" {check}"));
         }
         lines.push(line);
+    }
+    // Phase 5b — Tier-2 FTS. Stored generated column built from every
+    // searchable field with `coalesce(..,'')` so a NULL anywhere
+    // doesn't blank the entire vector. Uniform weighting (no A/B/C/D)
+    // for v1; per-field weights become a CRD-level decision when
+    // someone needs them. Skipped silently when there are no
+    // searchable fields — a Tier-2 schema with `searchable: false`
+    // everywhere is well-formed; it just doesn't get FTS.
+    if let Some(cols) = fts {
+        if !cols.is_empty() {
+            let parts: Vec<String> =
+                cols.iter().map(|c| format!("coalesce({c}, '')")).collect();
+            lines.push(format!(
+                "    __fts tsvector GENERATED ALWAYS AS \
+                 (to_tsvector('english', {})) STORED",
+                parts.join(" || ' ' || ")
+            ));
+        }
     }
     lines.push(format!("    CONSTRAINT {table}_pkey PRIMARY KEY (id)"));
     s.push_str(&lines.join(",\n"));
@@ -883,6 +932,50 @@ mod tests {
     fn soft_delete_index_always_emitted() {
         let plan = build_ddl(&minimal_spec(vec![], SearchTier::Tier1), &path()).unwrap();
         assert!(plan.indexes.iter().any(|s| s.contains("idx_purchase_order_v1_active")));
+    }
+
+    #[test]
+    fn tier1_omits_fts_column() {
+        let mut f = field("description", FieldKind::String);
+        f.searchable = true;
+        let plan = build_ddl(&minimal_spec(vec![f], SearchTier::Tier1), &path()).unwrap();
+        assert!(
+            !plan.main_table.contains("__fts"),
+            "Tier-1 must not provision the FTS column"
+        );
+        assert!(!plan.indexes.iter().any(|s| s.contains("__fts")));
+    }
+
+    #[test]
+    fn tier2_emits_fts_column_and_gin_index() {
+        let mut a = field("title", FieldKind::String);
+        a.searchable = true;
+        let mut b = field("notes", FieldKind::String);
+        b.searchable = true;
+        let plain = field("po_number", FieldKind::String);
+        let plan =
+            build_ddl(&minimal_spec(vec![a, b, plain], SearchTier::Tier2), &path()).unwrap();
+        assert!(plan.main_table.contains("__fts tsvector GENERATED ALWAYS"));
+        // Both searchable fields are wired in; the non-searchable one isn't.
+        assert!(plan.main_table.contains("coalesce(title"));
+        assert!(plan.main_table.contains("coalesce(notes"));
+        assert!(!plan.main_table.contains("coalesce(po_number"));
+        // GIN index emitted.
+        assert!(plan
+            .indexes
+            .iter()
+            .any(|s| s.contains("USING GIN (__fts)")));
+    }
+
+    #[test]
+    fn tier2_no_searchable_fields_skips_fts() {
+        let plan = build_ddl(
+            &minimal_spec(vec![field("po_number", FieldKind::String)], SearchTier::Tier2),
+            &path(),
+        )
+        .unwrap();
+        assert!(!plan.main_table.contains("__fts"));
+        assert!(!plan.indexes.iter().any(|s| s.contains("__fts")));
     }
 
     #[test]

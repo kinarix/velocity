@@ -60,6 +60,9 @@ pub const MAX_WHERE_NODES: usize = 64;
 pub const MAX_INCLUDES: usize = 5;
 pub const MAX_SORT_FIELDS: usize = 4;
 pub const MAX_SELECT_FIELDS: usize = 64;
+/// Hard cap on `q` length — matches the websearch_to_tsquery parse
+/// cost an attacker can extract from a single request.
+pub const MAX_FTS_LENGTH: usize = 256;
 
 /// System columns that pass the field allowlist for `select` / `sort`
 /// even though they aren't user-declared. `id` and timestamps double as
@@ -116,6 +119,13 @@ pub struct QueryDsl {
     pub limit: Option<u32>,
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Phase 5b — Tier-2 FTS. When set, the compiler appends
+    /// `__fts @@ websearch_to_tsquery('english', $N)` to the WHERE.
+    /// Capped at 256 chars to bound parse cost. Available only on
+    /// schemas with `searchable: true` fields and `search.tier ≥ 2`;
+    /// otherwise the request is rejected with a 400.
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -332,7 +342,12 @@ pub fn build(
     // shape is identical regardless of `select` presence — the field
     // filter / masking layer can then strip uniformly.
     let projection = if dsl.select.is_empty() {
-        "to_jsonb(t.*) AS __row".to_string()
+        // Subtract `__fts` so the generated tsvector column never
+        // leaks to the client (it's binary noise and the value isn't
+        // user-facing). The jsonb `-` operator is a no-op when the
+        // key is absent, so this is safe on Tier-1 tables that don't
+        // have the column.
+        "(to_jsonb(t.*) - '__fts') AS __row".to_string()
     } else {
         // Always include `id` so cursor pagination has a tiebreaker
         // and Layer-5 strip can key off it. Build via jsonb_build_object
@@ -378,6 +393,35 @@ pub fn build(
         let sql = compile_where(node, schema, &mut params, &mut depth, &mut node_count)?;
         if !sql.is_empty() {
             where_parts.push(sql);
+        }
+    }
+
+    // Phase 5b — Tier-2 FTS. Available only when the schema's tier is
+    // ≥2 AND at least one field is `searchable: true` (otherwise no
+    // __fts column was provisioned). Rejected loudly rather than
+    // returning empty results, so a misconfigured CRD surfaces fast.
+    if let Some(q) = &dsl.q {
+        let q = q.trim();
+        if q.is_empty() {
+            // Treat as no-op rather than full table scan.
+        } else {
+            if q.len() > MAX_FTS_LENGTH {
+                return Err(ApiError::BadRequest(format!(
+                    "q: at most {MAX_FTS_LENGTH} characters"
+                )));
+            }
+            if !fts_available(schema) {
+                return Err(ApiError::BadRequest(
+                    "q: full-text search is not configured for this schema \
+                     (requires search.tier >= 2 and at least one searchable field)"
+                        .into(),
+                ));
+            }
+            params.push(Value::String(q.to_string()));
+            where_parts.push(format!(
+                "t.__fts @@ websearch_to_tsquery('english', ${})",
+                params.len()
+            ));
         }
     }
 
@@ -807,6 +851,21 @@ pub fn searchable_field_names(schema: &ResolvedSchema) -> HashSet<String> {
         .filter(|f| f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum))
         .map(|f| f.name.clone())
         .collect()
+}
+
+/// Whether this schema has a `__fts` generated column the FTS path
+/// can hit. Mirrors the operator's DDL emission rule: tier ≥ 2 AND
+/// at least one searchable string/enum field.
+fn fts_available(schema: &ResolvedSchema) -> bool {
+    use velocity_types::crds::schema::SearchTier;
+    if matches!(schema.spec.search.tier, SearchTier::Tier1) {
+        return false;
+    }
+    schema
+        .fields
+        .ordered
+        .iter()
+        .any(|f| f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum))
 }
 
 // ─── Response helpers ───────────────────────────────────────────────────────
@@ -1243,6 +1302,94 @@ mod tests {
         };
         let err = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap_err();
         assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    fn searchable_field(name: &str) -> FieldSpec {
+        let mut f = field(name, FieldKind::String, true, true);
+        f.searchable = true;
+        f
+    }
+
+    fn schema_tier2(fields: Vec<FieldSpec>) -> ResolvedSchema {
+        let mut spec = SchemaDefinitionSpec {
+            version: "v1".into(),
+            partitioning: None,
+            auth: AuthSpec {
+                strategy_ref: velocity_types::common::NamespacedRef {
+                    name: "default".into(),
+                    namespace: "acme-platform".into(),
+                },
+                overrides: Vec::new(),
+            },
+            access: AccessSpec::default(),
+            fields,
+            validations: Vec::new(),
+            search: SearchSpec { tier: SearchTier::Tier2, ..Default::default() },
+            time_machine: None,
+            audit: None,
+            archive: None,
+            observability: ObservabilitySpec::default(),
+            scaling: None,
+        };
+        let _ = &mut spec;
+        ResolvedSchema::from_spec(
+            SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1"),
+            spec,
+        )
+    }
+
+    #[test]
+    fn fts_rejected_on_tier1() {
+        let s = schema(vec![searchable_field("description")]);
+        let dsl = QueryDsl { q: Some("widget".into()), ..Default::default() };
+        let err = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn fts_rejected_when_no_searchable_fields() {
+        let s = schema_tier2(vec![field("po_number", FieldKind::String, true, true)]);
+        let dsl = QueryDsl { q: Some("widget".into()), ..Default::default() };
+        let err = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn fts_emits_websearch_predicate() {
+        let s = schema_tier2(vec![searchable_field("description")]);
+        let dsl = QueryDsl { q: Some("steel widget".into()), ..Default::default() };
+        let c = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap();
+        assert!(c.sql.contains("__fts @@ websearch_to_tsquery"));
+        assert_eq!(c.params, vec![json!("steel widget")]);
+    }
+
+    #[test]
+    fn fts_capped_at_max_length() {
+        let s = schema_tier2(vec![searchable_field("description")]);
+        let dsl = QueryDsl { q: Some("a".repeat(MAX_FTS_LENGTH + 1)), ..Default::default() };
+        let err = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn fts_empty_q_is_noop() {
+        let s = schema_tier2(vec![searchable_field("description")]);
+        let dsl = QueryDsl { q: Some("   ".into()), ..Default::default() };
+        let c = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap();
+        // The projection always subtracts `__fts`; what we care about is
+        // that the WHERE clause did NOT acquire an `@@` FTS predicate.
+        assert!(!c.sql.contains("@@"));
+        assert!(!c.sql.contains("websearch_to_tsquery"));
+    }
+
+    #[test]
+    fn projection_subtracts_fts_column() {
+        let s = schema_tier2(vec![searchable_field("description")]);
+        let c = build(&s, &QueryDsl::default(), &id(), &fresh_registry(), None).unwrap();
+        // Always subtracts `__fts` from the main row, even on Tier-1
+        // (no-op there). Cheaper than threading tier-awareness through
+        // the projection.
+        assert!(c.sql.contains("to_jsonb(t.*) - '__fts'"));
     }
 
     #[test]
