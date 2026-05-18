@@ -100,6 +100,20 @@ impl PostgresProvisioner {
 
         let mut tx = self.pool.begin().await?;
 
+        // Serialize this transaction against any other domain provisioning
+        // running concurrently against the same Postgres. We touch the
+        // shared `pg_roles` / `pg_default_acl` system catalogs (CREATE
+        // ROLE + GRANT + ALTER DEFAULT PRIVILEGES), and two concurrent
+        // transactions racing on those catalogs can return "tuple
+        // concurrently updated" (XX000) — Postgres won't serialize them
+        // for us because the rows being modified aren't user data. An
+        // advisory xact lock on a constant key forces strict ordering.
+        // Lock is released at COMMIT/ROLLBACK; the constant is arbitrary
+        // (just needs to be the same across all callers).
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
+            .execute(&mut *tx)
+            .await?;
+
         // 1. Schema
         exec(&mut tx, &format!("CREATE SCHEMA IF NOT EXISTS {schema}")).await?;
 
@@ -124,6 +138,58 @@ impl PostgresProvisioner {
         exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO velocity_api")).await?;
         exec(&mut tx, &format!("GRANT USAGE, CREATE ON SCHEMA {schema} TO velocity_operator"))
             .await?;
+
+        // Per-domain roles must also reach `platform.*` to write the audit
+        // and event_log rows that every mutation produces. The handler
+        // executes `SET LOCAL ROLE {domain_role}` (ADR-007) and the audit
+        // / event-log writes happen inside that role's transaction — so
+        // the domain role itself needs USAGE on platform plus INSERT on
+        // event_log and EXECUTE on `audit_insert`. velocity_api having
+        // these grants is insufficient; `GRANT role TO velocity_api` makes
+        // velocity_api a *member* of the domain role, so privileges flow
+        // from domain → velocity_api, not the other direction.
+        for role in [&reader, &writer, &admin] {
+            exec(&mut tx, &format!("GRANT USAGE ON SCHEMA platform TO {role}")).await?;
+            // Read access to event_log so the time-machine endpoints —
+            // which run under the same SET LOCAL ROLE — can SELECT from it.
+            exec(
+                &mut tx,
+                &format!("GRANT SELECT ON platform.event_log TO {role}"),
+            )
+            .await?;
+        }
+        // Writer / admin can append events; reader cannot. Restore lives
+        // on writer (it produces a new event), so the writer grant covers
+        // both standard CRUD and restore paths.
+        for role in [&writer, &admin] {
+            exec(
+                &mut tx,
+                &format!("GRANT INSERT ON platform.event_log TO {role}"),
+            )
+            .await?;
+            // Same lifetime as the writes above: audit_insert is the only
+            // way the audit_log table accepts new rows. EXECUTE on the
+            // function is what gates this for the domain role.
+            exec(
+                &mut tx,
+                &format!(
+                    "GRANT EXECUTE ON FUNCTION platform.audit_insert( \
+                         TEXT, TEXT, TEXT, TEXT, UUID, JSONB, JSONB, TEXT, TEXT, TEXT \
+                     ) TO {role}"
+                ),
+            )
+            .await?;
+            // Idempotency-key insert / lookup happens in the same tx as
+            // the user-visible write, so the domain role needs SELECT
+            // + INSERT + UPDATE on platform.idempotency_keys too.
+            exec(
+                &mut tx,
+                &format!(
+                    "GRANT SELECT, INSERT, UPDATE ON platform.idempotency_keys TO {role}"
+                ),
+            )
+            .await?;
+        }
 
         // 4. Default privileges so future tables in this schema are usable
         //    without per-table GRANTs from the SchemaOperator. Issued AS the
@@ -232,6 +298,15 @@ impl PostgresProvisioner {
                     exec(&mut tx, &s).await?;
                 }
             }
+        }
+
+        // Layer-7 RLS — applied on every reconcile (drop+create style) so
+        // a `rowFilter[]` edit replaces the predicate set cleanly. The
+        // operator owns the tables, so it bypasses RLS for the DDL
+        // itself; future migration backfills (e.g. DROP COLUMN) rely on
+        // that, which is why we don't `FORCE ROW LEVEL SECURITY`.
+        for stmt in &plan.rls_policies {
+            exec(&mut tx, stmt).await?;
         }
 
         tx.commit().await?;

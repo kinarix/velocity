@@ -28,6 +28,10 @@ spec:
       serviceAccountName: {{ include "velocity.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.webhook.podSecurityContext | nindent 8 }}
+      {{- with .Values.webhook.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,6 +53,8 @@ spec:
               value: "/tls/tls.key"
             - name: VELOCITY_WEBHOOK_PRETTY_LOGS
               value: {{ .Values.webhook.logging.pretty | quote }}
+            - name: VELOCITY_WEBHOOK_MULTI_TENANT_MODE
+              value: {{ .Values.webhook.multiTenantMode | quote }}
             - name: RUST_LOG
               value: {{ printf "%s,velocity_webhook=%s" .Values.webhook.logging.level .Values.webhook.logging.level | quote }}
           ports:

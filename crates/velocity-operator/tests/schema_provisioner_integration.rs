@@ -52,6 +52,7 @@ fn field(name: &str, kind: FieldKind) -> FieldSpec {
         r#ref: None,
         sensitivity: None,
         access: None,
+        mask: None,
     }
 }
 

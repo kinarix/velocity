@@ -8,6 +8,10 @@
 
 pub mod config;
 pub mod handler;
+pub mod strategy_check;
 pub mod validators;
 
 pub use config::WebhookConfig;
+pub use strategy_check::{
+    validate_auth_strategy_ref, AuthStrategyExists, KubeStrategyChecker, MockStrategyChecker,
+};

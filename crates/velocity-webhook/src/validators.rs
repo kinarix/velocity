@@ -54,8 +54,17 @@ pub fn validate_application(obj: &Value, namespace: &str) -> ValidationResult {
     Ok(())
 }
 
-/// SchemaDefinition: namespace == `{org}-{app}-{domain}`; CEL rules pass basic safety.
-pub fn validate_schema_definition(obj: &Value, namespace: &str) -> ValidationResult {
+/// SchemaDefinition validators. Bundle the per-Kind checks behind one
+/// entry point so the handler doesn't need to know which rules apply.
+///
+/// `multi_tenant_mode` enables the ADR-010 cross-org guard: in a shared
+/// cluster, any `ref` field that points at a schema in a different org is
+/// rejected at admission time. Single-tenant clusters leave it off.
+pub fn validate_schema_definition(
+    obj: &Value,
+    namespace: &str,
+    multi_tenant_mode: bool,
+) -> ValidationResult {
     let org = obj.pointer("/metadata/labels/velocity.sh~1org").and_then(Value::as_str).ok_or_else(
         || ValidationFailure("SchemaDefinition must have label `velocity.sh/org`".into()),
     )?;
@@ -77,6 +86,61 @@ pub fn validate_schema_definition(obj: &Value, namespace: &str) -> ValidationRes
     if let Some(validations) = obj.pointer("/spec/validations").and_then(Value::as_array) {
         for (i, v) in validations.iter().enumerate() {
             check_cel_safety(v, i)?;
+        }
+    }
+
+    validate_field_refs(obj, org, multi_tenant_mode)?;
+
+    Ok(())
+}
+
+/// Walk `spec.fields[]` and check every `kind: ref` entry:
+///
+/// - The `ref` object must carry `org`, `app`, `domain`, `object`, `version`
+///   (no partial pointers).
+/// - In multi-tenant mode (ADR-010), `ref.org` must equal the schema's own
+///   org — cross-tenant references are a data-leak vector and the webhook
+///   is the last admission gate before the operator wires them up.
+///
+/// We deliberately stop at the static check: confirming the target schema
+/// actually exists in the cluster would require live kube reads from the
+/// webhook, which we leave to the operator's reconcile-time validation.
+fn validate_field_refs(
+    obj: &Value,
+    self_org: &str,
+    multi_tenant_mode: bool,
+) -> ValidationResult {
+    let Some(fields) = obj.pointer("/spec/fields").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let self_org_kebab = kebab(self_org);
+
+    for (i, f) in fields.iter().enumerate() {
+        let kind = f.pointer("/type").and_then(Value::as_str).unwrap_or("");
+        if kind != "ref" {
+            continue;
+        }
+        let name = f.pointer("/name").and_then(Value::as_str).unwrap_or("<unnamed>");
+        let Some(target) = f.pointer("/ref") else {
+            return Err(ValidationFailure(format!(
+                "fields[{i}] (`{name}`): kind=ref requires a `ref` block"
+            )));
+        };
+        for k in ["org", "app", "domain", "object", "version"] {
+            if target.pointer(&format!("/{k}")).and_then(Value::as_str).is_none() {
+                return Err(ValidationFailure(format!(
+                    "fields[{i}] (`{name}`): ref.{k} is required"
+                )));
+            }
+        }
+        if multi_tenant_mode {
+            let target_org = target.pointer("/org").and_then(Value::as_str).unwrap_or("");
+            if kebab(target_org) != self_org_kebab {
+                return Err(ValidationFailure(format!(
+                    "fields[{i}] (`{name}`): cross-org ref to `{target_org}` rejected — \
+                     multi-tenant clusters do not permit cross-tenant references (ADR-010)"
+                )));
+            }
         }
     }
     Ok(())
@@ -162,7 +226,8 @@ mod tests {
             "metadata": { "labels": { "velocity.sh/org": "acme" } },
             "spec": {}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement").unwrap_err();
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
         assert!(err.0.contains("velocity.sh/app"));
     }
 
@@ -180,7 +245,8 @@ mod tests {
                 { "type": "cel", "rule": "x".repeat(20_000) }
             ]}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement").unwrap_err();
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
         assert!(err.0.contains("byte cap"));
     }
 
@@ -206,7 +272,8 @@ mod tests {
                 { "type": "cel", "rule": deep }
             ]}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement").unwrap_err();
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
         assert!(err.0.contains("nesting depth"));
     }
 
@@ -224,6 +291,90 @@ mod tests {
                 { "type": "cel", "rule": "self.amount > 0", "maxExecutionMs": 10 }
             ]}
         });
-        assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement").is_ok());
+        assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement", false).is_ok());
+    }
+
+    fn sd_with_field(field: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "metadata": {
+                "labels": {
+                    "velocity.sh/org": "acme",
+                    "velocity.sh/app": "supply-chain",
+                    "velocity.sh/domain": "procurement",
+                }
+            },
+            "spec": { "fields": [field] }
+        })
+    }
+
+    #[test]
+    fn ref_missing_target_rejected() {
+        let obj = sd_with_field(serde_json::json!({ "name": "supplier", "type": "ref" }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
+        assert!(err.0.contains("requires a `ref` block"));
+    }
+
+    #[test]
+    fn ref_missing_subfield_rejected() {
+        let obj = sd_with_field(serde_json::json!({
+            "name": "supplier",
+            "type": "ref",
+            "ref": { "org": "acme", "app": "supply-chain", "domain": "procurement" }
+        }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
+            .unwrap_err();
+        assert!(err.0.contains("ref.object"));
+    }
+
+    #[test]
+    fn cross_org_ref_allowed_in_single_tenant_mode() {
+        let obj = sd_with_field(serde_json::json!({
+            "name": "supplier",
+            "type": "ref",
+            "ref": {
+                "org": "globex",
+                "app": "supply-chain",
+                "domain": "procurement",
+                "object": "supplier",
+                "version": "v1"
+            }
+        }));
+        assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement", false).is_ok());
+    }
+
+    #[test]
+    fn cross_org_ref_rejected_in_multi_tenant_mode() {
+        let obj = sd_with_field(serde_json::json!({
+            "name": "supplier",
+            "type": "ref",
+            "ref": {
+                "org": "globex",
+                "app": "supply-chain",
+                "domain": "procurement",
+                "object": "supplier",
+                "version": "v1"
+            }
+        }));
+        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", true)
+            .unwrap_err();
+        assert!(err.0.contains("cross-org"));
+        assert!(err.0.contains("ADR-010"));
+    }
+
+    #[test]
+    fn same_org_ref_allowed_in_multi_tenant_mode() {
+        let obj = sd_with_field(serde_json::json!({
+            "name": "supplier",
+            "type": "ref",
+            "ref": {
+                "org": "acme",
+                "app": "logistics",
+                "domain": "shipping",
+                "object": "supplier",
+                "version": "v1"
+            }
+        }));
+        assert!(validate_schema_definition(&obj, "acme-supply-chain-procurement", true).is_ok());
     }
 }

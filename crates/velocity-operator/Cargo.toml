@@ -45,13 +45,22 @@ serde_json         = { workspace = true }
 dashmap            = { workspace = true }
 sha2               = { workspace = true }
 chrono             = { workspace = true }
+uuid               = { workspace = true }
 arc-swap           = { workspace = true }
+redis              = { workspace = true }
+
+# Warm-tier export (Phase 4.2) — write Parquet objects to object_store.
+arrow              = { workspace = true }
+parquet            = { workspace = true, features = ["async", "object_store"] }
+object_store       = { workspace = true }
+url                = { workspace = true }
 
 # Pinned only to call CryptoProvider::install_default() at startup. kube-rs
 # (via rustls-tls) pulls rustls 0.23 in but doesn't pick a provider for us.
 rustls             = { version = "0.23", features = ["aws-lc-rs"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
-uuid  = { workspace = true }
-sqlx  = { workspace = true }
+tokio    = { workspace = true, features = ["test-util", "macros"] }
+uuid     = { workspace = true }
+sqlx     = { workspace = true }
+tempfile = "3"

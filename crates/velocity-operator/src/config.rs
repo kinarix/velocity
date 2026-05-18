@@ -20,6 +20,21 @@ pub struct OperatorConfig {
     pub leader_election: bool,
     /// Pretty logs (true) vs JSON logs (false; default for production).
     pub pretty_logs: bool,
+    /// Redis URL for actor revocation publishing — `redis://host:port`.
+    /// `None` runs the RoleBinding reconciler in DB-only mode (handy for
+    /// dev environments without Redis). Production always sets this.
+    pub redis_url: Option<String>,
+    /// Override for the revocation set key. Defaults to `revoked_actors`,
+    /// matching `velocity_api::auth::DEFAULT_REVOKED_SET_KEY`.
+    pub redis_revoked_key: String,
+    /// `object_store` URL where the tiering exporter writes warm-tier
+    /// Parquet objects (Phase 4.2). `s3://bucket/prefix` in prod,
+    /// `file:///abs/path` in dev/CI. When `None`, the exporter logs a
+    /// warning at startup and stays idle — partitions stay in the hot
+    /// tier until the operator is reconfigured. We deliberately don't
+    /// fail-loud: warm-tier is optional configuration, unlike
+    /// `velocity-warm-reader` which can't run without it.
+    pub warm_storage_url: Option<String>,
 }
 
 impl OperatorConfig {
@@ -50,6 +65,12 @@ impl OperatorConfig {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let redis_url = std::env::var("VELOCITY_OPERATOR_REDIS_URL").ok();
+        let redis_revoked_key = std::env::var("VELOCITY_OPERATOR_REDIS_REVOKED_KEY")
+            .unwrap_or_else(|_| "revoked_actors".to_string());
+
+        let warm_storage_url = std::env::var("VELOCITY_OPERATOR_WARM_STORAGE_URL").ok();
+
         Ok(Self {
             pg_url,
             health_addr,
@@ -57,6 +78,9 @@ impl OperatorConfig {
             watch_namespace,
             leader_election,
             pretty_logs,
+            redis_url,
+            redis_revoked_key,
+            warm_storage_url,
         })
     }
 

@@ -64,7 +64,14 @@ operator:
 ###############################################################################
 webhook:
   enabled: true
-  replicaCount: 2
+  # Default to 3 replicas so a single-node failure still leaves a quorum
+  # of admission servers running. PDB below keeps at least one available
+  # through voluntary disruptions.
+  replicaCount: 3
+  # ADR-010: when true, the webhook rejects any SchemaDefinition whose
+  # `ref` fields point to a different org. Single-tenant clusters leave
+  # this off.
+  multiTenantMode: false
   image:
     name: velocity-webhook
     tag: "0.1.0"
@@ -84,6 +91,24 @@ webhook:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     capabilities: { drop: ["ALL"] }
+  # Soft anti-affinity by hostname — schedule replicas onto distinct nodes
+  # when capacity allows, but don't block scheduling on a single-node dev
+  # cluster. Override with required-during-scheduling on production.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: webhook
+  # PodDisruptionBudget protects against voluntary disruptions (node drains,
+  # rolling cluster upgrades) — minAvailable: 1 keeps the admission path up
+  # while one pod is being evicted.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   # TLS sources:
   #   tls.source = "secret"  → use existing Secret (with tls.crt/tls.key)
   #   tls.source = "values"  → render Secret from inline base64 PEM
@@ -97,7 +122,14 @@ webhook:
     certManager:
       issuerName: ""
       issuerKind: "Issuer"
-  failurePolicy: "Fail"
+  # Split failurePolicy: data-integrity Kinds (Org/App/Domain/SchemaDefinition,
+  # AuthStrategy, RoleBinding, ApiKey, PurgeRequest) MUST be admitted only by
+  # the webhook — fail closed. Declarative-policy Kinds (ArchivePolicy,
+  # LogFilterPolicy, LogRoutingPolicy) tolerate webhook downtime — fail open
+  # so a webhook outage doesn't block policy edits during an incident.
+  failurePolicies:
+    dataIntegrity: "Fail"
+    declarative: "Ignore"
   matchPolicy: "Equivalent"
   sideEffects: "None"
   timeoutSeconds: 10

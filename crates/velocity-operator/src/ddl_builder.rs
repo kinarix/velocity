@@ -94,6 +94,12 @@ pub struct DdlPlan {
     pub indexes: Vec<String>,
     /// PL/pgSQL functions + triggers (updated_at touch, history+outbox).
     pub triggers: Vec<String>,
+    /// Layer-7 RLS — `ALTER TABLE ENABLE ROW LEVEL SECURITY` plus one
+    /// permissive policy per `(table, user-role)` derived from
+    /// `spec.access.rowFilter`. The API reads `app.scoped_roles` to
+    /// signal which policies apply; see [`crate::ddl_builder::build_rls_policies`]
+    /// for the encoding.
+    pub rls_policies: Vec<String>,
 }
 
 /// Structured view of one column. Used by [`DdlPlan`] and the diff layer.
@@ -131,6 +137,7 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
     };
     let indexes = build_indexes(spec, &schema_name, &table)?;
     let triggers = build_triggers(spec, &schema_name, &table);
+    let rls_policies = build_rls_policies(spec, &schema_name, &table)?;
 
     Ok(DdlPlan {
         qualified_table: qualified,
@@ -140,6 +147,7 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
         outbox_table,
         indexes,
         triggers,
+        rls_policies,
     })
 }
 
@@ -475,6 +483,194 @@ fn build_indexes(
     Ok(out)
 }
 
+// ─── RLS policies (Layer 7) ─────────────────────────────────────────────────
+
+/// Build Layer-7 RLS DDL for the table.
+///
+/// Always emits:
+/// - `ALTER TABLE … ENABLE ROW LEVEL SECURITY`
+/// - A *wildcard* permissive policy `pol_{table}_unrestricted` that
+///   admits a row whenever `app.scoped_roles` contains the literal
+///   `*` sentinel. Both "schema declares no rowFilter" and "actor has
+///   an unrestricted role" collapse to the same `*` value on the API
+///   side (see [`crate::row_filter::scoped_roles_for_session`]), so the
+///   policy only checks for that single sentinel. Empty string is the
+///   *deny* sentinel and must NOT admit — matches the SQL-fragment
+///   path which renders to `(false)` in that case.
+///
+/// Then, for each *user-role* that has at least one `rowFilter[]` entry,
+/// one scoped permissive policy `pol_{table}_role_{role}`:
+///
+///   `USING (member-of('app.scoped_roles', '<role>') AND <all clauses ANDed>)`
+///
+/// Postgres ORs permissive policies for the same command on the same
+/// role, which gives us free union across user-roles. ANDing clauses
+/// within a user-role's policy preserves the row_filter.rs semantic
+/// "multiple entries for the same role AND together; different roles
+/// OR" — see [`crate::row_filter`] for the matching API-side rendering.
+///
+/// We DROP every named policy before re-creating it so a reconcile after
+/// a `rowFilter[]` edit replaces the predicate cleanly. Drop is gated on
+/// `IF EXISTS` so the first-run path is fine.
+///
+/// **Identifier safety**: the policy name embeds the user-role string,
+/// which can contain `-` and other characters that aren't valid in a
+/// Postgres identifier. We hash unsanitisable role names into a
+/// stable suffix so two roles never collide on the same policy name.
+fn build_rls_policies(
+    spec: &SchemaDefinitionSpec,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>, DdlError> {
+    use std::collections::BTreeMap;
+    use velocity_types::crds::schema::RowFilterRule;
+
+    let qualified = format!("{schema}.{table}");
+    let mut out = Vec::new();
+
+    // 1. Always enable RLS — even with no policies declared, the wildcard
+    //    policy below admits the right traffic.
+    out.push(format!("ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY;"));
+
+    // 2. Group rowFilter entries by user-role. BTreeMap so the output is
+    //    deterministic across reconciles (important for idempotency
+    //    checks at the migration_diff layer).
+    let mut by_role: BTreeMap<&str, Vec<&RowFilterRule>> = BTreeMap::new();
+    for rule in &spec.access.row_filter {
+        by_role.entry(rule.role.as_str()).or_default().push(rule);
+    }
+
+    // 3. Drop *every* policy this builder might have emitted previously,
+    //    so a `rowFilter` edit doesn't leave stale predicates behind.
+    //    We can't enumerate "all old policies" (we'd need to query the
+    //    catalog), but we *can* drop the names we'd emit *now* plus the
+    //    wildcard — anything previously emitted for a now-removed user
+    //    role lingers and must be cleaned up by a manual ops procedure
+    //    or a future "list pg_policies and reconcile" pass. Documented.
+    out.push(format!(
+        "DROP POLICY IF EXISTS pol_{table}_unrestricted ON {qualified};"
+    ));
+    for role in by_role.keys() {
+        let suffix = policy_role_suffix(role);
+        out.push(format!("DROP POLICY IF EXISTS pol_{table}_role_{suffix} ON {qualified};"));
+    }
+
+    // 4. Wildcard admit. The API encodes any path that should see every
+    //    row (no rowFilter declared OR caller has an unrestricted role)
+    //    as `app.scoped_roles = '*'`. Empty string `''` is the *deny*
+    //    sentinel (compiled rules + zero matched user-roles) and must
+    //    NOT admit here — defense-in-depth requires this policy to
+    //    match the SQL fragment's `(false)` rendering for that case.
+    //    A NULL setting (prelude missing entirely) also fails closed:
+    //    `current_setting('app.scoped_roles', true)` returns NULL when
+    //    unset → `NULL = '*'` is NULL → row excluded.
+    out.push(format!(
+        "CREATE POLICY pol_{table}_unrestricted ON {qualified} \
+         AS PERMISSIVE FOR ALL \
+         USING ( \
+           current_setting('app.scoped_roles', true) = '*' \
+         );"
+    ));
+
+    // 5. Per-user-role scoped policies.
+    for (role, rules) in &by_role {
+        let suffix = policy_role_suffix(role);
+        let mut and_parts: Vec<String> = Vec::with_capacity(rules.len());
+        for r in rules {
+            and_parts.push(render_clause_as_literal(&r.filter, table)?);
+        }
+        let predicate = and_parts.join(" AND ");
+        // Membership check: split `app.scoped_roles` on `,` and look for
+        // the user-role literal. Using `= ANY (string_to_array(...))`
+        // avoids array-position quirks and is short-circuited by the
+        // planner when the setting is `*` (the wildcard above already
+        // matched, but Postgres still considers this policy in the OR
+        // — harmless, just an extra evaluation).
+        let role_literal = quote_literal(role);
+        out.push(format!(
+            "CREATE POLICY pol_{table}_role_{suffix} ON {qualified} \
+             AS PERMISSIVE FOR ALL \
+             USING ( \
+               {role_literal} = ANY (string_to_array(current_setting('app.scoped_roles', true), ',')) \
+               AND ({predicate}) \
+             );"
+        ));
+    }
+
+    Ok(out)
+}
+
+/// Render one [`RowFilter`](velocity_types::crds::schema::RowFilter) into a
+/// SQL fragment with the value inlined as a literal. The API side (row_filter.rs)
+/// emits the same predicate via `$N` binds; the two must agree on op + value
+/// shape. Restricted to scalar JSON values (string / number / bool) — anything
+/// richer needs explicit handling and is rejected as `UnsupportedDefault` so a
+/// CRD with `value: { … }` fails apply rather than producing an injection
+/// vector.
+fn render_clause_as_literal(
+    filter: &velocity_types::crds::schema::RowFilter,
+    _table: &str,
+) -> Result<String, DdlError> {
+    let col = validate_ident(&sanitize(&filter.field))?;
+    let op_sql = match filter.op.as_str() {
+        "eq" => "=",
+        "neq" => "<>",
+        "gt" => ">",
+        "gte" => ">=",
+        "lt" => "<",
+        "lte" => "<=",
+        other => {
+            return Err(DdlError::UnsupportedDefault {
+                field: filter.field.clone(),
+                reason: format!("rowFilter op `{other}` is not supported in RLS DDL"),
+            });
+        }
+    };
+    let value_sql = match &filter.value {
+        serde_json::Value::String(s) => quote_literal(s),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => {
+            if *b { "TRUE".into() } else { "FALSE".into() }
+        }
+        other => {
+            return Err(DdlError::UnsupportedDefault {
+                field: filter.field.clone(),
+                reason: format!("rowFilter value `{other}` is not a scalar"),
+            });
+        }
+    };
+    Ok(format!("{col} {op_sql} {value_sql}"))
+}
+
+/// Build a safe identifier suffix for a user-role string. Postgres
+/// identifiers can't carry `-`, `.`, or other special chars; we
+/// sanitise them and append a short hash to keep distinct roles from
+/// colliding when they sanitise to the same string (e.g. `pii-reader`
+/// and `pii.reader`).
+fn policy_role_suffix(role: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let sanitised: String = role
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut hasher = DefaultHasher::new();
+    role.hash(&mut hasher);
+    let suffix = format!("{:x}", hasher.finish() & 0xffff_ffff);
+    // 8-hex-char hash bound + truncated sanitised body keeps the
+    // identifier well under Postgres' 63-char cap even on long table
+    // names.
+    let head: String = sanitised.chars().take(40).collect();
+    format!("{head}_{suffix}")
+}
+
 // ─── Triggers ───────────────────────────────────────────────────────────────
 
 fn build_triggers(spec: &SchemaDefinitionSpec, schema: &str, table: &str) -> Vec<String> {
@@ -614,6 +810,7 @@ mod tests {
             r#ref: None,
             sensitivity: None,
             access: None,
+            mask: None,
         }
     }
 
@@ -759,6 +956,264 @@ mod tests {
         let f = FieldSpec { max_length: Some(64), ..field("code", FieldKind::String) };
         let plan = build_ddl(&minimal_spec(vec![f], SearchTier::Tier1), &path()).unwrap();
         assert!(plan.main_table.contains("code VARCHAR(64)"));
+    }
+
+    fn spec_with_row_filter(
+        fields: Vec<FieldSpec>,
+        row_filter: Vec<velocity_types::crds::schema::RowFilterRule>,
+    ) -> SchemaDefinitionSpec {
+        let mut s = minimal_spec(fields, SearchTier::Tier1);
+        s.access.row_filter = row_filter;
+        s
+    }
+
+    fn rfrule(
+        role: &str,
+        field: &str,
+        op: &str,
+        value: serde_json::Value,
+    ) -> velocity_types::crds::schema::RowFilterRule {
+        velocity_types::crds::schema::RowFilterRule {
+            role: role.into(),
+            filter: velocity_types::crds::schema::RowFilter {
+                field: field.into(),
+                op: op.into(),
+                value,
+            },
+        }
+    }
+
+    #[test]
+    fn rls_always_enabled_even_without_row_filter() {
+        let plan = build_ddl(&minimal_spec(vec![], SearchTier::Tier1), &path()).unwrap();
+        assert!(plan.rls_policies.iter().any(|s| s.contains("ENABLE ROW LEVEL SECURITY")));
+        // Wildcard policy is always emitted so the schema admits traffic
+        // when no rowFilter is declared.
+        assert!(plan.rls_policies.iter().any(|s| s.contains("pol_purchase_order_v1_unrestricted")));
+    }
+
+    #[test]
+    fn rls_wildcard_admits_only_star_sentinel() {
+        // Pinpoints the exact encoding contract with the API: `*` is the
+        // ONLY admit sentinel. `''` is the deny sentinel (compiled rules
+        // + zero matched user-roles) — the SQL-fragment path renders that
+        // case to `(false)`, so the RLS path MUST NOT admit on `''`
+        // either, or defense-in-depth diverges. NULL also fails closed.
+        let plan = build_ddl(&minimal_spec(vec![], SearchTier::Tier1), &path()).unwrap();
+        let wild = plan
+            .rls_policies
+            .iter()
+            .find(|s| {
+                s.starts_with("CREATE POLICY")
+                    && s.contains("pol_purchase_order_v1_unrestricted")
+            })
+            .unwrap();
+        assert!(wild.contains("= '*'"));
+        assert!(!wild.contains("= ''"), "wildcard policy must not admit empty-string sentinel");
+        assert!(wild.contains("AS PERMISSIVE FOR ALL"));
+        // No bare reference to current_user / current_role — the encoding
+        // is `app.scoped_roles`, nothing else.
+        assert!(!wild.contains("current_user"));
+    }
+
+    #[test]
+    fn rls_per_role_policy_ands_within_role() {
+        // Two `west` rules must AND together in one policy — emitting
+        // two separate policies would OR them under Postgres' permissive
+        // policy semantics and *widen* the access vs the SQL fragment.
+        let plan = build_ddl(
+            &spec_with_row_filter(
+                vec![
+                    {
+                        let mut f = field("region", FieldKind::String);
+                        f.filterable = true;
+                        f
+                    },
+                    {
+                        let mut f = field("status", FieldKind::String);
+                        f.filterable = true;
+                        f
+                    },
+                ],
+                vec![
+                    rfrule("west", "region", "eq", json!("west")),
+                    rfrule("west", "status", "neq", json!("archived")),
+                ],
+            ),
+            &path(),
+        )
+        .unwrap();
+        let west = plan
+            .rls_policies
+            .iter()
+            .find(|s| {
+                s.starts_with("CREATE POLICY")
+                    && s.contains("pol_purchase_order_v1_role_west_")
+            })
+            .unwrap();
+        assert!(west.contains("region = 'west'"));
+        assert!(west.contains("status <> 'archived'"));
+        assert!(west.contains(" AND "));
+        // The role-literal must appear once (membership check).
+        assert_eq!(west.matches("'west'").count(), 2); // membership + value
+    }
+
+    #[test]
+    fn rls_different_roles_get_separate_policies() {
+        // Two distinct user-roles → two distinct policies, which
+        // Postgres ORs together for free. The OR semantic is the same
+        // as the SQL-fragment path.
+        let plan = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![
+                    rfrule("west", "region", "eq", json!("west")),
+                    rfrule("east", "region", "eq", json!("east")),
+                ],
+            ),
+            &path(),
+        )
+        .unwrap();
+        assert!(plan
+            .rls_policies
+            .iter()
+            .any(|s| s.contains("pol_purchase_order_v1_role_west_")));
+        assert!(plan
+            .rls_policies
+            .iter()
+            .any(|s| s.contains("pol_purchase_order_v1_role_east_")));
+    }
+
+    #[test]
+    fn rls_drops_policy_before_creating_it() {
+        // Reconciles after a rowFilter edit must replace the predicate
+        // cleanly. Idempotency depends on DROP IF EXISTS gating the
+        // CREATE in the same transaction.
+        let plan = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![rfrule("west", "region", "eq", json!("west"))],
+            ),
+            &path(),
+        )
+        .unwrap();
+        let drop_idx = plan
+            .rls_policies
+            .iter()
+            .position(|s| s.contains("DROP POLICY IF EXISTS pol_purchase_order_v1_unrestricted"))
+            .unwrap();
+        let create_idx = plan
+            .rls_policies
+            .iter()
+            .position(|s| {
+                s.starts_with("CREATE POLICY pol_purchase_order_v1_unrestricted")
+            })
+            .unwrap();
+        assert!(drop_idx < create_idx, "DROP must precede CREATE in the same plan");
+    }
+
+    #[test]
+    fn rls_dash_in_role_does_not_break_identifier() {
+        // Roles like `regional-reader-west` aren't valid Postgres
+        // identifiers; sanitisation + hash suffix keeps the policy name
+        // legal AND unique.
+        let plan = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![rfrule("regional-reader-west", "region", "eq", json!("west"))],
+            ),
+            &path(),
+        )
+        .unwrap();
+        let policy = plan
+            .rls_policies
+            .iter()
+            .find(|s| s.starts_with("CREATE POLICY") && s.contains("regional_reader_west"))
+            .unwrap();
+        // No dashes in the identifier.
+        let policy_name = policy.split(" ON ").next().unwrap();
+        assert!(
+            !policy_name.contains('-'),
+            "policy identifier must be sanitised: {policy_name}"
+        );
+        // The role literal in the membership check keeps the original form.
+        assert!(policy.contains("'regional-reader-west' = ANY"));
+    }
+
+    #[test]
+    fn rls_unsupported_op_rejected() {
+        let err = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![rfrule("west", "region", "between", json!("west"))],
+            ),
+            &path(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, DdlError::UnsupportedDefault { .. }));
+    }
+
+    #[test]
+    fn rls_non_scalar_value_rejected() {
+        // A `value: { … }` would have to be inlined verbatim into DDL —
+        // refuse rather than emit an injection vector.
+        let err = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![rfrule("west", "region", "eq", json!({ "complex": true }))],
+            ),
+            &path(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, DdlError::UnsupportedDefault { .. }));
+    }
+
+    #[test]
+    fn rls_value_literal_is_escaped() {
+        // Same SQL-injection escape the rest of the builder relies on:
+        // a CRD author can't break out of the literal with a single quote.
+        let plan = build_ddl(
+            &spec_with_row_filter(
+                vec![{
+                    let mut f = field("region", FieldKind::String);
+                    f.filterable = true;
+                    f
+                }],
+                vec![rfrule("west", "region", "eq", json!("west'); DROP TABLE x;--"))],
+            ),
+            &path(),
+        )
+        .unwrap();
+        let policy = plan
+            .rls_policies
+            .iter()
+            .find(|s| {
+                s.starts_with("CREATE POLICY")
+                    && s.contains("pol_purchase_order_v1_role_west_")
+            })
+            .unwrap();
+        assert!(policy.contains("'west''); DROP TABLE x;--'"));
+        assert!(!policy.contains("'west'); DROP"));
     }
 
     #[test]

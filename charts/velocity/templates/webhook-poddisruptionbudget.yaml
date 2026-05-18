@@ -1,0 +1,14 @@
+{{- if and .Values.webhook.enabled .Values.webhook.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "velocity.webhook.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  minAvailable: {{ .Values.webhook.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "velocity.webhook.selectorLabels" . | nindent 6 }}
+{{- end -}}

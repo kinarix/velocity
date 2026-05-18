@@ -1,6 +1,8 @@
 //! AdmissionReview handler — routes by `request.kind.kind` to the matching validator.
 
-use axum::extract::Json;
+use std::sync::Arc;
+
+use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
@@ -8,10 +10,37 @@ use kube::core::DynamicObject;
 use serde_json::Value;
 use tracing::Instrument;
 
+use crate::strategy_check::{validate_auth_strategy_ref, AuthStrategyExists};
 use crate::validators::{self, ValidationFailure};
+use crate::WebhookConfig;
+
+/// Shared per-process state. Holds the static config plus the dynamic
+/// checker the SchemaDefinition validator uses to verify
+/// `spec.auth.strategyRef` exists in the cluster.
+///
+/// `checker` is a trait object so tests can substitute a deterministic
+/// mock — see [`crate::strategy_check::MockStrategyChecker`].
+#[derive(Clone)]
+pub struct AppState {
+    pub cfg: Arc<WebhookConfig>,
+    pub checker: Arc<dyn AuthStrategyExists>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState").field("cfg", &self.cfg).field("checker", &"<dyn>").finish()
+    }
+}
+
+impl AppState {
+    pub fn new(cfg: WebhookConfig, checker: Arc<dyn AuthStrategyExists>) -> Self {
+        Self { cfg: Arc::new(cfg), checker }
+    }
+}
 
 /// `POST /validate` handler.
 pub async fn validate(
+    State(state): State<AppState>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let span = tracing::info_span!(
@@ -33,7 +62,7 @@ pub async fn validate(
     span.record("uid", req.uid.as_str());
 
     async move {
-        let response = match decide(&req) {
+        let response = match decide(&req, &state).await {
             Ok(()) => {
                 tracing::info!("admit");
                 AdmissionResponse::from(&req)
@@ -50,7 +79,10 @@ pub async fn validate(
     .await
 }
 
-fn decide(req: &AdmissionRequest<DynamicObject>) -> Result<(), ValidationFailure> {
+async fn decide(
+    req: &AdmissionRequest<DynamicObject>,
+    state: &AppState,
+) -> Result<(), ValidationFailure> {
     let Some(obj) = req.object.as_ref() else {
         // DELETE has no object — admit (nothing to validate).
         return Ok(());
@@ -62,7 +94,14 @@ fn decide(req: &AdmissionRequest<DynamicObject>) -> Result<(), ValidationFailure
     match req.kind.kind.as_str() {
         "Domain" => validators::validate_domain(&value, ns),
         "Application" => validators::validate_application(&value, ns),
-        "SchemaDefinition" => validators::validate_schema_definition(&value, ns),
+        "SchemaDefinition" => {
+            // Order matters: cheap sync checks first (label/namespace,
+            // field shape, CEL), then the async kube lookup. A
+            // SchemaDefinition with a malformed namespace shouldn't burn
+            // an apiserver round-trip just to be rejected.
+            validators::validate_schema_definition(&value, ns, state.cfg.multi_tenant_mode)?;
+            validate_auth_strategy_ref(&value, ns, state.checker.as_ref()).await
+        }
         // Organisation lives in `platform` — no namespace rule yet.
         _ => Ok(()),
     }
@@ -77,7 +116,30 @@ mod tests {
     use tower::ServiceExt;
 
     fn app() -> axum::Router {
-        axum::Router::new().route("/validate", axum::routing::post(validate))
+        app_with(
+            WebhookConfig {
+                tls_addr: String::new(),
+                health_addr: String::new(),
+                tls_cert_path: None,
+                tls_key_path: None,
+                pretty_logs: false,
+                multi_tenant_mode: false,
+            },
+            // Tests in this module only drive Domain/Application paths, so
+            // an empty allow-list is fine. The strategy_check.rs and
+            // handler_strategy.rs tests cover SchemaDefinition cases.
+            Arc::new(crate::strategy_check::MockStrategyChecker::default()),
+        )
+    }
+
+    fn app_with(
+        cfg: WebhookConfig,
+        checker: Arc<dyn crate::strategy_check::AuthStrategyExists>,
+    ) -> axum::Router {
+        let state = AppState::new(cfg, checker);
+        axum::Router::new()
+            .route("/validate", axum::routing::post(validate))
+            .with_state(state)
     }
 
     fn review(kind: &str, namespace: &str, obj: Value) -> Value {
@@ -129,6 +191,70 @@ mod tests {
             }),
         );
         let resp = run(body).await;
+        assert_eq!(resp["response"]["allowed"], true);
+    }
+
+    /// Drive a SchemaDefinition admission through the real handler with a
+    /// `MockStrategyChecker` so we cover the end-to-end wire-up: the
+    /// validators run, then the async existence check runs, then the
+    /// AdmissionReview comes back denied when the strategy is missing.
+    async fn run_sd(body: Value, allow: Vec<(&str, &str)>) -> Value {
+        let app = app_with(
+            WebhookConfig {
+                tls_addr: String::new(),
+                health_addr: String::new(),
+                tls_cert_path: None,
+                tls_key_path: None,
+                pretty_logs: false,
+                multi_tenant_mode: false,
+            },
+            Arc::new(crate::strategy_check::MockStrategyChecker::with(allow)),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/validate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn sd_review(strategy_ref: Value) -> Value {
+        review(
+            "SchemaDefinition",
+            "acme-supply-chain-procurement",
+            json!({
+                "metadata": {
+                    "namespace": "acme-supply-chain-procurement",
+                    "labels": {
+                        "velocity.sh/org": "acme",
+                        "velocity.sh/app": "supply-chain",
+                        "velocity.sh/domain": "procurement",
+                    },
+                },
+                "spec": { "auth": { "strategyRef": strategy_ref } }
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn schemadefinition_denied_when_strategy_missing() {
+        let body = sd_review(json!({ "name": "default", "namespace": "acme-platform" }));
+        let resp = run_sd(body, vec![]).await;
+        assert_eq!(resp["response"]["allowed"], false);
+        assert!(resp["response"]["status"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("AuthStrategy `acme-platform/default` not found"));
+    }
+
+    #[tokio::test]
+    async fn schemadefinition_admitted_when_strategy_present() {
+        let body = sd_review(json!({ "name": "default", "namespace": "acme-platform" }));
+        let resp = run_sd(body, vec![("acme-platform", "default")]).await;
         assert_eq!(resp["response"]["allowed"], true);
     }
 

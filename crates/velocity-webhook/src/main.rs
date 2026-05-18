@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::http::StatusCode;
@@ -7,8 +8,9 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use kube::Client;
 use tracing_subscriber::EnvFilter;
-use velocity_webhook::{handler, WebhookConfig};
+use velocity_webhook::{handler, KubeStrategyChecker, WebhookConfig};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -27,12 +29,17 @@ async fn main() -> Result<()> {
         tls_addr = %cfg.tls_addr,
         health_addr = %cfg.health_addr,
         tls = cfg.tls_cert_path.is_some(),
+        multi_tenant_mode = cfg.multi_tenant_mode,
         "velocity-webhook starting",
     );
 
+    let kube = Client::try_default().await.context("building kube client")?;
+    let checker = Arc::new(KubeStrategyChecker::new(kube));
+    let state = handler::AppState::new(cfg.clone(), checker);
     let app = Router::new()
         .route("/validate", post(handler::validate))
-        .route("/healthz", get(|| async { (StatusCode::OK, "ok") }));
+        .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
+        .with_state(state);
 
     let health_app = Router::new().route("/healthz", get(|| async { (StatusCode::OK, "ok") }));
 

@@ -1,4 +1,21 @@
 {{- if .Values.webhook.enabled -}}
+{{- /*
+  Split into two webhook entries on the same /validate endpoint so different
+  Kinds can opt into different failure semantics:
+
+    data-integrity (failurePolicy: Fail)
+      Org/App/Domain/SchemaDefinition + AuthStrategy/RoleBinding/ApiKey +
+      PurgeRequest. These shape what gets stored or who can read it — a
+      missed admission would leak state past the gate. Better to reject
+      writes during a webhook outage than to let them through unchecked.
+
+    declarative (failurePolicy: Ignore)
+      ArchivePolicy/LogFilterPolicy/LogRoutingPolicy. These tune downstream
+      pipelines; they don't admit user data. During a webhook outage the
+      controller still re-reconciles, so transient skip is recoverable —
+      and we don't want a webhook crash to block oncall from editing log
+      filters during an incident.
+*/}}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -10,10 +27,10 @@ metadata:
     cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "velocity.webhook.fullname" . }}-tls"
   {{- end }}
 webhooks:
-  - name: validate.velocity.sh
+  - name: validate-data-integrity.velocity.sh
     admissionReviewVersions: ["v1"]
     sideEffects: {{ .Values.webhook.sideEffects | quote }}
-    failurePolicy: {{ .Values.webhook.failurePolicy | quote }}
+    failurePolicy: {{ .Values.webhook.failurePolicies.dataIntegrity | quote }}
     matchPolicy: {{ .Values.webhook.matchPolicy | quote }}
     timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
     clientConfig:
@@ -35,11 +52,32 @@ webhooks:
           - domains
           - schemadefinitions
           - authstrategies
-          - archivepolicies
-          - logfilterpolicies
-          - logroutingpolicies
           - rolebindings
           - apikeys
           - purgerequests
+        scope: "*"
+  - name: validate-declarative.velocity.sh
+    admissionReviewVersions: ["v1"]
+    sideEffects: {{ .Values.webhook.sideEffects | quote }}
+    failurePolicy: {{ .Values.webhook.failurePolicies.declarative | quote }}
+    matchPolicy: {{ .Values.webhook.matchPolicy | quote }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "velocity.webhook.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: {{ .Values.webhook.service.tlsPort }}
+      {{- if and (ne .Values.webhook.tls.source "certManager") .Values.webhook.tls.caBundle }}
+      caBundle: {{ .Values.webhook.tls.caBundle }}
+      {{- end }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["velocity.sh"]
+        apiVersions: ["v1"]
+        resources:
+          - archivepolicies
+          - logfilterpolicies
+          - logroutingpolicies
         scope: "*"
 {{- end -}}

@@ -14,11 +14,15 @@ pub mod controllers;
 pub mod ddl_builder;
 pub mod health;
 pub mod migration_diff;
+pub mod partition_manager;
 pub mod provisioner;
+pub mod redis_notify;
 pub mod startup;
+pub mod tiering;
 
 pub use config::OperatorConfig;
 pub use context::Context;
 pub use ddl_builder::{build_ddl, ColumnSpec, DdlError, DdlPlan};
 pub use migration_diff::{classify, diff_columns, DiffError, MigrationOp};
 pub use provisioner::{PostgresProvisioner, ProvisionError};
+pub use redis_notify::{RedisNotify, RedisNotifyError, DEFAULT_REVOKED_SET_KEY};

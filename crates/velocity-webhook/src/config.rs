@@ -14,6 +14,12 @@ pub struct WebhookConfig {
     pub tls_key_path: Option<String>,
     /// Pretty logs (dev) vs JSON (prod).
     pub pretty_logs: bool,
+    /// Multi-tenant cluster (ADR-010). When `true`, the webhook rejects any
+    /// `SchemaDefinition` whose fields reference a target schema in a
+    /// different org — a cross-tenant data path the admission gate must
+    /// shut down before it reaches the operator. Single-tenant clusters
+    /// leave this off.
+    pub multi_tenant_mode: bool,
 }
 
 impl WebhookConfig {
@@ -25,9 +31,14 @@ impl WebhookConfig {
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             tls_cert_path: std::env::var("VELOCITY_WEBHOOK_TLS_CERT").ok(),
             tls_key_path: std::env::var("VELOCITY_WEBHOOK_TLS_KEY").ok(),
-            pretty_logs: std::env::var("VELOCITY_WEBHOOK_PRETTY_LOGS")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            pretty_logs: parse_bool_env("VELOCITY_WEBHOOK_PRETTY_LOGS", false),
+            multi_tenant_mode: parse_bool_env("VELOCITY_WEBHOOK_MULTI_TENANT_MODE", false),
         })
     }
+}
+
+fn parse_bool_env(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
 }

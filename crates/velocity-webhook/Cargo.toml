@@ -37,6 +37,7 @@ serde_json         = { workspace = true }
 k8s-openapi        = { workspace = true }
 kube               = { workspace = true, features = ["admission"] }
 
+async-trait        = { workspace = true }
 cel-interpreter    = { workspace = true }
 
 # Pinned only to call CryptoProvider::install_default() at startup. axum-server's

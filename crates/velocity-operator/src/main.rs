@@ -9,10 +9,10 @@ use kube::Client;
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use velocity_operator::{
-    controllers::{application, domain, organisation, schema_definition},
-    health, startup, Context, OperatorConfig,
+    controllers::{application, domain, organisation, role_binding, schema_definition},
+    health, partition_manager, startup, tiering, Context, OperatorConfig, RedisNotify,
 };
-use velocity_types::crds::{Application, Domain, Organisation, SchemaDefinition};
+use velocity_types::crds::{Application, Domain, Organisation, RoleBinding, SchemaDefinition};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -53,13 +53,83 @@ async fn main() -> Result<()> {
     // Restart event from each watcher).
     let (ready_tx, ready_rx) = watch::channel(false);
 
-    let ctx = Arc::new(Context::new(kube.clone(), pg, ready_tx));
+    // Wire the Redis revocation publisher if a URL was configured. We log
+    // (don't fail) on connection error so a Redis outage at boot doesn't
+    // prevent the operator from reconciling everything *else*; the
+    // RoleBinding controller will surface the absence loudly per-event.
+    let redis = match cfg.redis_url.as_ref() {
+        Some(url) => match RedisNotify::connect(url, cfg.redis_revoked_key.clone()).await {
+            Ok(r) => {
+                tracing::info!(key = %cfg.redis_revoked_key, "redis revocation publisher connected");
+                Some(r)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "redis revocation publisher failed to connect — RoleBinding reconciles will be DB-only until restart");
+                None
+            }
+        },
+        None => {
+            tracing::warn!(
+                "VELOCITY_OPERATOR_REDIS_URL is unset — RoleBinding reconciles will not push revocations to Redis"
+            );
+            None
+        }
+    };
+
+    let mut ctx_inner = Context::new(kube.clone(), pg, ready_tx);
+    if let Some(r) = redis {
+        ctx_inner = ctx_inner.with_redis(r);
+    }
+    let ctx = Arc::new(ctx_inner);
 
     // Health server.
     let health_addr = cfg.health_addr.clone();
     let health_ready_rx = ready_rx.clone();
     let health_handle =
         tokio::spawn(async move { health::serve(&health_addr, health_ready_rx).await });
+
+    // Event-log partition manager (Phase 3.8). Runs forever, ticks
+    // hourly; its only job is to make sure next month's
+    // platform.event_log partition exists before the boundary so
+    // mutations don't fail with "no partition of relation found" at
+    // midnight on the 1st. Detached because controllers and the
+    // partition loop have no shared state.
+    let partition_pool = ctx.pg.clone();
+    let _partition_handle = tokio::spawn(async move { partition_manager::run(partition_pool).await });
+
+    // Hot → warm tier exporter (Phase 4.2). Skipped silently when
+    // `VELOCITY_OPERATOR_WARM_STORAGE_URL` is unset — the platform
+    // runs hot-only and partitions accumulate. We log loudly so a
+    // forgotten config doesn't go unnoticed.
+    let _tiering_handle = if let Some(url) = cfg.warm_storage_url.as_deref() {
+        match tiering::object_store_url::build(url) {
+            Ok(warm_store) => {
+                tracing::info!(warm_storage_url = %url, "tiering exporter wired");
+                // One-shot orphan scan before the exporter loop spins
+                // up — surfaces drift without modifying state. Failure
+                // here is logged but non-fatal (the regular tick still
+                // converges).
+                let scan_store = warm_store.clone();
+                let scan_pool = ctx.pg.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tiering::orphan_recovery::scan(&scan_pool, scan_store).await {
+                        tracing::warn!(error = %e, "orphan scan failed (non-fatal)");
+                    }
+                });
+                let pool = ctx.pg.clone();
+                Some(tokio::spawn(async move { tiering::exporter::run(pool, warm_store).await }))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, warm_storage_url = %url, "tiering exporter disabled — could not build object store");
+                None
+            }
+        }
+    } else {
+        tracing::warn!(
+            "VELOCITY_OPERATOR_WARM_STORAGE_URL is unset — tiering exporter disabled; hot partitions will accumulate"
+        );
+        None
+    };
 
     let watcher_cfg = WatcherConfig::default();
     let org_api: Api<Organisation> = match &cfg.watch_namespace {
@@ -78,11 +148,16 @@ async fn main() -> Result<()> {
         Some(ns) => Api::namespaced(kube.clone(), ns),
         None => Api::all(kube.clone()),
     };
+    let rb_api: Api<RoleBinding> = match &cfg.watch_namespace {
+        Some(ns) => Api::namespaced(kube.clone(), ns),
+        None => Api::all(kube.clone()),
+    };
 
     let org_ctx = ctx.clone();
     let app_ctx = ctx.clone();
     let dom_ctx = ctx.clone();
     let sd_ctx = ctx.clone();
+    let rb_ctx = ctx.clone();
 
     let org_fut = Controller::new(org_api, watcher_cfg.clone())
         .shutdown_on_signal()
@@ -111,12 +186,21 @@ async fn main() -> Result<()> {
             }
         });
 
-    let sd_fut = Controller::new(sd_api, watcher_cfg)
+    let sd_fut = Controller::new(sd_api, watcher_cfg.clone())
         .shutdown_on_signal()
         .run(schema_definition::reconcile, schema_definition::error_policy, sd_ctx)
         .for_each(|r| async move {
             if let Err(e) = r {
                 tracing::warn!(error = %e, "schemadefinition controller stream error");
+            }
+        });
+
+    let rb_fut = Controller::new(rb_api, watcher_cfg)
+        .shutdown_on_signal()
+        .run(role_binding::reconcile, role_binding::error_policy, rb_ctx)
+        .for_each(|r| async move {
+            if let Err(e) = r {
+                tracing::warn!(error = %e, "rolebinding controller stream error");
             }
         });
 
@@ -130,6 +214,7 @@ async fn main() -> Result<()> {
         _ = app_fut => tracing::warn!("application controller exited"),
         _ = dom_fut => tracing::warn!("domain controller exited"),
         _ = sd_fut  => tracing::warn!("schemadefinition controller exited"),
+        _ = rb_fut  => tracing::warn!("rolebinding controller exited"),
         r = health_handle => match r {
             Ok(Ok(())) => tracing::warn!("health server exited cleanly"),
             Ok(Err(e)) => tracing::error!(error = %e, "health server failed"),
