@@ -10,7 +10,8 @@ use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use velocity_operator::{
     controllers::{application, domain, organisation, role_binding, schema_definition},
-    health, partition_manager, startup, tiering, Context, OperatorConfig, RedisNotify,
+    drift_sweep, health, partition_manager, startup, tiering, Context, OperatorConfig,
+    RedisNotify,
 };
 use velocity_types::crds::{Application, Domain, Organisation, RoleBinding, SchemaDefinition};
 
@@ -96,6 +97,24 @@ async fn main() -> Result<()> {
     // partition loop have no shared state.
     let partition_pool = ctx.pg.clone();
     let _partition_handle = tokio::spawn(async move { partition_manager::run(partition_pool).await });
+
+    // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
+    // CRDs against `pg_class` and increments
+    // `velocity_drift_detected_total{kind="orphan_table"}` per orphan
+    // detected. Read-only — no auto-fix; humans run `velocity drift
+    // quarantine` after triage.
+    let (drift_shutdown_tx, drift_shutdown_rx) = tokio::sync::watch::channel(false);
+    let drift_pool = ctx.pg.clone();
+    let drift_client = ctx.kube.clone();
+    let _drift_handle = tokio::spawn(async move {
+        if let Err(e) = drift_sweep::run(drift_pool, drift_client, drift_shutdown_rx).await {
+            tracing::error!(error = %e, "drift sweep exited");
+        }
+    });
+    // Keep the tx alive for the lifetime of `main`; on process exit
+    // its drop signals the sweep to wind down. Tagged `_` to silence
+    // unused-var while making the lifetime explicit.
+    let _drift_shutdown_tx = drift_shutdown_tx;
 
     // Hot → warm tier exporter (Phase 4.2). Skipped silently when
     // `VELOCITY_OPERATOR_WARM_STORAGE_URL` is unset — the platform
