@@ -46,6 +46,10 @@ pub fn build(state: AppState) -> Router {
             get(handlers::list).post(handlers::create),
         )
         .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/query",
+            axum::routing::post(handlers::query),
+        )
+        .route(
             "/api/{org}/{app}/{domain}/{object}/{version}/{id}",
             get(handlers::get_one).put(handlers::update).delete(handlers::delete_soft),
         )

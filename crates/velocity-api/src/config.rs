@@ -41,6 +41,10 @@ pub struct ApiConfig {
     /// (CLAUDE.md §Inter-Service RPC). Configurable so a slow warm
     /// path can be given more budget without code changes.
     pub warm_reader_timeout_ms: u64,
+    /// Phase 5: HMAC key for POST /query keyset cursors. ≥32 bytes.
+    /// When `None`, cursor pagination is disabled — first-page reads
+    /// still work, but a request carrying `cursor` returns 400.
+    pub cursor_signing_key: Option<Vec<u8>>,
 }
 
 impl ApiConfig {
@@ -88,6 +92,19 @@ impl ApiConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(15_000);
 
+        let cursor_signing_key = match std::env::var("VELOCITY_API_CURSOR_SIGNING_KEY") {
+            Ok(s) if !s.trim().is_empty() => {
+                let bytes = s.into_bytes();
+                if bytes.len() < 32 {
+                    anyhow::bail!(
+                        "VELOCITY_API_CURSOR_SIGNING_KEY must be at least 32 bytes"
+                    );
+                }
+                Some(bytes)
+            }
+            _ => None,
+        };
+
         Ok(Self {
             pg_url,
             bind_addr,
@@ -99,6 +116,7 @@ impl ApiConfig {
             warm_reader_url,
             warm_reader_service_token,
             warm_reader_timeout_ms,
+            cursor_signing_key,
         })
     }
 

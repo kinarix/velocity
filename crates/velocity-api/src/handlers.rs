@@ -784,6 +784,112 @@ pub async fn delete_soft(
     }
 }
 
+// ---------- QUERY (Phase 5a — POST /query DSL) ----------------------------
+
+/// POST /api/{...}/query — DSL endpoint backing
+/// nested AND/OR/NOT WHERE, ranged sort, projection, cross-schema
+/// includes (`FieldSpec.ref`), and HMAC-signed keyset cursor.
+///
+/// Layer ordering mirrors `list`:
+///   1. Resolve schema + identity
+///   2. Layer-1 RBAC (`op::READ`) — caller must hold read on THIS schema
+///   3. DSL compile (which embeds Layer-3 cross-schema RBAC for every
+///      `include`, and Layer-4 row-filter)
+///   4. Run SQL under reader role
+///   5. Layer-5 strip + Layer-6 masking per row
+///   6. Mint `next_cursor` if the plus-one fetch overflowed
+pub async fn query(
+    State(state): State<AppState>,
+    Path(parts): Path<SchemaPathParts>,
+    identity_ext: Option<Extension<Identity>>,
+    Json(dsl): Json<crate::dsl::QueryDsl>,
+) -> Result<Json<Value>, ApiError> {
+    let schema = resolve_schema(&state, parts)?;
+    let identity = identity_from_ext(identity_ext);
+    check_access(&schema, &identity, op::READ)?;
+
+    let signer = state.cursor_signer.as_deref();
+    let compiled = crate::dsl::build(&schema, &dsl, &identity, &state.registry, signer)?;
+
+    let include_names: Vec<String> = dsl.include.clone();
+    let page_limit = compiled.limit;
+    let cursor_sort_sig = compiled.cursor_sort_sig.clone();
+    let cursor_sort_fields = compiled.cursor_sort_fields.clone();
+    let schema_key = compiled.schema_key.clone();
+
+    let rows: Vec<Value> = with_session_context(
+        &state.pool,
+        &schema,
+        RoleClass::Reader,
+        &identity,
+        move |tx| {
+            Box::pin(async move {
+                let mut q = sqlx::query(&compiled.sql);
+                for v in &compiled.params {
+                    q = row_filter::bind_json_param(q, v);
+                }
+                let rows = q.fetch_all(&mut **tx).await?;
+                let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+                for r in rows {
+                    // Compiler always emits `__row` as a jsonb-shaped
+                    // column. Include columns sit alongside as
+                    // `__inc_<name>` — lift them into the main row
+                    // under the friendly include name.
+                    let mut obj = r
+                        .try_get::<Value, _>("__row")
+                        .map_err(|_| {
+                            sqlx::Error::Protocol(
+                                "query: SELECT did not produce __row".into(),
+                            )
+                        })?;
+                    for inc in &include_names {
+                        let alias = format!("__inc_{inc}");
+                        if let Ok(joined) = r.try_get::<Value, _>(alias.as_str()) {
+                            if let Some(m) = obj.as_object_mut() {
+                                m.insert(inc.clone(), joined);
+                            }
+                        }
+                    }
+                    out.push(obj);
+                }
+                Ok(out)
+            })
+        },
+    )
+    .await?;
+
+    // Plus-one fetch: if we got more than `limit`, drop the trailing
+    // sentinel row and mint a cursor from it.
+    let mut rows = rows;
+    let has_more = rows.len() as u32 > page_limit;
+    let next_cursor = if has_more {
+        // The sentinel row is the boundary — but we mint the cursor
+        // from the LAST returned row (page_limit-th), so the next
+        // page starts from after it.
+        rows.truncate(page_limit as usize);
+        match (signer, rows.last()) {
+            (Some(s), Some(last)) => Some(crate::dsl::mint_cursor(
+                s,
+                &schema_key,
+                &cursor_sort_sig,
+                &cursor_sort_fields,
+                last,
+            )?),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Layer-5 strip + Layer-6 masking, same discipline as list().
+    for row in &mut rows {
+        schema.field_filter.strip_for_read(row, &identity.roles);
+        schema.masking.apply_for_read(row, &identity.roles);
+    }
+
+    Ok(Json(crate::dsl::build_response(rows, next_cursor)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

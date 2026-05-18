@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+use crate::dsl::CursorSigner;
 use crate::registry::SchemaRegistry;
 use crate::tiering::{cold_stub::ColdJobStore, PostgresEventReader, TieredEventReader};
 
@@ -18,6 +19,11 @@ pub struct AppState {
     /// in that case.
     pub tiered_reader: Arc<TieredEventReader>,
     pub cold_jobs: Arc<ColdJobStore>,
+    /// Phase 5: HMAC signer for POST /query cursors. `None` when
+    /// `VELOCITY_API_CURSOR_SIGNING_KEY` is unset — pagination still
+    /// works for the first page, but cursor-bearing requests fail with
+    /// a clear 400 instead of being silently misinterpreted.
+    pub cursor_signer: Option<Arc<CursorSigner>>,
 }
 
 impl AppState {
@@ -32,7 +38,7 @@ impl AppState {
             Arc::new(PostgresEventReader::new(pool.clone()));
         let tiered_reader = Arc::new(TieredEventReader::new(hot, None));
         let cold_jobs = ColdJobStore::new();
-        Self { registry, pool, tiered_reader, cold_jobs }
+        Self { registry, pool, tiered_reader, cold_jobs, cursor_signer: None }
     }
 
     /// Override the tiered reader. Used by main.rs to inject a
@@ -44,6 +50,13 @@ impl AppState {
     ) -> Self {
         self.tiered_reader = tiered_reader;
         self.cold_jobs = cold_jobs;
+        self
+    }
+
+    /// Inject a cursor signer. Used by main.rs when
+    /// `VELOCITY_API_CURSOR_SIGNING_KEY` is configured.
+    pub fn with_cursor_signer(mut self, signer: Arc<CursorSigner>) -> Self {
+        self.cursor_signer = Some(signer);
         self
     }
 }

@@ -141,6 +141,13 @@ pub enum ApiError {
     #[error("tier not supported for this operation")]
     RestoreTierUnsupported,
 
+    /// Phase 5: caller attempted to `include` a related schema they
+    /// don't have read access on. 403 — distinct from `AccessDenied`
+    /// (which is "denied on THIS schema") so dashboards can spot
+    /// "join probing" attempts.
+    #[error("cross-schema access denied on include `{0}`")]
+    CrossSchemaAccessDenied(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -161,7 +168,8 @@ impl ApiError {
             ApiError::Revoked
             | ApiError::AccessDenied
             | ApiError::PolicyDenied(_)
-            | ApiError::FieldWriteDenied(_) => StatusCode::FORBIDDEN,
+            | ApiError::FieldWriteDenied(_)
+            | ApiError::CrossSchemaAccessDenied(_) => StatusCode::FORBIDDEN,
             ApiError::IssuerUnavailable(_)
             | ApiError::RevocationUnavailable
             | ApiError::SessionUnavailable
@@ -201,6 +209,7 @@ impl ApiError {
             ApiError::WarmTierNotConfigured => "WARM_TIER_NOT_CONFIGURED",
             ApiError::WarmTierUnavailable(_) => "WARM_TIER_UNAVAILABLE",
             ApiError::RestoreTierUnsupported => "RESTORE_TIER_UNSUPPORTED",
+            ApiError::CrossSchemaAccessDenied(_) => "CROSS_SCHEMA_ACCESS_DENIED",
         }
     }
 }

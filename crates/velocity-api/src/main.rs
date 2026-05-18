@@ -195,7 +195,20 @@ async fn main() -> Result<()> {
     // Public API. The base `new` constructs a hot-only state with
     // sensible defaults — keeps tests compiling — and `with_tiering`
     // injects the real warm-tier impl in production.
-    let state = AppState::new(registry, pool).with_tiering(tiered_reader, cold_jobs);
+    let mut state = AppState::new(registry, pool).with_tiering(tiered_reader, cold_jobs);
+    if let Some(key) = cfg.cursor_signing_key.clone() {
+        match velocity_api::dsl::CursorSigner::new(key) {
+            Ok(s) => {
+                tracing::info!("query cursor signer configured");
+                state = state.with_cursor_signer(std::sync::Arc::new(s));
+            }
+            Err(e) => anyhow::bail!("cursor signing key: {e}"),
+        }
+    } else {
+        tracing::warn!(
+            "VELOCITY_API_CURSOR_SIGNING_KEY is unset — POST /query will not mint cursors; cursor-bearing requests will 400"
+        );
+    }
     let app = router::build(state)
         .merge(router::build_auth(auth_handlers_state))
         .layer(axum::middleware::from_fn_with_state(auth_state, authenticate));

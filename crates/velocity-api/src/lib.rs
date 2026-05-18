@@ -14,6 +14,7 @@ pub mod auth;
 pub mod auth_handlers;
 pub mod auth_informer;
 pub mod config;
+pub mod dsl;
 pub mod error;
 pub mod event_log;
 pub mod field_filter;
