@@ -45,6 +45,13 @@ pub struct ApiConfig {
     /// When `None`, cursor pagination is disabled — first-page reads
     /// still work, but a request carrying `cursor` returns 400.
     pub cursor_signing_key: Option<Vec<u8>>,
+    /// Phase 5c: Typesense base URL (e.g. `http://typesense:8108`).
+    /// When `None`, Tier-3 schemas are accepted but the CDC worker
+    /// logs a warning and stays idle — outbox rows accumulate.
+    pub typesense_url: Option<String>,
+    /// Phase 5c: Typesense API key. REQUIRED when `typesense_url` is
+    /// set; otherwise startup fails (mirrors the warm-reader pairing).
+    pub typesense_api_key: Option<String>,
 }
 
 impl ApiConfig {
@@ -105,6 +112,18 @@ impl ApiConfig {
             _ => None,
         };
 
+        let typesense_url = std::env::var("VELOCITY_API_TYPESENSE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let typesense_api_key = std::env::var("VELOCITY_API_TYPESENSE_API_KEY")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        if typesense_url.is_some() && typesense_api_key.is_none() {
+            anyhow::bail!(
+                "VELOCITY_API_TYPESENSE_URL is set but VELOCITY_API_TYPESENSE_API_KEY is missing"
+            );
+        }
+
         Ok(Self {
             pg_url,
             bind_addr,
@@ -117,6 +136,8 @@ impl ApiConfig {
             warm_reader_service_token,
             warm_reader_timeout_ms,
             cursor_signing_key,
+            typesense_url,
+            typesense_api_key,
         })
     }
 

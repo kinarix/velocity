@@ -209,6 +209,37 @@ async fn main() -> Result<()> {
             "VELOCITY_API_CURSOR_SIGNING_KEY is unset — POST /query will not mint cursors; cursor-bearing requests will 400"
         );
     }
+    // Phase 5c — Typesense client + CDC loop. Both optional. When
+    // unset, Tier-3 schemas still apply but outbox rows accumulate
+    // and /search returns 503 — the failure is loud, not silent.
+    let (cdc_shutdown_tx, cdc_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _cdc_handle = match (cfg.typesense_url.as_deref(), cfg.typesense_api_key.as_deref()) {
+        (Some(url), Some(key)) => {
+            let ts = std::sync::Arc::new(
+                velocity_api::typesense::TypesenseClient::new(url, key)
+                    .context("building typesense client")?,
+            );
+            match ts.health().await {
+                Ok(true) => tracing::info!(url, "typesense reachable"),
+                Ok(false) => tracing::warn!(url, "typesense health endpoint returned non-200"),
+                Err(e) => tracing::warn!(url, error = %e, "typesense health check failed — CDC will retry"),
+            }
+            state = state.with_typesense(ts.clone());
+            let cdc_pool = state.pool.clone();
+            let cdc_registry = state.registry.clone();
+            let cdc_ts = ts;
+            Some(tokio::spawn(async move {
+                velocity_api::cdc::run(cdc_pool, cdc_registry, cdc_ts, cdc_shutdown_rx).await;
+            }))
+        }
+        _ => {
+            tracing::warn!(
+                "VELOCITY_API_TYPESENSE_URL/KEY unset — Tier-3 CDC disabled; /search returns 503"
+            );
+            None
+        }
+    };
+    let _cdc_shutdown_tx = cdc_shutdown_tx;
     let app = router::build(state)
         .merge(router::build_auth(auth_handlers_state))
         .layer(axum::middleware::from_fn_with_state(auth_state, authenticate));

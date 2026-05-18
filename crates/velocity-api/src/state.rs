@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use crate::dsl::CursorSigner;
 use crate::registry::SchemaRegistry;
 use crate::tiering::{cold_stub::ColdJobStore, PostgresEventReader, TieredEventReader};
+use crate::typesense::TypesenseClient;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -24,6 +25,11 @@ pub struct AppState {
     /// works for the first page, but cursor-bearing requests fail with
     /// a clear 400 instead of being silently misinterpreted.
     pub cursor_signer: Option<Arc<CursorSigner>>,
+    /// Phase 5c: shared Typesense client for the CDC worker and the
+    /// /search handlers. `None` when the API isn't configured for
+    /// Tier-3 search — /search returns 503 SEARCH_NOT_CONFIGURED so
+    /// the missing config is loud rather than silent.
+    pub typesense: Option<Arc<TypesenseClient>>,
 }
 
 impl AppState {
@@ -38,7 +44,14 @@ impl AppState {
             Arc::new(PostgresEventReader::new(pool.clone()));
         let tiered_reader = Arc::new(TieredEventReader::new(hot, None));
         let cold_jobs = ColdJobStore::new();
-        Self { registry, pool, tiered_reader, cold_jobs, cursor_signer: None }
+        Self {
+            registry,
+            pool,
+            tiered_reader,
+            cold_jobs,
+            cursor_signer: None,
+            typesense: None,
+        }
     }
 
     /// Override the tiered reader. Used by main.rs to inject a
@@ -57,6 +70,13 @@ impl AppState {
     /// `VELOCITY_API_CURSOR_SIGNING_KEY` is configured.
     pub fn with_cursor_signer(mut self, signer: Arc<CursorSigner>) -> Self {
         self.cursor_signer = Some(signer);
+        self
+    }
+
+    /// Inject a Typesense client. Used by main.rs when
+    /// `VELOCITY_API_TYPESENSE_URL` is configured.
+    pub fn with_typesense(mut self, ts: Arc<TypesenseClient>) -> Self {
+        self.typesense = Some(ts);
         self
     }
 }

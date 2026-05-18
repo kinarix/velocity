@@ -50,6 +50,14 @@ pub fn build(state: AppState) -> Router {
             axum::routing::post(handlers::query),
         )
         .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/search",
+            axum::routing::post(handlers::search),
+        )
+        .route(
+            "/api/{org}/search",
+            axum::routing::post(handlers::cross_search),
+        )
+        .route(
             "/api/{org}/{app}/{domain}/{object}/{version}/{id}",
             get(handlers::get_one).put(handlers::update).delete(handlers::delete_soft),
         )

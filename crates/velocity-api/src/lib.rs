@@ -13,6 +13,7 @@ pub mod audit;
 pub mod auth;
 pub mod auth_handlers;
 pub mod auth_informer;
+pub mod cdc;
 pub mod config;
 pub mod dsl;
 pub mod error;
@@ -35,6 +36,7 @@ pub mod startup;
 pub mod state;
 pub mod tiering;
 pub mod time_machine;
+pub mod typesense;
 pub mod validate;
 
 pub use auth::{AuthRegistry, JwksCache, ResolvedAuthStrategy};

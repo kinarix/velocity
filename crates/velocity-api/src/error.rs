@@ -148,6 +148,18 @@ pub enum ApiError {
     #[error("cross-schema access denied on include `{0}`")]
     CrossSchemaAccessDenied(String),
 
+    /// Phase 5c: caller hit /search but the API process wasn't
+    /// configured with a Typesense URL/key. 503 — fail-loud so a
+    /// missing config doesn't masquerade as "no results".
+    #[error("search not configured on this server")]
+    SearchUnconfigured,
+
+    /// Phase 5c: Typesense is configured but the call failed
+    /// (network, 5xx, timeout). 503 — ADR-003 fail-closed; never
+    /// silently return an empty result set.
+    #[error("search unavailable: {0}")]
+    SearchUnavailable(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -174,7 +186,9 @@ impl ApiError {
             | ApiError::RevocationUnavailable
             | ApiError::SessionUnavailable
             | ApiError::WarmTierNotConfigured
-            | ApiError::WarmTierUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            | ApiError::WarmTierUnavailable(_)
+            | ApiError::SearchUnconfigured
+            | ApiError::SearchUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::RestoreTierUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::AuthStrategyMissing(_)
             | ApiError::Database(_)
@@ -210,6 +224,8 @@ impl ApiError {
             ApiError::WarmTierUnavailable(_) => "WARM_TIER_UNAVAILABLE",
             ApiError::RestoreTierUnsupported => "RESTORE_TIER_UNSUPPORTED",
             ApiError::CrossSchemaAccessDenied(_) => "CROSS_SCHEMA_ACCESS_DENIED",
+            ApiError::SearchUnconfigured => "SEARCH_NOT_CONFIGURED",
+            ApiError::SearchUnavailable(_) => "SEARCH_UNAVAILABLE",
         }
     }
 }
