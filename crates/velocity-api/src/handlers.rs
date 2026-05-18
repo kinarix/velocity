@@ -284,14 +284,25 @@ pub async fn create(
         move |tx| {
             Box::pin(async move {
                 let row = insert_row(tx, &table, &cols, &casts, &vals).await?;
+                // `RETURNING row_to_json(table.*)` must always include `id`
+                // for any schema-managed table. A missing/non-string `id`
+                // means the table shape diverged from the schema invariants
+                // — fail closed so we never bind an empty id into the audit
+                // chain or the outbox.
+                let id = row["id"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        sqlx::Error::Protocol(
+                            "insert returned row without string `id` column".into(),
+                        )
+                    })?
+                    .to_string();
                 if matches!(tier, SearchTier::Tier3) {
-                    let id = row["id"].as_str().unwrap_or_default().to_string();
                     write_outbox(tx, &outbox_table, "create", &id, &row).await?;
                 }
                 // ADR-005: audit row writes in the same tx as the data
                 // change. A best-effort log line *after* commit would leave
                 // the data and audit chain visibly out of sync on a crash.
-                let id = row["id"].as_str().unwrap_or_default().to_string();
                 audit::write_audit(
                     tx,
                     &audit_schema,

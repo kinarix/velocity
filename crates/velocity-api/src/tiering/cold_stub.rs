@@ -32,6 +32,13 @@ pub enum ColdJobStatus {
     // is stable from day one.
 }
 
+/// Soft cap on retained jobs. Real Glacier integration will persist
+/// jobs to Postgres; until then, an in-memory store grows unbounded if
+/// callers spam cold-tier requests. When the cap is hit we evict the
+/// oldest entries — clients lose the ability to look up ancient job
+/// ids, which is acceptable for a stub that doesn't actually retrieve.
+const MAX_JOBS: usize = 10_000;
+
 #[derive(Debug, Default)]
 pub struct ColdJobStore {
     jobs: DashMap<Uuid, ColdJob>,
@@ -51,12 +58,31 @@ impl ColdJobStore {
             until,
             status: ColdJobStatus::Accepted,
         };
+        if self.jobs.len() >= MAX_JOBS {
+            self.evict_oldest();
+        }
         self.jobs.insert(job.id, job.clone());
         job
     }
 
     pub fn get(&self, id: Uuid) -> Option<ColdJob> {
         self.jobs.get(&id).map(|r| r.clone())
+    }
+
+    /// Drop the oldest 10% of jobs so we make headroom without thrashing
+    /// on every subsequent insert. A single full scan is O(n) but n is
+    /// bounded by `MAX_JOBS` and this only runs at the cap.
+    fn evict_oldest(&self) {
+        let target = MAX_JOBS / 10;
+        let mut entries: Vec<(Uuid, DateTime<Utc>)> = self
+            .jobs
+            .iter()
+            .map(|r| (*r.key(), r.value().created_at))
+            .collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+        for (id, _) in entries.into_iter().take(target) {
+            self.jobs.remove(&id);
+        }
     }
 }
 

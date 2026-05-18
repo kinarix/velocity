@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 use velocity_api::auth::{
     authenticate, AuthState, PgApiKeyChecker, PgSessionStore, RedisRevocationChecker,
@@ -145,7 +145,15 @@ async fn main() -> Result<()> {
         // can verify an ID token without re-priming.
         jwks: jwks_cache.clone(),
         claim_mappings: auth_state.claim_mappings.clone(),
-        http: reqwest::Client::new(),
+        // OIDC token + JWKS calls go through this client. A hung IdP
+        // must not block a request indefinitely — set bounded timeouts.
+        // 10s overall is generous enough for slow IdPs (Okta cold-start)
+        // and still well below the upstream request deadline.
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .build()
+            .context("building OIDC http client")?,
         client_secret_resolver: Arc::new(EnvClientSecretResolver),
     };
 

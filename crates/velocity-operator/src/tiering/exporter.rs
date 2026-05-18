@@ -291,23 +291,41 @@ async fn export_one_schema(
     let mut buf: Vec<EventLogRow> = Vec::with_capacity(STREAM_BATCH_ROWS);
     let mut total: usize = 0;
 
+    // Per-batch and close timeouts bound how long a slow / hung warm
+    // store (S3 throttling, network blip) can hold the open tx + the
+    // open parquet writer. `BufWriter` internally batches into multipart
+    // PUTs; a healthy upload is sub-second per batch, so 60s is
+    // comfortably generous without letting one bad object park us
+    // indefinitely.
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+    const CLOSE_TIMEOUT: Duration = Duration::from_secs(120);
+
     while let Some(row) = rows_stream.next().await {
         let row = row.with_context(|| format!("fetch row from {}", part.name))?;
         buf.push(row);
         if buf.len() >= STREAM_BATCH_ROWS {
             let batch = rows_to_batch(&arrow_schema, &buf)?;
-            pq.write(&batch).await.with_context(|| format!("write batch to {key}"))?;
+            tokio::time::timeout(WRITE_TIMEOUT, pq.write(&batch))
+                .await
+                .with_context(|| format!("write batch to {key} timed out"))?
+                .with_context(|| format!("write batch to {key}"))?;
             total += buf.len();
             buf.clear();
         }
     }
     if !buf.is_empty() {
         let batch = rows_to_batch(&arrow_schema, &buf)?;
-        pq.write(&batch).await.with_context(|| format!("write tail batch to {key}"))?;
+        tokio::time::timeout(WRITE_TIMEOUT, pq.write(&batch))
+            .await
+            .with_context(|| format!("write tail batch to {key} timed out"))?
+            .with_context(|| format!("write tail batch to {key}"))?;
         total += buf.len();
     }
 
-    pq.close().await.with_context(|| format!("close parquet writer for {key}"))?;
+    tokio::time::timeout(CLOSE_TIMEOUT, pq.close())
+        .await
+        .with_context(|| format!("close parquet writer for {key} timed out"))?
+        .with_context(|| format!("close parquet writer for {key}"))?;
     tracing::info!(key = %key, rows = total, "export object closed");
     Ok((total, key.to_string()))
 }

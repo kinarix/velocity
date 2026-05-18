@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::http::StatusCode;
+use axum::extract::DefaultBodyLimit;
 use axum::{
     routing::{get, post},
     Router,
@@ -39,6 +40,11 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/validate", post(handler::validate))
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
+        // AdmissionReview bodies are bounded by the apiserver to
+        // ~10 MiB; mirror that cap so an attacker who reaches the
+        // webhook directly (bypassing the apiserver) cannot exhaust
+        // memory with an unbounded payload.
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
 
     let health_app = Router::new().route("/healthz", get(|| async { (StatusCode::OK, "ok") }));
@@ -70,7 +76,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    let _ = health_handle.await;
+    // The admission server has exited (clean shutdown or fatal error).
+    // The health server is independent; drain it and surface any error
+    // that killed it so an operator can see why the probe stopped
+    // responding before the process exits.
+    match health_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(error = %e, "health server exited with error"),
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => tracing::error!(error = %e, "health server task panicked"),
+    }
     Ok(())
 }
 

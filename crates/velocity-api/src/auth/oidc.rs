@@ -216,15 +216,15 @@ pub fn decode_flow_cookie(
 /// differing byte via timing. Used on `state` and `nonce` so an attacker
 /// can't grind them out one byte at a time. `pub(crate)` so the callback
 /// handler can reuse the same primitive for its post-decode nonce check.
+///
+/// Backed by `subtle::ConstantTimeEq` (audited primitive) — the same
+/// crate velocity-warm-reader uses for bearer-token comparison.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
     if a.len() != b.len() {
         return false;
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    a.ct_eq(b).into()
 }
 
 // ─── OIDC wire types ────────────────────────────────────────────────────────
