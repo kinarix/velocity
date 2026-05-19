@@ -25,8 +25,10 @@ pub mod datafusion_reader;
 pub mod error;
 pub mod http;
 pub mod object_layout;
+pub mod startup;
 pub mod types;
 
 pub use config::WarmReaderConfig;
 pub use error::WarmReaderError;
+pub use startup::{build_app_state, build_object_store, build_session};
 pub use types::{EventRow, EventsRequest, EventsResponse};

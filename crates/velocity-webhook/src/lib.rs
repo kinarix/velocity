@@ -8,10 +8,12 @@
 
 pub mod config;
 pub mod handler;
+pub mod startup;
 pub mod strategy_check;
 pub mod validators;
 
 pub use config::WebhookConfig;
+pub use startup::{build_admission_router, build_health_router};
 pub use strategy_check::{
     validate_auth_strategy_ref, AuthStrategyExists, KubeStrategyChecker, MockStrategyChecker,
 };

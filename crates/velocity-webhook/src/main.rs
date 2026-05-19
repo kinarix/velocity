@@ -2,16 +2,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::http::StatusCode;
-use axum::extract::DefaultBodyLimit;
-use axum::{
-    routing::{get, post},
-    Router,
-};
 use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use tracing_subscriber::EnvFilter;
-use velocity_webhook::{handler, KubeStrategyChecker, WebhookConfig};
+use velocity_webhook::{
+    build_admission_router, build_health_router, KubeStrategyChecker, WebhookConfig,
+};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -36,18 +32,9 @@ async fn main() -> Result<()> {
 
     let kube = Client::try_default().await.context("building kube client")?;
     let checker = Arc::new(KubeStrategyChecker::new(kube));
-    let state = handler::AppState::new(cfg.clone(), checker);
-    let app = Router::new()
-        .route("/validate", post(handler::validate))
-        .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
-        // AdmissionReview bodies are bounded by the apiserver to
-        // ~10 MiB; mirror that cap so an attacker who reaches the
-        // webhook directly (bypassing the apiserver) cannot exhaust
-        // memory with an unbounded payload.
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-        .with_state(state);
 
-    let health_app = Router::new().route("/healthz", get(|| async { (StatusCode::OK, "ok") }));
+    let app = build_admission_router(cfg.clone(), checker);
+    let health_app = build_health_router();
 
     let health_addr: SocketAddr = cfg.health_addr.parse().context("parsing health_addr")?;
     let health_handle = tokio::spawn(async move {
