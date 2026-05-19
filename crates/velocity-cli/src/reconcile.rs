@@ -40,10 +40,8 @@ pub(crate) async fn run(args: ReconcileArgs, kubeconfig: &Option<String>) -> Res
     // cluster-scoped CRDs uniformly. Using Discovery means we don't
     // have to hard-code the GVK table here; if a new CRD ships, it
     // works without a CLI rebuild.
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let (ar, caps) = find_resource(&discovery, &args.kind)?;
     let is_namespaced = caps.scope == kube::discovery::Scope::Namespaced;
 
@@ -56,10 +54,7 @@ pub(crate) async fn run(args: ReconcileArgs, kubeconfig: &Option<String>) -> Res
 
     let api: Api<DynamicObject> = if is_namespaced {
         let ns = namespace.ok_or_else(|| {
-            anyhow!(
-                "{} is namespaced — supply --target as <namespace>/<name>",
-                args.kind
-            )
+            anyhow!("{} is namespaced — supply --target as <namespace>/<name>", args.kind)
         })?;
         Api::namespaced_with(client, &ns, &ar)
     } else {
@@ -72,13 +67,9 @@ pub(crate) async fn run(args: ReconcileArgs, kubeconfig: &Option<String>) -> Res
         Api::all_with(client, &ar)
     };
 
-    api.patch(
-        &name,
-        &PatchParams::apply("velocity-cli").force(),
-        &Patch::Merge(&patch),
-    )
-    .await
-    .with_context(|| format!("patching {} {name}", args.kind))?;
+    api.patch(&name, &PatchParams::apply("velocity-cli").force(), &Patch::Merge(&patch))
+        .await
+        .with_context(|| format!("patching {} {name}", args.kind))?;
 
     eprintln!("requested reconcile of {} {name} at {now}", args.kind);
     Ok(())
@@ -87,7 +78,9 @@ pub(crate) async fn run(args: ReconcileArgs, kubeconfig: &Option<String>) -> Res
 fn parse_target(s: &str) -> Result<(Option<String>, String)> {
     if let Some((ns, name)) = s.split_once('/') {
         if ns.is_empty() || name.is_empty() {
-            return Err(anyhow!("invalid target `{s}` (expected `<namespace>/<name>` or `<name>`)"));
+            return Err(anyhow!(
+                "invalid target `{s}` (expected `<namespace>/<name>` or `<name>`)"
+            ));
         }
         Ok((Some(ns.to_string()), name.to_string()))
     } else {

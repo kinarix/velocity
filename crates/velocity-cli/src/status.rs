@@ -31,14 +31,15 @@ pub(crate) struct StatusArgs {
     pub only_unhealthy: bool,
 }
 
-pub(crate) async fn run(args: StatusArgs, kubeconfig: &Option<String>, output: OutputFormat) -> Result<()> {
+pub(crate) async fn run(
+    args: StatusArgs,
+    kubeconfig: &Option<String>,
+    output: OutputFormat,
+) -> Result<()> {
     let client = build_client(kubeconfig.as_deref()).await?;
 
-    let api: Api<SchemaDefinition> = if let Some(ns) = &args.namespace {
-        Api::namespaced(client, ns)
-    } else {
-        Api::all(client)
-    };
+    let api: Api<SchemaDefinition> =
+        if let Some(ns) = &args.namespace { Api::namespaced(client, ns) } else { Api::all(client) };
 
     let mut lp = ListParams::default();
     if let Some(org) = &args.org {
@@ -70,11 +71,7 @@ pub(crate) async fn run(args: StatusArgs, kubeconfig: &Option<String>, output: O
         rows.push(vec![ns, name, phase, created, ready_msg]);
     }
 
-    output::print(
-        &["NAMESPACE", "NAME", "PHASE", "CREATED", "READY"],
-        &rows,
-        output,
-    );
+    output::print(&["NAMESPACE", "NAME", "PHASE", "CREATED", "READY"], &rows, output);
     Ok(())
 }
 
@@ -106,10 +103,7 @@ fn summarise_status(status: Option<&SchemaDefinitionStatus>) -> (String, String)
     let Some(status) = status else {
         return ("Unknown".into(), "no status yet".into());
     };
-    let phase = status
-        .phase
-        .map(|p| format!("{p:?}"))
-        .unwrap_or_else(|| "Unknown".into());
+    let phase = status.phase.map(|p| format!("{p:?}")).unwrap_or_else(|| "Unknown".into());
 
     // Pull the most recent Ready condition. If absent, show the phase
     // again (useful when an operator only writes `phase` without
@@ -120,7 +114,11 @@ fn summarise_status(status: Option<&SchemaDefinitionStatus>) -> (String, String)
         .find(|c| c.kind == "Ready")
         .map(|c| {
             let s = c.message.as_deref().unwrap_or("");
-            if s.is_empty() { c.status.clone() } else { truncate(s, 60) }
+            if s.is_empty() {
+                c.status.clone()
+            } else {
+                truncate(s, 60)
+            }
         })
         .unwrap_or_else(|| "—".into());
 

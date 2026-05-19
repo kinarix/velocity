@@ -81,6 +81,9 @@ serde_yaml     = "0.9"
 anyhow         = "1"
 thiserror      = "2"
 
+# Filesystem paths (resolves ~/.velocity etc. without dragging in directories crate)
+dirs           = "5"
+
 # Observability
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }

@@ -93,10 +93,7 @@ fn print_json(headers: &[&str], rows: &[Vec<String>]) {
     for row in rows {
         let mut obj = serde_json::Map::with_capacity(headers.len());
         for (i, h) in headers.iter().enumerate() {
-            obj.insert(
-                (*h).to_string(),
-                Value::String(row.get(i).cloned().unwrap_or_default()),
-            );
+            obj.insert((*h).to_string(), Value::String(row.get(i).cloned().unwrap_or_default()));
         }
         out.push(Value::Object(obj));
     }

@@ -43,6 +43,11 @@ pub fn build(state: AppState) -> Router {
     // even when the middleware is installed.
     Router::new()
         .route("/api", get(index))
+        // Public unauthenticated build info. Used by `velocity version` and
+        // by humans poking at a deployment. Same listener as the data plane
+        // so the CLI only needs one URL. The auth middleware skips it
+        // because `schema_path_from_uri` requires `/api/{5-seg}`.
+        .route("/version", get(version))
         // Phase 6a-2: platform-internal audit endpoints. Mounted under
         // /api/platform so the auth middleware's `schema_path_from_uri`
         // (which requires 5 path segments after /api) naturally skips
@@ -181,6 +186,21 @@ async fn index(State(state): State<AppState>) -> (StatusCode, Json<serde_json::V
             "ready": state.registry.is_ready(),
             "schemas": paths.len(),
             "paths": paths,
+        })),
+    )
+}
+
+/// Build info — the small companion endpoint for `velocity version`.
+/// `git_sha` is populated at build time from `VELOCITY_GIT_SHA` (set by
+/// the release pipeline); falls back to "unknown" for `cargo build`.
+async fn version(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "service": "velocity-api",
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_sha": option_env!("VELOCITY_GIT_SHA").unwrap_or("unknown"),
+            "ready":   state.registry.is_ready(),
         })),
     )
 }

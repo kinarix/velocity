@@ -108,11 +108,7 @@ async fn verify(
     if tampered == 0 {
         // Still emit an empty table/JSON document so callers piping
         // output get a predictable shape.
-        output::print(
-            &["id", "occurred_at", "stored_hash", "computed_hash"],
-            &[],
-            output,
-        );
+        output::print(&["id", "occurred_at", "stored_hash", "computed_hash"], &[], output);
         Ok(())
     } else {
         output::print(
@@ -135,9 +131,9 @@ fn resolve_window(
 ) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
     let now = Utc::now();
     match (from, to, window) {
-        (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => Err(anyhow!(
-            "--window is mutually exclusive with --from / --to"
-        )),
+        (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+            Err(anyhow!("--window is mutually exclusive with --from / --to"))
+        }
         (Some(f), Some(t), None) => Ok((f, t)),
         (Some(f), None, None) => Ok((f, now)),
         (None, Some(t), None) => Ok((t - Duration::hours(24), t)),
@@ -155,9 +151,7 @@ fn parse_duration(s: &str) -> std::result::Result<Duration, String> {
         s.find(|c: char| !c.is_ascii_digit())
             .ok_or_else(|| format!("duration `{s}` missing unit (expected one of s/m/h/d)"))?,
     );
-    let n: i64 = num
-        .parse()
-        .map_err(|_| format!("duration `{s}` has invalid number"))?;
+    let n: i64 = num.parse().map_err(|_| format!("duration `{s}` has invalid number"))?;
     if n <= 0 {
         return Err(format!("duration `{s}` must be positive"));
     }

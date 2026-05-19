@@ -1,27 +1,42 @@
 //! `velocity` — operator CLI for Velocity clusters.
 //!
-//! Phase 4.5 surface: subcommands an SRE needs to operate Velocity in
-//! production. Read-only commands (`status`, `audit verify`, `drift
-//! check`) can run against any healthy cluster + Postgres. Write
-//! commands (`reconcile`, `drift quarantine`) mutate state and require
-//! credentials with the right grants.
+//! Read-only commands (`status`, `audit verify`, `drift check`) target
+//! kube + Postgres directly. Data-plane commands (Phase 9 slice 3+)
+//! target the API server via `ApiClient`, resolved from the active
+//! context in `~/.velocity/config`.
+//!
+//! Phase 9 slice 1 adds:
+//!   - `context list|show|use|add|delete` — manage config entries.
+//!   - `version`                            — client + server build info.
+//!   - `--context` / `--config` global flags.
+//!
+//! OIDC device flow is **deferred** from Phase 9; today, `context add`
+//! takes a bearer token verbatim. The on-disk file is `0600` on Unix.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
 
 mod audit;
+mod client;
+mod config;
+mod context_cmd;
 mod drift;
 mod output;
 mod reconcile;
 mod status;
+mod version_cmd;
 
 use audit::AuditCmd;
+use context_cmd::ContextCmd;
 use drift::DriftCmd;
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
 use status::StatusArgs;
+use version_cmd::VersionArgs;
 
 /// velocity — CLI for managing a Velocity deployment.
 #[derive(Debug, Parser)]
@@ -44,6 +59,16 @@ struct Cli {
     #[arg(long, global = true, env = "VELOCITY_PG_URL")]
     db_url: Option<String>,
 
+    /// Velocity CLI config path. Defaults to `$VELOCITY_CONFIG` then
+    /// `~/.velocity/config`.
+    #[arg(long, global = true, env = "VELOCITY_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Override the active context for this invocation. Precedence:
+    /// this flag > `$VELOCITY_CONTEXT` > `current-context` in config.
+    #[arg(long, global = true)]
+    context: Option<String>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -64,6 +89,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DriftCmd,
     },
+    /// Manage `~/.velocity/config` contexts.
+    Context {
+        #[command(subcommand)]
+        cmd: ContextCmd,
+    },
+    /// Print client + server build info.
+    Version(VersionArgs),
 }
 
 #[tokio::main]
@@ -87,6 +119,12 @@ async fn main() -> Result<()> {
         Cmd::Status(args) => status::run(args, &cli.kubeconfig, cli.output).await,
         Cmd::Reconcile(args) => reconcile::run(args, &cli.kubeconfig).await,
         Cmd::Audit { cmd } => audit::run(cmd, cli.db_url.as_deref(), cli.output).await,
-        Cmd::Drift { cmd } => drift::run(cmd, cli.db_url.as_deref(), &cli.kubeconfig, cli.output).await,
+        Cmd::Drift { cmd } => {
+            drift::run(cmd, cli.db_url.as_deref(), &cli.kubeconfig, cli.output).await
+        }
+        Cmd::Context { cmd } => context_cmd::run(cmd, cli.config.as_deref(), cli.output).await,
+        Cmd::Version(args) => {
+            version_cmd::run(args, cli.config.as_deref(), cli.context.as_deref(), cli.output).await
+        }
     }
 }

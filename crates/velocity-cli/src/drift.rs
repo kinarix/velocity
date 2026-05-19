@@ -78,8 +78,7 @@ async fn check(
     let pool = connect_pg(db_url).await?;
     let client = build_kube_client(kubeconfig.as_deref()).await?;
     let expected = expected_tables(&client, namespace.as_deref()).await?;
-    let known_schemas: HashSet<String> =
-        expected.iter().map(|(s, _)| s.clone()).collect();
+    let known_schemas: HashSet<String> = expected.iter().map(|(s, _)| s.clone()).collect();
 
     // Restrict the actual-side query to schemas we already know are
     // Velocity-managed (anchored on the SchemaDefinitions we observed).
@@ -119,11 +118,7 @@ async fn check(
         known_schemas.len(),
         orphans.len()
     );
-    output::print(
-        &["PG_SCHEMA", "TABLE", "SIZE_BYTES", "ROWS"],
-        &rows,
-        output,
-    );
+    output::print(&["PG_SCHEMA", "TABLE", "SIZE_BYTES", "ROWS"], &rows, output);
 
     if orphans.is_empty() {
         Ok(())
@@ -132,11 +127,7 @@ async fn check(
     }
 }
 
-async fn quarantine(
-    db_url: Option<&str>,
-    kubeconfig: &Option<String>,
-    target: &str,
-) -> Result<()> {
+async fn quarantine(db_url: Option<&str>, kubeconfig: &Option<String>, target: &str) -> Result<()> {
     let (pg_schema, table) = parse_target(target)?;
 
     // Refuse if the table IS claimed — quarantining a live SchemaDef's
@@ -165,9 +156,7 @@ async fn quarantine(
     // parsed `<schema>.<table>`. The CLI is a privileged tool but
     // operator habits should still surface SQL only after validation.
     if !is_safe_ident(&pg_schema) || !is_safe_ident(&table) {
-        return Err(anyhow!(
-            "refusing to quarantine `{pg_schema}.{table}` — invalid identifier"
-        ));
+        return Err(anyhow!("refusing to quarantine `{pg_schema}.{table}` — invalid identifier"));
     }
     let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let new_name = format!("{pg_schema}__{table}__{stamp}");
@@ -178,25 +167,19 @@ async fn quarantine(
     // Two steps: rename then move. We can't do both in a single
     // ALTER TABLE in Postgres, but they share a tx so partial failure
     // is impossible.
-    sqlx::query(&format!(
-        "ALTER TABLE {pg_schema}.{table} RENAME TO {new_name}"
-    ))
-    .execute(&mut *tx)
-    .await
-    .with_context(|| format!("rename {pg_schema}.{table}"))?;
+    sqlx::query(&format!("ALTER TABLE {pg_schema}.{table} RENAME TO {new_name}"))
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("rename {pg_schema}.{table}"))?;
 
-    sqlx::query(&format!(
-        "ALTER TABLE {pg_schema}.{new_name} SET SCHEMA platform_quarantine"
-    ))
-    .execute(&mut *tx)
-    .await
-    .with_context(|| format!("move {pg_schema}.{new_name} to platform_quarantine"))?;
+    sqlx::query(&format!("ALTER TABLE {pg_schema}.{new_name} SET SCHEMA platform_quarantine"))
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("move {pg_schema}.{new_name} to platform_quarantine"))?;
 
     tx.commit().await.context("commit quarantine")?;
 
-    eprintln!(
-        "quarantined {pg_schema}.{table} -> platform_quarantine.{new_name}"
-    );
+    eprintln!("quarantined {pg_schema}.{table} -> platform_quarantine.{new_name}");
     Ok(())
 }
 
@@ -285,9 +268,7 @@ fn parse_target(s: &str) -> Result<(String, String)> {
         Some((schema, table)) if !schema.is_empty() && !table.is_empty() => {
             Ok((schema.to_string(), table.to_string()))
         }
-        _ => Err(anyhow!(
-            "invalid target `{s}` (expected `<pg_schema>.<table>`)"
-        )),
+        _ => Err(anyhow!("invalid target `{s}` (expected `<pg_schema>.<table>`)")),
     }
 }
 
@@ -301,8 +282,8 @@ fn is_safe_ident(s: &str) -> bool {
 }
 
 async fn connect_pg(db_url: Option<&str>) -> Result<PgPool> {
-    let url = db_url
-        .ok_or_else(|| anyhow!("--db-url or VELOCITY_PG_URL is required for `drift`"))?;
+    let url =
+        db_url.ok_or_else(|| anyhow!("--db-url or VELOCITY_PG_URL is required for `drift`"))?;
     PgPoolOptions::new()
         .max_connections(2)
         .acquire_timeout(std::time::Duration::from_secs(10))
