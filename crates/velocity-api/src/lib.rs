@@ -9,6 +9,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod archive_handlers;
 pub mod audit;
 pub mod audit_query;
 pub mod auth;

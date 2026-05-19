@@ -96,6 +96,19 @@ pub fn build(state: AppState) -> Router {
             "/api/{org}/{app}/{domain}/history/snapshot",
             axum::routing::post(crate::time_machine::snapshot),
         )
+        // Phase 8 slice 9 — Archive API.
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/archive",
+            get(crate::archive_handlers::get_one),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/archive/query",
+            axum::routing::post(crate::archive_handlers::query),
+        )
+        .route(
+            "/api/{org}/{app}/{domain}/{object}/{version}/{id}/unarchive",
+            axum::routing::post(crate::archive_handlers::unarchive),
+        )
         // Metrics middleware. Mounted *inside* the auth layer (which
         // is added by `main.rs`) so that requests rejected at auth
         // don't get charged against a per-schema label — by the time
