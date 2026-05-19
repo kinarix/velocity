@@ -21,6 +21,7 @@ use anyhow::Result;
 use clap::Parser;
 
 mod audit;
+mod auth_cmd;
 mod client;
 mod config;
 mod confirm;
@@ -36,6 +37,7 @@ mod status;
 mod version_cmd;
 
 use audit::AuditCmd;
+use auth_cmd::{ApiKeyCmd, GrantArgs, RevokeArgs};
 use context_cmd::ContextCmd;
 use drift::DriftCmd;
 use history_cmd::{HistoryArgs, RestoreArgs};
@@ -123,6 +125,15 @@ enum Cmd {
     History(HistoryArgs),
     /// Restore a record to its state at a past instant (writes a new event).
     Restore(RestoreArgs),
+    /// Apply a RoleBinding granting roles to an actor.
+    Grant(GrantArgs),
+    /// Delete a RoleBinding (per-actor revoke).
+    Revoke(RevokeArgs),
+    /// API-key lifecycle (create / revoke / list).
+    ApiKey {
+        #[command(subcommand)]
+        cmd: ApiKeyCmd,
+    },
 }
 
 #[tokio::main]
@@ -167,5 +178,8 @@ async fn main() -> Result<()> {
         Cmd::Restore(args) => {
             history_cmd::restore(args, cli.config.as_deref(), cli.context.as_deref()).await
         }
+        Cmd::Grant(args) => auth_cmd::grant(args, &cli.kubeconfig).await,
+        Cmd::Revoke(args) => auth_cmd::revoke(args, &cli.kubeconfig).await,
+        Cmd::ApiKey { cmd } => auth_cmd::api_key(cmd, &cli.kubeconfig).await,
     }
 }
