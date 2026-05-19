@@ -10,6 +10,10 @@ repository.workspace   = true
 homepage.workspace     = true
 publish.workspace      = true
 
+[lib]
+name = "velocity_archive_worker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "velocity-archive-worker"
 path = "src/main.rs"
@@ -21,5 +25,7 @@ workspace = true
 velocity-types     = { workspace = true }
 tokio              = { workspace = true }
 anyhow             = { workspace = true }
+thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+sqlx               = { workspace = true }
