@@ -11,7 +11,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # creating the release + uploading assets
+  contents: write  # creating the release + uploading assets, and the
+                   # `formula` job below commits the updated Formula/velocity.rb
+                   # back to main using the workflow's GITHUB_TOKEN.
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,6 +49,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history so the on-main guard can resolve merge-base.
+          fetch-depth: 0
+
+      - name: Ensure tag points to main
+        # A v* tag pushed off a feature branch must not publish a
+        # release. Tags created via `make release` are guaranteed to be
+        # on main; this is the belt-and-braces backstop.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch origin main --depth=200
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::tag ${GITHUB_REF} not reachable from main — refusing to release"
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -138,3 +155,118 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+
+  formula:
+    name: update homebrew formula
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so the commit lands cleanly on main.
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract checksums
+        id: sums
+        # Each .sha256 file is "<hex>  <archive>"; we want the hex only.
+        # Pin the four targets the formula references so a missing
+        # artifact fails loudly instead of silently leaving zeros in
+        # place.
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF##*/}"             # vX.Y.Z
+          ver="${tag#v}"                       # X.Y.Z
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-unknown-linux-musl \
+            x86_64-unknown-linux-musl; do
+            f="dist/velocity-${tag}-${target}.tar.gz.sha256"
+            if [ ! -f "$f" ]; then
+              echo "::error::missing checksum file $f"
+              exit 1
+            fi
+            sum="$(awk '{print $1}' "$f")"
+            key="$(echo "$target" | tr '-' '_')"   # awk-safe key
+            echo "${key}=${sum}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Rewrite Formula/velocity.rb
+        env:
+          VER:            ${{ steps.sums.outputs.version }}
+          SHA_DARWIN_ARM: ${{ steps.sums.outputs.aarch64_apple_darwin }}
+          SHA_DARWIN_X64: ${{ steps.sums.outputs.x86_64_apple_darwin }}
+          SHA_LINUX_ARM:  ${{ steps.sums.outputs.aarch64_unknown_linux_musl }}
+          SHA_LINUX_X64:  ${{ steps.sums.outputs.x86_64_unknown_linux_musl }}
+        # A targeted python rewrite is more reliable than nested sed
+        # patterns — the formula has four sha256 lines that the macOS
+        # arm / macOS x64 / linux arm / linux x64 branches each own. We
+        # walk the file line-by-line tracking which `on_*` + `if/else`
+        # block we're inside, then replace exactly one sha256 per block.
+        run: |
+          python3 <<'PY'
+          import os, re, pathlib
+          p = pathlib.Path("Formula/velocity.rb")
+          src = p.read_text().splitlines(keepends=True)
+          ver   = os.environ["VER"]
+          sums = {
+              ("macos", "arm"): os.environ["SHA_DARWIN_ARM"],
+              ("macos", "x64"): os.environ["SHA_DARWIN_X64"],
+              ("linux", "arm"): os.environ["SHA_LINUX_ARM"],
+              ("linux", "x64"): os.environ["SHA_LINUX_X64"],
+          }
+          os_ctx, arch_ctx = None, None
+          out = []
+          for line in src:
+              s = line.lstrip()
+              if s.startswith("on_macos"):
+                  os_ctx, arch_ctx = "macos", None
+              elif s.startswith("on_linux"):
+                  os_ctx, arch_ctx = "linux", None
+              elif "Hardware::CPU.arm?" in s:
+                  arch_ctx = "arm"
+              elif s.startswith("else") and os_ctx and arch_ctx == "arm":
+                  arch_ctx = "x64"
+              elif s.startswith("end") and arch_ctx is not None:
+                  arch_ctx = None
+              elif s.startswith("end") and os_ctx is not None and arch_ctx is None:
+                  os_ctx = None
+
+              # Version line — single occurrence at the top of the class.
+              if re.match(r'^\s*version\s+"', line):
+                  line = re.sub(r'"[^"]*"', f'"{ver}"', line, count=1)
+
+              # sha256 line — pick the value for the (os_ctx, arch_ctx) we're in.
+              if re.match(r'^\s*sha256\s+"', line) and (os_ctx, arch_ctx) in sums:
+                  line = re.sub(r'"[0-9a-fA-F]+"', f'"{sums[(os_ctx, arch_ctx)]}"', line, count=1)
+
+              out.append(line)
+          p.write_text("".join(out))
+          print(f"rewrote Formula/velocity.rb for version {ver}")
+          PY
+
+      - name: Commit + push formula update
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Land the commit on main, not on the detached tag ref.
+          git checkout main
+          # The `set -u` above will have killed us already if Python
+          # didn't write — defensive check anyway.
+          if git diff --quiet Formula/velocity.rb; then
+            echo "==> formula already up to date (re-run?)"
+            exit 0
+          fi
+          git add Formula/velocity.rb
+          git commit -m "chore(formula): velocity v${{ steps.sums.outputs.version }}" \
+                     -m "Auto-updated by release.yml from tag ${GITHUB_REF##*/}."
+          git push origin main

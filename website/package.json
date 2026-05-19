@@ -1,0 +1,17 @@
+{
+  "name": "velocity-docs",
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Velocity platform documentation",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.2.1",
+    "@astrojs/starlight": "^0.22.0",
+    "astro": "^4.10.0"
+  }
+}

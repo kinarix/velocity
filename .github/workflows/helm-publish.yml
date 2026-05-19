@@ -1,0 +1,183 @@
+name: helm-publish
+
+# Publishes the `charts/velocity` Helm chart in two flavours:
+#   1. Classic HTTP repo at https://velocity.kinarix.com/charts/
+#      — committed into website/public/charts/ on `main`, picked up by
+#        docs.yml on the next Pages deploy.
+#   2. OCI artifact at oci://ghcr.io/<owner>/charts/velocity
+#      — pushed with `helm push` using the workflow's GITHUB_TOKEN.
+#
+# Triggered on tags shaped `chart-v<semver>` so chart releases are
+# decoupled from binary `v*` releases. workflow_dispatch is allowed for
+# manual republishes / dry runs (set `dry_run: true` to skip the commit
+# and the OCI push).
+
+on:
+  push:
+    tags:
+      - 'chart-v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Package only — do not commit or push OCI'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write   # commit packaged chart + index.yaml back to main
+  packages: write   # push to ghcr.io
+
+concurrency:
+  # Serialise so two tag pushes can't race the index.yaml merge.
+  group: helm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need full history so we can commit the packaged chart back
+          # and so the on-main guard can resolve merge-base.
+          fetch-depth: 0
+          # PAT not required — the default token has `contents: write`
+          # for the same repo and will trigger downstream workflows
+          # only via `workflow_dispatch` (chained CI is intentionally
+          # not auto-triggered).
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure tag points to main
+        # chart-v* tags pushed off a feature branch must not publish.
+        # `make release-chart` enforces being on main; this is backstop.
+        if: startsWith(github.ref, 'refs/tags/chart-v')
+        run: |
+          git fetch origin main --depth=200
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::tag ${GITHUB_REF} not reachable from main — refusing to publish"
+            exit 1
+          fi
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Resolve chart version
+        id: ver
+        run: |
+          # When triggered by a `chart-v<semver>` tag, derive the chart
+          # version from the tag so we don't drift from Chart.yaml. The
+          # tag is canonical because it's what humans publish against.
+          ref="${GITHUB_REF##*/}"
+          case "$ref" in
+            chart-v*) version="${ref#chart-v}" ;;
+            *)        version="$(grep '^version:' charts/velocity/Chart.yaml | awk '{print $2}')" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "==> chart version: $version"
+
+      - name: Sync Chart.yaml version
+        # Only mutate on tag pushes — manual dry runs keep the working
+        # tree clean so `git diff` after the run is a reliable signal.
+        if: startsWith(github.ref, 'refs/tags/chart-v')
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          # appVersion defaults to chart version unless the maintainer
+          # has explicitly diverged it. Keep simple: bump both together.
+          sed -i.bak -E "s/^version: .*/version: $v/" charts/velocity/Chart.yaml
+          sed -i.bak -E "s/^appVersion: .*/appVersion: \"$v\"/" charts/velocity/Chart.yaml
+          rm charts/velocity/Chart.yaml.bak
+
+      - name: Lint chart
+        run: helm lint charts/velocity
+
+      - name: Package chart
+        run: |
+          mkdir -p /tmp/pkg
+          helm package charts/velocity -d /tmp/pkg
+          ls -la /tmp/pkg
+
+      # ──────────────────────────────────────────────────────────────
+      # Option A — classic HTTP repo bundled into the docs site
+      # ──────────────────────────────────────────────────────────────
+      - name: Merge into existing index.yaml
+        run: |
+          mkdir -p website/public/charts
+          # Copy the new .tgz alongside any historical ones already in
+          # the website tree so `helm repo index --merge` produces the
+          # full version listing, not just this release.
+          cp /tmp/pkg/*.tgz website/public/charts/
+
+          # --merge against the existing index keeps prior releases'
+          # entries; --url pins the absolute download URL so users on
+          # the custom domain don't hit a relative-path miss.
+          helm repo index website/public/charts \
+            --merge website/public/charts/index.yaml \
+            --url https://velocity.kinarix.com/charts
+
+      - name: Commit chart artefacts to main
+        if: |
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/chart-v')
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Checkout main so the commit lands on the deploy branch, not
+          # on the detached tag ref.
+          git checkout main
+          # Re-apply the Chart.yaml bump on main (we changed it on the
+          # tag ref above; that change isn't on main yet).
+          v="${{ steps.ver.outputs.version }}"
+          sed -i.bak -E "s/^version: .*/version: $v/" charts/velocity/Chart.yaml
+          sed -i.bak -E "s/^appVersion: .*/appVersion: \"$v\"/" charts/velocity/Chart.yaml
+          rm charts/velocity/Chart.yaml.bak
+          git add charts/velocity/Chart.yaml website/public/charts/
+          if git diff --cached --quiet; then
+            echo "==> nothing to commit"
+          else
+            git commit -m "chore(charts): publish velocity-${v}" \
+                       -m "Generated by helm-publish.yml from tag ${GITHUB_REF##*/}."
+            git push origin main
+          fi
+
+      # ──────────────────────────────────────────────────────────────
+      # Option B (substituted) — OCI publish to ghcr.io
+      # ──────────────────────────────────────────────────────────────
+      - name: Log in to ghcr.io
+        if: |
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/chart-v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Push chart to ghcr.io as OCI artifact
+        if: |
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/chart-v')
+        run: |
+          # `helm push <tgz> oci://<registry>/<namespace>` lands as
+          #   oci://ghcr.io/<owner>/charts/velocity:<version>
+          # — the chart name + version embedded in the .tgz become the
+          # repo+tag automatically.
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          for tgz in /tmp/pkg/*.tgz; do
+            helm push "$tgz" "oci://ghcr.io/${owner_lc}/charts"
+          done
+
+      - name: Summary
+        run: |
+          echo "## Helm publish summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- chart version: \`${{ steps.ver.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- packaged: $(ls /tmp/pkg/*.tgz | xargs -n1 basename)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+            echo "- classic: https://velocity.kinarix.com/charts/" >> "$GITHUB_STEP_SUMMARY"
+            echo "- OCI:     oci://ghcr.io/${owner_lc}/charts/velocity:${{ steps.ver.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- _workflow_dispatch run — nothing committed or pushed_" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -228,6 +228,19 @@ e2e-clean: ## Tear down everything `make e2e` created (helm release, namespaces,
 	-pkill -f 'target/(debug|release)/velocity-operator' 2>/dev/null || true
 	-rm -rf data/webhook-tls
 
+# --- Release ---
+.PHONY: release
+release: ## Cut a release: bump version, commit, push, tag (cli|chart|both — interactive)
+	@bash scripts/release.sh
+
+.PHONY: release-cli
+release-cli: ## Cut a CLI/binary release (v<ver>); skips the prompt
+	@VELOCITY_RELEASE_KIND=cli bash scripts/release.sh
+
+.PHONY: release-chart
+release-chart: ## Cut a chart release (chart-v<ver>); skips the prompt
+	@VELOCITY_RELEASE_KIND=chart bash scripts/release.sh
+
 # --- Convenience ---
 .PHONY: dev
 dev: up-pg db-bootstrap db-verify-rls ## One-shot: bring up pg, bootstrap roles, verify RLS

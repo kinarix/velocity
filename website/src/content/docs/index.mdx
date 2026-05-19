@@ -1,0 +1,111 @@
+---
+title: Velocity
+description: Schema-driven, Kubernetes-native backend platform
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+# Velocity
+
+**Schema is the contract.** Apply a `SchemaDefinition` CRD to your Kubernetes cluster. Velocity provisions a Postgres table, REST API, validation, role-based access, search, audit, time-machine history, and observability — automatically, without per-schema code.
+
+## The 30-Second Pitch
+
+Velocity is a schema-driven backend platform built in Rust that lives inside Kubernetes. Write a single CRD that describes your data shape, access rules, and retention policy. The platform does the rest: generates the table DDL, enforces field-level RLS, provisions full-text search, records every change in an append-only audit log, keeps 90 days of history hot, archives to S3 Parquet beyond that, and exports metrics to Prometheus.
+
+Three decisions unlock this:
+
+1. **The schema is the source of truth.** No separate OpenAPI spec, no migration scripts, no RBAC matrix living in a spreadsheet. One CRD spec drives DDL, validation, search indexing, audit policies, and API route generation.
+2. **The API server reads the schema via a Kubernetes informer per replica**, not RPC from the operator. This keeps the data plane fast and decoupled from the control plane.
+3. **The database role is non-superuser, `NOBYPASSRLS` from day one.** Row-level security is not theater — it is a real backstop enforced by the database itself.
+
+## Features
+
+<CardGrid>
+  <Card title="CRUD + DSL Query" icon="pencil">
+    Generic handlers for any schema. List with filtering, pagination, and sorting. No per-schema route boilerplate.
+  </Card>
+  <Card title="Full-Text Search" icon="magnifier">
+    Tier 1: trigram (fast, 90 days hot). Tier 2: Postgres FTS. Tier 3: Typesense (real-time, CDN-aware, typo-tolerant).
+  </Card>
+  <Card title="Time Machine" icon="rocket">
+    Every change recorded. Point-in-time query, diff, restore. 90 days hot in Postgres; warm tier in S3 Parquet up to 5 years.
+  </Card>
+  <Card title="Append-Only Audit" icon="shield-check">
+    Hash-linked audit chain. Tamper detection via `audit verify` command. Immutable proof of who changed what when.
+  </Card>
+  <Card title="Role-Based Access" icon="lock">
+    7 layers of access control: RBAC, ABAC (CEL), row filters, field filters, masking, Postgres RLS, and validating webhook.
+  </Card>
+  <Card title="Archive & Purge" icon="archive">
+    Automatic tiering: hot → warm → cold → delete. S3 Parquet warm storage. Lifecycle-driven purges with optional approval gates.
+  </Card>
+  <Card title="Observability" icon="star">
+    Structured JSON logging. Prometheus metrics. OpenTelemetry traces. Grafana dashboards auto-generated per schema.
+  </Card>
+  <Card title="Operational Tooling" icon="rocket">
+    `velocity` CLI for schema management, audit verification, drift detection, and record operations. SLO sweeper for SLA compliance.
+  </Card>
+</CardGrid>
+
+## Start Here
+
+- **[Getting Started](./getting-started)** — Install, apply your first SchemaDefinition, CRUD a record, verify with the CLI.
+- **[Installation](./installation)** — Prerequisites, Helm install, RBAC, the critical non-superuser role setup.
+- **[Hardening](./hardening)** — Production checklist: role verification, CEL bounded execution, validating webhook, outbox semantics.
+- **[Features](./features/schema-definition)** — Deep dives: SchemaDefinition, AuthStrategy, Time Machine, Archive, Audit, Search, Observability.
+- **[API Reference](./api-reference)** — Every REST route with examples.
+- **[CLI Reference](./features/cli)** — Every command from `velocity status` to `velocity archive restore`.
+
+## Architecture at a Glance
+
+```
+Developer (kubectl apply / velocity CLI) 
+  ↓
+ValidatingWebhook (sanity checks)
+  ↓
+kube-apiserver (CRDs: SchemaDefinition, AuthStrategy, ArchivePolicy, PurgeRequest, …)
+  ↓
+velocity-operator (kube-rs; provisions Postgres DDL, HPA, Grafana dashboards, SLO rules)
+  ↓
+velocity-api (Axum; informer-fed SchemaRegistry; generic CRUD + search + audit + time-machine)
+  ↓
+Postgres (hot tier + history tables + RLS + audit chain) 
+  ↓ (Tier-3 search)
+Typesense (via CDC outbox)
+  ↓ (time-machine 90+ days)
+S3 Parquet (warm tier; warm-reader queryable via DataFusion)
+```
+
+## What Ships Today (Phase 9)
+
+All core features:
+- CRUD, DSL query, soft delete, optimistic locking, idempotency
+- Authentication: JWT, OIDC, API key, Composite
+- RBAC Layers 1–7: route-level, ABAC, row filter, field filter, masking, Postgres RLS
+- Time Machine: history, point-in-time query, diff, restore (hot 90 days; warm tier up to 5 years)
+- Search: Tiers 1–3 (trigram, FTS, Typesense)
+- Archive: Batch export to S3 Parquet, lifecycle-driven purges
+- Audit: Append-only chain, hash linkage, tamper verification
+- Observability: JSON logging, Prometheus metrics, OTel traces, auto-generated dashboards
+- CLI: Full Phase 9 surface (context, version, status, reconcile, audit, drift, apply, get, describe, delete, diff, record ops, history, restore, grant, revoke, api-key, archive, approve, health, metrics, slo)
+
+## Deferred (Phases 10+)
+
+- Admin Portal (React UI)
+- VersionOperator (CRD versioning via finalizer)
+- OIDC device flow
+- Typed Arrow columns
+- Cron-precise scheduling
+- S3 orphan sweep
+- Sharded archive workers
+
+## Key Guarantees
+
+- **Atomicity:** Writes to table + history + outbox in one transaction. Either all succeed or none.
+- **Consistency:** RLS enforced per-row. CEL validation sandboxed (10ms timeout). Breaking schema changes blocked unless explicitly approved.
+- **Durability:** Postgres WAL archived to S3 every 5 minutes. CNPG provides point-in-time recovery.
+- **Isolation:** Non-superuser `velocity_api` role. Session context set per request. Actor ID in logs.
+- **Auditability:** Every mutation recorded with actor, timestamp, old vs new values, and reason (if required). Chain is hash-linked; tampering detected.
+
+Ready? Head to [Getting Started](./getting-started).

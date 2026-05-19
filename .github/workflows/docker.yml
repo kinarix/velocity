@@ -1,0 +1,132 @@
+name: docker
+
+# Build and publish the seven server-side images (one per workspace
+# binary that runs in-cluster) to ghcr.io/<owner>/<bin>.
+#
+# Trigger model:
+#   - tag v<semver>          → publish :<semver>, :<major>.<minor>, :latest
+#   - push to main           → publish :main + :sha-<short>
+#   - pull_request           → build only (no push) — proves the Dockerfile
+#                              still works and CI catches regressions before
+#                              merge. Push to ghcr.io requires write-perm
+#                              which PRs from forks don't have.
+#   - workflow_dispatch      → manual rebuild against current main
+#
+# We use the project Dockerfile with `--build-arg BIN=<crate>` so all
+# seven images share build logic (rust → debian-slim multi-stage). Buildx
+# + QEMU gives us linux/amd64 + linux/arm64 multi-arch manifests so users
+# on Apple Silicon and Graviton nodes both pull the right binary.
+
+on:
+  # Main-only. PR builds would consume Actions minutes (multi-arch QEMU
+  # builds are not cheap) without producing a useful artefact — they
+  # can't push to ghcr.io from forks anyway. Tag pushes are accepted
+  # because release tagging happens against main commits (enforced by
+  # the on-main guard below).
+  push:
+    branches: [main]
+    tags:     ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # required to push to ghcr.io
+
+concurrency:
+  # Serialise per-ref so a quick succession of pushes doesn't double-push
+  # the same tags. cancel-in-progress is OFF for tag pushes (we don't
+  # want to lose a release mid-build); ON for branch pushes.
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.bin }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't abort the whole matrix on a single image failure — easier
+      # to triage when you can see which ones still built clean.
+      fail-fast: false
+      matrix:
+        bin:
+          - velocity-api
+          - velocity-operator
+          - velocity-webhook
+          - velocity-archive-worker
+          - velocity-log-collector
+          - velocity-log-processor
+          - velocity-warm-reader
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # arm64 emulation for cross-arch builds on amd64 runners. Slower
+        # than native but acceptable for the release cadence here.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Ensure tag points to main
+        # A v* tag pushed off a feature branch would otherwise still
+        # fire this workflow. Reject anything not reachable from main.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch origin main --depth=200
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::tag ${GITHUB_REF} not reachable from main — refusing to publish"
+            exit 1
+          fi
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Owner (lowercase)
+        id: owner
+        # ghcr.io paths must be lowercase. github.repository_owner can
+        # be mixed-case if the org/user uses CamelCase.
+        run: echo "lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        # docker/metadata-action derives the right tag set for each
+        # trigger shape — semver tags get :X.Y.Z + :X.Y + :latest, main
+        # gets :main, branches get :<branch>, PRs get :pr-<num>.
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.bin }}
+            org.opencontainers.image.description=Velocity ${{ matrix.bin }}
+            org.opencontainers.image.url=https://velocity.kinarix.com
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build (and push on non-PR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            BIN=${{ matrix.bin }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GHA cache makes incremental builds tolerable (~5–7 min vs.
+          # 15+ from scratch). `mode=max` keeps intermediate layers so a
+          # change in one image doesn't bust the others.
+          cache-from: type=gha,scope=${{ matrix.bin }}
+          cache-to:   type=gha,scope=${{ matrix.bin }},mode=max
+          provenance: false

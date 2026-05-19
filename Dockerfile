@@ -5,7 +5,7 @@
 #   docker build --build-arg BIN=velocity-operator -t velocity-operator:dev .
 #   docker build --build-arg BIN=velocity-webhook  -t velocity-webhook:dev  .
 
-ARG RUST_VERSION=1.83
+ARG RUST_VERSION=1.95
 ARG DEBIAN_VERSION=bookworm
 
 ############################

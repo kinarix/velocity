@@ -1,9 +1,14 @@
 name: ci
 
 on:
-  pull_request:
+  # Main-only by deliberate policy. PR/feature-branch runs would double
+  # the Actions footprint without changing what ships — main is the
+  # deploy branch, and `make release` from main is what triggers
+  # downstream publish workflows. If we ever re-enable PR gating,
+  # pair it with branch protection requiring this workflow to pass.
   push:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
