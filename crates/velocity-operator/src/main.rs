@@ -10,13 +10,14 @@ use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use velocity_operator::{
     controllers::{
-        application, archive_policy, domain, organisation, role_binding, schema_definition,
+        application, archive_policy, domain, organisation, purge_request, role_binding,
+        schema_definition,
     },
     drift_sweep, health, partition_manager, reap_sweeper, startup, tiering, Context,
     OperatorConfig, RedisNotify,
 };
 use velocity_types::crds::{
-    Application, ArchivePolicy, Domain, Organisation, RoleBinding, SchemaDefinition,
+    Application, ArchivePolicy, Domain, Organisation, PurgeRequest, RoleBinding, SchemaDefinition,
 };
 
 #[tokio::main(flavor = "multi_thread")]
@@ -267,6 +268,10 @@ async fn main() -> Result<()> {
         Some(ns) => Api::namespaced(kube.clone(), ns),
         None => Api::all(kube.clone()),
     };
+    let pr_api: Api<PurgeRequest> = match &cfg.watch_namespace {
+        Some(ns) => Api::namespaced(kube.clone(), ns),
+        None => Api::all(kube.clone()),
+    };
 
     let org_ctx = ctx.clone();
     let app_ctx = ctx.clone();
@@ -274,6 +279,7 @@ async fn main() -> Result<()> {
     let sd_ctx = ctx.clone();
     let rb_ctx = ctx.clone();
     let ap_ctx = ctx.clone();
+    let pr_ctx = ctx.clone();
 
     let org_fut = Controller::new(org_api, watcher_cfg.clone())
         .shutdown_on_signal()
@@ -320,12 +326,21 @@ async fn main() -> Result<()> {
             }
         });
 
-    let ap_fut = Controller::new(ap_api, watcher_cfg)
+    let ap_fut = Controller::new(ap_api, watcher_cfg.clone())
         .shutdown_on_signal()
         .run(archive_policy::reconcile, archive_policy::error_policy, ap_ctx)
         .for_each(|r| async move {
             if let Err(e) = r {
                 tracing::warn!(error = %e, "archivepolicy controller stream error");
+            }
+        });
+
+    let pr_fut = Controller::new(pr_api, watcher_cfg)
+        .shutdown_on_signal()
+        .run(purge_request::reconcile, purge_request::error_policy, pr_ctx)
+        .for_each(|r| async move {
+            if let Err(e) = r {
+                tracing::warn!(error = %e, "purgerequest controller stream error");
             }
         });
 
@@ -341,6 +356,7 @@ async fn main() -> Result<()> {
         _ = sd_fut  => tracing::warn!("schemadefinition controller exited"),
         _ = rb_fut  => tracing::warn!("rolebinding controller exited"),
         _ = ap_fut  => tracing::warn!("archivepolicy controller exited"),
+        _ = pr_fut  => tracing::warn!("purgerequest controller exited"),
         r = health_handle => match r {
             Ok(Ok(())) => tracing::warn!("health server exited cleanly"),
             Ok(Err(e)) => tracing::error!(error = %e, "health server failed"),

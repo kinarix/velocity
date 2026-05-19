@@ -4,6 +4,7 @@ pub mod application;
 pub mod archive_policy;
 pub mod domain;
 pub mod organisation;
+pub mod purge_request;
 pub mod role_binding;
 pub mod schema_definition;
 
