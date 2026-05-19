@@ -101,7 +101,13 @@ jobs:
 
   build:
     name: ${{ matrix.bin }} (${{ matrix.arch }})
-    needs: test
+    # Deliberately NOT `needs: test` — build runs in parallel with the
+    # test job. The push here is push-by-digest only, so what lands on
+    # ghcr.io is an *untagged* manifest. Nothing user-facing points at
+    # it until `merge` stitches the manifest list with the final tags,
+    # and `merge` does wait for tests. Net: we save the test wall-time
+    # off the critical path when tests pass, and when tests fail the
+    # only consequence is some orphan digests that ghcr.io GC's away.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -212,7 +218,12 @@ jobs:
 
   merge:
     name: manifest (${{ matrix.bin }})
-    needs: build
+    # Both gates: per-arch digests must exist (build) AND tests must
+    # have passed (test). This is the step that makes the build
+    # publicly visible by attaching the :v1.2.3 / :latest / :main tags
+    # to a manifest list — only do it once we've confirmed the SHA is
+    # good.
+    needs: [build, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
