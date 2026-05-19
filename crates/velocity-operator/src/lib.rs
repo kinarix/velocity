@@ -23,6 +23,7 @@ pub mod provisioner;
 pub mod reap_sweeper;
 pub mod redis_notify;
 pub mod search_rebuild;
+pub mod slo_rules;
 pub mod startup;
 pub mod tiering;
 

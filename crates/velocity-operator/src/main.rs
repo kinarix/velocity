@@ -177,6 +177,15 @@ async fn main() -> Result<()> {
         velocity_operator::log_policy::run(log_policy_kube).await
     });
 
+    // Phase 7 slice 2 — sweep all SchemaDefinitions for
+    // observability.slos and render PrometheusRule-shaped YAML into
+    // velocity-system/velocity-slo-rules. Failure-tolerant: a sweep
+    // tick that can't reach the API server logs and retries.
+    let slo_rules_kube = ctx.kube.clone();
+    let _slo_rules_handle = tokio::spawn(async move {
+        velocity_operator::slo_rules::run(slo_rules_kube).await
+    });
+
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments
     // `velocity_drift_detected_total{kind="orphan_table"}` per orphan
