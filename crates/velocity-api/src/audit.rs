@@ -136,7 +136,7 @@ pub async fn write_audit(
     identity: &Identity,
     action: &str,
     outcome: &str,
-    entity_id: &str,
+    entity_id: Option<&str>,
     payload: &Value,
     decision: Option<&AuthDecision>,
     request_id: Option<&str>,
@@ -144,6 +144,8 @@ pub async fn write_audit(
     let fail_modes = build_fail_modes(decision);
     let safe_payload = redact_sensitive(schema, payload);
 
+    // entity_id is bound as text and cast in-SQL to uuid; sqlx encodes
+    // `None` as NULL, and `NULL::uuid` round-trips as NULL.
     sqlx::query(
         "SELECT platform.audit_insert(
             p_actor       => $1,
@@ -169,6 +171,55 @@ pub async fn write_audit(
     .bind(request_id)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// Write a success-path audit row in its own short transaction.
+///
+/// Read handlers (`list`, `get_one`, `query`, `search`) do not naturally
+/// share a write-tx with anything — there is no data row mutated, so
+/// the "atomic with the change" guarantee that [`write_audit`] provides
+/// has no counterpart on the read path. Opening a standalone tx mirrors
+/// the [`write_audit_denial`] pattern and keeps the read-path RoleClass
+/// (`Reader`) cleanly out of the audit chain — `platform.audit_insert`
+/// is `SECURITY DEFINER` and runs as the function owner regardless.
+///
+/// `entity_id` is `Some(uuid)` for `get_one` (a specific row was read)
+/// and `None` for set-shaped reads (`list`, `query`, `search`) where
+/// the answer is a count, not a single id.
+///
+/// **Throughput note (ADR-005, §"audit write throughput is bounded by
+/// row-lock contention ~5k/sec"):** wiring audit onto every read makes
+/// the read rate the chain's bottleneck. The phases.md acceptance
+/// criterion ("Every request → audit entry") wins for now; a future
+/// ADR revision will decide whether to sample, batch, or shard the
+/// chain.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_audit_standalone(
+    pool: &PgPool,
+    schema: &ResolvedSchema,
+    identity: &Identity,
+    action: &str,
+    outcome: &str,
+    entity_id: Option<&str>,
+    payload: &Value,
+    decision: Option<&AuthDecision>,
+    request_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    write_audit(
+        &mut tx,
+        schema,
+        identity,
+        action,
+        outcome,
+        entity_id,
+        payload,
+        decision,
+        request_id,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 

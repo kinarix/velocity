@@ -115,7 +115,7 @@ async fn write_audit_redacts_pii_and_financial_in_stored_payload() {
         &Identity::anonymous(),
         action::CREATE,
         outcome::SUCCESS,
-        &id,
+        Some(&id),
         &raw_payload,
         None,
         Some("req-redact-test"),

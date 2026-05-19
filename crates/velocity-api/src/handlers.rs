@@ -252,6 +252,26 @@ pub async fn list(
         schema.masking.apply_for_read(row, &identity.roles);
     }
 
+    // Phase 6a-1: every successful read produces an audit row. Entity
+    // id is NULL — `list` returns a set, not a single record. Payload
+    // carries only the result count; redaction backstops anything we
+    // accidentally widen later.
+    if let Err(e) = audit::write_audit_standalone(
+        &state.pool,
+        &schema,
+        &identity,
+        action::READ,
+        outcome::SUCCESS,
+        None,
+        &json!({ "count": items.len() }),
+        decision.as_ref(),
+        request_id,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "list audit write failed");
+    }
+
     Ok(Json(json!({
         "items": items,
         "cursor": Value::Null,
@@ -407,7 +427,7 @@ pub async fn create(
                     &audit_identity,
                     action::CREATE,
                     outcome::SUCCESS,
-                    &id,
+                    Some(&id),
                     &row,
                     audit_decision.as_ref(),
                     None,
@@ -532,6 +552,7 @@ pub async fn get_one(
     let table = schema.pg_qualified.clone();
     // id is $1, so row-filter binds start at $2.
     let scope = row_filter::predicate_for(&schema, &identity, 2)?;
+    let id_for_audit = id.clone();
 
     let row = with_session_context(
         &state.pool,
@@ -547,6 +568,27 @@ pub async fn get_one(
     let mut row = row.ok_or(ApiError::NotFound)?;
     schema.field_filter.strip_for_read(&mut row, &identity.roles);
     schema.masking.apply_for_read(&mut row, &identity.roles);
+
+    // Phase 6a-1: success-path audit for `get_one`. Entity id is known
+    // (single-row read), payload is a minimal `{ "id": ... }` to mirror
+    // the delete shape — never the row body, which would defeat the
+    // sensitivity redaction we apply on writes.
+    if let Err(e) = audit::write_audit_standalone(
+        &state.pool,
+        &schema,
+        &identity,
+        action::READ,
+        outcome::SUCCESS,
+        Some(&id_for_audit),
+        &json!({ "id": id_for_audit }),
+        decision.as_ref(),
+        request_id,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "get_one audit write failed");
+    }
+
     Ok(Json(row))
 }
 
@@ -750,7 +792,7 @@ pub async fn update(
                     &audit_identity,
                     action::UPDATE,
                     outcome::SUCCESS,
-                    &id,
+                    Some(&id),
                     &row,
                     audit_decision.as_ref(),
                     None,
@@ -906,7 +948,7 @@ pub async fn delete_soft(
                     &audit_identity,
                     action::DELETE,
                     outcome::SUCCESS,
-                    &id,
+                    Some(&id),
                     &json!({ "id": id }),
                     audit_decision.as_ref(),
                     None,
@@ -1072,6 +1114,26 @@ pub async fn query(
         schema.masking.apply_for_read(row, &identity.roles);
     }
 
+    // Phase 6a-1: success-path audit. Entity id is NULL — query
+    // returns a set. Payload keeps only the result count; we
+    // deliberately do not record the DSL itself (may carry PII in
+    // filter values).
+    if let Err(e) = audit::write_audit_standalone(
+        &state.pool,
+        &schema,
+        &identity,
+        action::QUERY,
+        outcome::SUCCESS,
+        None,
+        &json!({ "count": rows.len() }),
+        decision.as_ref(),
+        request_id.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "query audit write failed");
+    }
+
     Ok(Json(crate::dsl::build_response(rows, next_cursor)))
 }
 
@@ -1162,6 +1224,28 @@ pub async fn search(
         .await
         .map_err(|e| ApiError::SearchUnavailable(e.to_string()))?;
 
+    // Phase 6a-1: success-path audit for `search`. Entity id is NULL
+    // (a search returns a set). Payload records only the result
+    // `found` count from Typesense — never the query string itself
+    // (free text can carry PII the SearchRequest never sees a schema
+    // for, so redaction can't help us there).
+    let found = resp.get("found").and_then(|v| v.as_u64()).unwrap_or(0);
+    if let Err(e) = audit::write_audit_standalone(
+        &state.pool,
+        &schema,
+        &identity,
+        action::SEARCH,
+        outcome::SUCCESS,
+        None,
+        &json!({ "count": found }),
+        decision.as_ref(),
+        request_id,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "search audit write failed");
+    }
+
     Ok(Json(resp))
 }
 
@@ -1237,6 +1321,13 @@ pub async fn cross_search(
         .await
         .map_err(|e| ApiError::SearchUnavailable(e.to_string()))?;
 
+    // Phase 6a-1: cross-schema audit deferred. write_audit binds
+    // `schema_org` from a single ResolvedSchema for sensitivity
+    // redaction; this request fans across N schemas with no canonical
+    // owner, so an audit row needs a synthetic key (e.g.
+    // `{org}/__cross`) and a different redaction story. Tracked as
+    // Phase 6a follow-up; the per-schema reads inside Typesense are
+    // already covered by collection-side ACLs.
     Ok(Json(resp))
 }
 
