@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+mod archive_cmd;
 mod audit;
 mod auth_cmd;
 mod client;
@@ -36,6 +37,7 @@ mod record_cmd;
 mod status;
 mod version_cmd;
 
+use archive_cmd::{ApproveArgs, ArchiveCmd};
 use audit::AuditCmd;
 use auth_cmd::{ApiKeyCmd, GrantArgs, RevokeArgs};
 use context_cmd::ContextCmd;
@@ -134,6 +136,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ApiKeyCmd,
     },
+    /// Archive data-plane reads (get / query / restore from archive).
+    Archive {
+        #[command(subcommand)]
+        cmd: ArchiveCmd,
+    },
+    /// Approve a PurgeRequest (writes `velocity.sh/approved-by`).
+    Approve(ApproveArgs),
 }
 
 #[tokio::main]
@@ -181,5 +190,9 @@ async fn main() -> Result<()> {
         Cmd::Grant(args) => auth_cmd::grant(args, &cli.kubeconfig).await,
         Cmd::Revoke(args) => auth_cmd::revoke(args, &cli.kubeconfig).await,
         Cmd::ApiKey { cmd } => auth_cmd::api_key(cmd, &cli.kubeconfig).await,
+        Cmd::Archive { cmd } => {
+            archive_cmd::run(cmd, cli.config.as_deref(), cli.context.as_deref()).await
+        }
+        Cmd::Approve(args) => archive_cmd::approve(args, &cli.kubeconfig).await,
     }
 }

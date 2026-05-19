@@ -185,6 +185,43 @@ impl ApiClient {
         let resp = self.inner.post(&url).json(&body).send().await?;
         decode_json(resp).await
     }
+
+    /// `GET /{path}/{id}/archive` — fetch a single archived record.
+    pub(crate) async fn get_archive(
+        &self,
+        path: &SchemaPath,
+        id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let url = format!("{}/api/{}/{}/archive", self.base_url, path.as_url(), id);
+        let resp = self.inner.get(&url).send().await?;
+        decode_json(resp).await
+    }
+
+    /// `POST /{path}/archive/query` — DSL against the archive store.
+    /// Accepts `{ limit, cursor, archivedAfter }` (camelCase per
+    /// archive_handlers.rs). CLI forwards bytes, server validates.
+    pub(crate) async fn query_archive(
+        &self,
+        path: &SchemaPath,
+        body: &serde_json::Value,
+    ) -> Result<ListEnvelope, ApiError> {
+        let url = format!("{}/api/{}/archive/query", self.base_url, path.as_url());
+        let resp = self.inner.post(&url).json(body).send().await?;
+        decode_json(resp).await
+    }
+
+    /// `POST /{path}/{id}/unarchive` — restore the archived row to the
+    /// hot table. 410 ARCHIVE_HOT_ROW_PURGED when the row is already
+    /// gone past `purgeAfter`.
+    pub(crate) async fn post_unarchive(
+        &self,
+        path: &SchemaPath,
+        id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let url = format!("{}/api/{}/{}/unarchive", self.base_url, path.as_url(), id);
+        let resp = self.inner.post(&url).send().await?;
+        decode_json(resp).await
+    }
 }
 
 /// 5-segment data-plane path. Validates shape eagerly so a typo at the
