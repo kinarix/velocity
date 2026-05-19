@@ -33,4 +33,21 @@ ignore = [
     # and drop this entry; or (b) we replace the test fixture's RSA
     # usage with an `ed25519`/`HS256` token (also drops the ignore).
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2024-0436 — `paste` unmaintained.
+    #
+    # Pulled in transitively (cel-interpreter → cel-parser → paste).
+    # No security advisory, only a maintenance status notice; the crate
+    # is functionally complete and has no known vulnerability. Nothing
+    # to upgrade to — revisit when cel-parser drops its `paste`
+    # dependency or replaces it.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2025-0134 — `rustls-pemfile` unmaintained.
+    #
+    # Reaches us via axum-server → rustls 0.23. Functionally complete;
+    # only a maintenance notice, no CVE. Switching consumers blocks on
+    # axum-server itself moving off the crate. Revisit when axum-server
+    # cuts a release that no longer pulls rustls-pemfile.
+    "RUSTSEC-2025-0134",
 ]

@@ -1,29 +1,60 @@
 # cargo-deny configuration — run via `cargo deny check`
+#
+# This config is consulted by the `deny` job in ci.yml. The companion
+# `audit` job runs `cargo audit` against `.cargo/audit.toml`; the two
+# tools have separate advisory configs, so any ignore here needs a
+# matching entry there (and vice versa).
 
 [graph]
 all-features = false
 
 [advisories]
 yanked  = "deny"
-ignore  = []
+ignore  = [
+    # rsa: Marvin Attack timing sidechannel — no upstream fix as of
+    # 2026-05. `rsa` reaches us only via dev-dependencies of
+    # velocity-api (verified with `cargo tree -i rsa`); it is not in
+    # the runtime binary. Re-evaluate when `rsa` cuts a fixed release.
+    "RUSTSEC-2023-0071",
+
+    # paste: crate is unmaintained but functionally complete and has no
+    # known vulnerability. Pulled in transitively (cel-interpreter →
+    # cel-parser → paste, last we checked). Nothing to upgrade to.
+    "RUSTSEC-2024-0436",
+
+    # rustls-pemfile: marked unmaintained 2025-04. Pulled via
+    # axum-server → rustls 0.23. Functionally complete; switching
+    # readers blocks on axum-server itself moving off it. No security
+    # advisory, only a maintenance status notice.
+    "RUSTSEC-2025-0134",
+]
 
 [bans]
 multiple-versions = "warn"
 wildcards         = "deny"
+# Workspace member crates depend on each other with `version = "*"`
+# alongside a `path = "..."` — this is the idiomatic cargo workspace
+# pattern but trips the wildcard ban. Allowing only the path-bound
+# wildcards keeps the protection against unbounded external deps.
+allow-wildcard-paths = true
 
 [licenses]
 allow = [
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",  # ar_archive_writer; LLVM exception is an Apache-compatible carve-out for the LLVM project
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",                          # xxhash-rust; Boost Software Licence — permissive, no notice requirement
     "ISC",
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "CC0-1.0",
+    "CDLA-Permissive-2.0",              # webpki-roots / webpki-root-certs; CDLA-Permissive-2.0 is an OSI-compatible permissive licence
     "Zlib",
     "MPL-2.0",
     "OpenSSL",
+    "bzip2-1.0.6",                      # libbz2-rs-sys; permissive BSD-style bzip2 licence
 ]
 confidence-threshold = 0.93
 
