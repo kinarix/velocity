@@ -50,3 +50,34 @@ pub trait EventReader: Send + Sync {
         limit: u32,
     ) -> Result<Vec<EventRow>, TierError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier_error_display_covers_every_variant() {
+        // Each Display string is part of the public error envelope —
+        // callers grep on these messages. A drift test catches accidental
+        // renames + keeps the Display impls in coverage.
+        assert!(TierError::Hot("x".into()).to_string().contains("hot tier"));
+        assert!(TierError::WarmUnavailable("x".into()).to_string().contains("warm tier"));
+        assert!(TierError::WarmNotConfigured.to_string().contains("not configured"));
+        assert!(TierError::ColdNotSupported.to_string().contains("cold tier"));
+        assert!(TierError::BadRequest("x".into()).to_string().contains("invalid request"));
+    }
+
+    #[test]
+    fn event_row_clone_preserves_fields() {
+        let row = EventRow {
+            occurred_at: Utc::now(),
+            operation: "create".into(),
+            diff: Some(serde_json::json!({ "a": 1 })),
+            payload: Some(serde_json::json!({ "b": 2 })),
+        };
+        let cloned = row.clone();
+        assert_eq!(cloned.operation, row.operation);
+        assert_eq!(cloned.diff, row.diff);
+        assert_eq!(cloned.payload, row.payload);
+    }
+}
