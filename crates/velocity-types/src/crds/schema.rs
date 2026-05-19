@@ -606,6 +606,27 @@ maxExecutionMs: 10
     }
 
     #[test]
+    fn fts_weight_as_pg_char_covers_all_variants() {
+        // Hits every match arm in `FtsWeight::as_pg_char`, including
+        // the B variant which is otherwise unreached in the suite.
+        assert_eq!(FtsWeight::A.as_pg_char(), 'A');
+        assert_eq!(FtsWeight::B.as_pg_char(), 'B');
+        assert_eq!(FtsWeight::C.as_pg_char(), 'C');
+        assert_eq!(FtsWeight::D.as_pg_char(), 'D');
+    }
+
+    #[test]
+    fn time_machine_and_audit_default_enabled() {
+        // `default_true` is the deserialize default for both
+        // `TimeMachineSpec.enabled` and `AuditSpec.enabled`. Round-trip
+        // through serde so the fn is actually invoked.
+        let tm: TimeMachineSpec = serde_yaml::from_str("{}").unwrap();
+        assert!(tm.enabled, "time machine should default to enabled");
+        let au: AuditSpec = serde_yaml::from_str("{}").unwrap();
+        assert!(au.enabled, "audit should default to enabled");
+    }
+
+    #[test]
     fn compare_validation_round_trip() {
         let yaml = r#"
 type: compare

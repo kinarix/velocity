@@ -85,3 +85,55 @@ impl IntoResponse for WarmReaderError {
         (self.status(), Json(body)).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_variant_status_and_code() {
+        let cases: Vec<(WarmReaderError, StatusCode, &'static str)> = vec![
+            (WarmReaderError::AuthMissing, StatusCode::UNAUTHORIZED, "AUTH_MISSING"),
+            (WarmReaderError::AuthMalformed, StatusCode::UNAUTHORIZED, "AUTH_MALFORMED"),
+            (WarmReaderError::AuthInvalid, StatusCode::UNAUTHORIZED, "INVALID_SERVICE_TOKEN"),
+            (WarmReaderError::BadRequest("b".into()), StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            (
+                WarmReaderError::Storage("s".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "WARM_STORAGE_UNAVAILABLE",
+            ),
+            (
+                WarmReaderError::Parquet("p".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "WARM_PARQUET_DECODE_FAILED",
+            ),
+            (
+                WarmReaderError::Internal("i".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+            ),
+        ];
+        for (err, status, code) in cases {
+            assert_eq!(err.status(), status, "status for {code}");
+            assert_eq!(err.code(), code, "code for {code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn into_response_renders_every_log_branch() {
+        // Install a permissive subscriber so the macro args in
+        // `into_response` are actually evaluated (covers the
+        // tracing::error! / tracing::warn! / tracing::debug! lines).
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_test_writer());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Auth → debug branch
+        let _ = WarmReaderError::AuthInvalid.into_response();
+        // 4xx → warn branch
+        let _ = WarmReaderError::BadRequest("bad".into()).into_response();
+        // 5xx → error branch
+        let _ = WarmReaderError::Internal("oops".into()).into_response();
+    }
+}

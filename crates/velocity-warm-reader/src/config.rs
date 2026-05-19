@@ -127,4 +127,25 @@ mod tests {
         let cfg = WarmReaderConfig::from_env_with(lookup(&map)).unwrap();
         assert!(cfg.pretty_logs);
     }
+
+    #[test]
+    fn from_env_requires_service_token_when_storage_url_is_set() {
+        // Hits the `?` on the SERVICE_TOKEN context (line 65). The
+        // existing missing-storage-url test short-circuits earlier.
+        let mut map = HashMap::new();
+        map.insert("VELOCITY_WARM_READER_STORAGE_URL", "file:///tmp/warm");
+        let err = WarmReaderConfig::from_env_with(lookup(&map)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("SERVICE_TOKEN"),
+            "missing service token should be flagged: {err:#}"
+        );
+    }
+
+    #[test]
+    fn from_env_wrapper_is_invokable() {
+        // Thin wrapper around `from_env_with(std::env::var)`. Just
+        // invoking it covers the wrapper; behavior is exercised in
+        // depth by the other tests using an explicit map.
+        let _ = WarmReaderConfig::from_env();
+    }
 }

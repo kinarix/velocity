@@ -318,6 +318,33 @@ mod tests {
         assert!(matches!(err, ApiError::AccessDenied));
     }
 
+    /// Forces every denial path to fire while a tracing subscriber is
+    /// installed so the `tracing::warn!`/`tracing::error!` argument
+    /// expressions are evaluated and observed by llvm-cov. Without a
+    /// subscriber these lines stay uncovered even though the function
+    /// is exercised by the other tests in this module.
+    #[test]
+    fn denial_paths_evaluate_tracing_args() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_test_writer());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // line 103: anonymous identity on closed schema
+        let schema = make_schema(vec![role("reader", &["read"])]);
+        let id = Identity::anonymous();
+        assert!(check_route_access(&schema, &id, op::READ).is_err());
+
+        // line 115: identity has roles but none grant the op
+        let id = ident("alice", &["reader"]);
+        assert!(check_route_access(&schema, &id, op::CREATE).is_err());
+
+        // line 157: api-key scope doesn't grant the op
+        let schema = make_schema(vec![]);
+        let scopes = vec![scope("supplier", Some("v1"), &["read"])];
+        assert!(check_api_key_scope(&schema, &scopes, op::READ).is_err());
+    }
+
     #[test]
     fn api_key_scope_empty_list_denies_even_on_open_schema() {
         // Open schemas (no `access.roles`) let JWT callers in unauthenticated,

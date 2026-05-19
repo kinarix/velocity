@@ -442,4 +442,67 @@ mod tests {
         let denied = idx.check_writes(&payload, &["pricing-admin".into()]);
         assert!(denied.is_empty());
     }
+
+    #[test]
+    fn strip_recurses_into_array_value_under_object_key() {
+        // Exercise the recursive path for an array nested under a key
+        // (line 101). The outer object has a key whose value is an
+        // array of objects with a restricted field — the strip must
+        // descend.
+        let s = spec(vec![field("price", &["pricing-reader"], &[])]);
+        let idx = FieldFilterIndex::from_spec(&s);
+        let mut v = json!({
+            "items": [
+                { "price": 10, "name": "a" },
+                { "price": 20, "name": "b" },
+            ]
+        });
+        idx.strip_for_read(&mut v, &[]);
+        let arr = v["items"].as_array().unwrap();
+        assert!(arr[0].get("price").is_none(), "price stripped inside nested array");
+        assert!(arr[1].get("price").is_none());
+        assert_eq!(arr[0]["name"], "a");
+    }
+
+    #[test]
+    fn strip_for_read_no_op_on_scalar_value() {
+        // Hits the `_ => {}` arm (line 110) — strip on a raw scalar
+        // is a no-op, not a panic or transformation.
+        let s = spec(vec![field("price", &["pricing-reader"], &[])]);
+        let idx = FieldFilterIndex::from_spec(&s);
+        let mut v = json!("plain string");
+        idx.strip_for_read(&mut v, &[]);
+        assert_eq!(v, json!("plain string"));
+
+        let mut n = json!(42);
+        idx.strip_for_read(&mut n, &[]);
+        assert_eq!(n, json!(42));
+    }
+
+    #[test]
+    fn strip_diff_keeps_op_with_no_path() {
+        // Line 141: a patch op missing `path` is left intact.
+        let s = spec(vec![field("price", &["pricing-reader"], &[])]);
+        let idx = FieldFilterIndex::from_spec(&s);
+        let mut diff = json!([{ "op": "test", "value": 1 }]);
+        idx.strip_diff_for_read(&mut diff, &[]);
+        assert_eq!(diff.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn strip_diff_keeps_op_with_root_path() {
+        // Line 145 + lines 188/192: `path = "/"` or `""` resolves to
+        // no first segment — op must be kept verbatim, no field
+        // to gate on.
+        let s = spec(vec![field("price", &["pricing-reader"], &[])]);
+        let idx = FieldFilterIndex::from_spec(&s);
+        let mut diff = json!([
+            { "op": "replace", "path": "", "value": {} },
+            { "op": "replace", "path": "/", "value": {} },
+            { "op": "replace", "path": "//", "value": {} },
+        ]);
+        idx.strip_diff_for_read(&mut diff, &[]);
+        // All three remain because none resolves to a first segment.
+        assert_eq!(diff.as_array().unwrap().len(), 3);
+    }
 }

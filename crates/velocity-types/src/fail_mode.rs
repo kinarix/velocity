@@ -169,4 +169,57 @@ mod tests {
         assert_eq!(r.mode, FailMode::Deny);
         assert!(!r.overridden);
     }
+
+    #[test]
+    fn jwks_fetch_uses_cache_and_registry_is_unavailable() {
+        // Cover the JwksFetch and SchemaRegistry match arms — these
+        // produce non-default behavior (UseCache and ServiceUnavailable)
+        // that no other test exercises.
+        let j = FailMode::resolve(Dependency::JwksFetch, false);
+        assert_eq!(j.mode, FailMode::UseCache);
+        assert_eq!(j.label, "jwks_use_cache");
+        assert!(!j.overridden);
+
+        let r = FailMode::resolve(Dependency::SchemaRegistry, false);
+        assert_eq!(r.mode, FailMode::ServiceUnavailable);
+        assert_eq!(r.label, "registry_unavailable");
+    }
+
+    #[test]
+    fn labels_are_stable_per_dependency() {
+        // Hit every remaining label so they are tracked in coverage,
+        // and serve as a tripwire if anyone renames one.
+        assert_eq!(
+            FailMode::resolve(Dependency::JwksCacheEmpty, false).label,
+            "jwks_cache_empty_deny"
+        );
+        assert_eq!(FailMode::resolve(Dependency::PostgresRbac, false).label, "postgres_rbac_deny");
+        assert_eq!(FailMode::resolve(Dependency::CelEvaluator, false).label, "cel_evaluator_deny");
+        assert_eq!(FailMode::resolve(Dependency::HookTarget, false).label, "hook_queue");
+        assert_eq!(FailMode::resolve(Dependency::Typesense, false).label, "typesense_fallback_fts");
+        assert_eq!(FailMode::resolve(Dependency::Kafka, false).label, "kafka_queue");
+        assert_eq!(
+            FailMode::resolve(Dependency::RedisRevocation, false).label,
+            "redis_revocation_deny"
+        );
+        assert_eq!(
+            FailMode::resolve(Dependency::RedisRevocation, true).label,
+            "redis_revocation_fail_open"
+        );
+    }
+
+    #[test]
+    fn outcome_serde_round_trip() {
+        // FailMode + Dependency derive Serialize/Deserialize but no test
+        // currently invokes the codecs. Round-trip both to flush the
+        // generated impls.
+        let m = serde_json::to_string(&FailMode::Deny).unwrap();
+        assert_eq!(m, "\"deny\"");
+        let d: FailMode = serde_json::from_str("\"queue\"").unwrap();
+        assert_eq!(d, FailMode::Queue);
+        let dep = serde_json::to_string(&Dependency::Typesense).unwrap();
+        assert_eq!(dep, "\"typesense\"");
+        let parsed: Dependency = serde_json::from_str("\"kafka\"").unwrap();
+        assert_eq!(parsed, Dependency::Kafka);
+    }
 }

@@ -80,3 +80,34 @@ impl AppState {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_pool() -> PgPool {
+        // The pool isn't actually connected — we just need a value to
+        // satisfy AppState::new. Tests below only exercise builder
+        // chaining, not DB I/O.
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://x:x@127.0.0.1:1/x")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn with_cursor_signer_attaches_signer() {
+        let (registry, _) = SchemaRegistry::new();
+        let signer = Arc::new(CursorSigner::new(vec![0u8; 32]).unwrap());
+        let state = AppState::new(registry, empty_pool()).with_cursor_signer(signer.clone());
+        assert!(state.cursor_signer.is_some());
+    }
+
+    #[tokio::test]
+    async fn with_typesense_attaches_client() {
+        let (registry, _) = SchemaRegistry::new();
+        let ts = Arc::new(TypesenseClient::new("http://localhost:8108", "xyz").unwrap());
+        let state = AppState::new(registry, empty_pool()).with_typesense(ts);
+        assert!(state.typesense.is_some());
+    }
+}

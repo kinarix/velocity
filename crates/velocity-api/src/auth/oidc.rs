@@ -358,6 +358,26 @@ mod tests {
     }
 
     #[test]
+    fn oversized_serialized_payload_rejected() {
+        // `state` is the only length-bounded field at the structural check
+        // (line ~155). Anything else can still push the JSON-encoded
+        // payload over `MAX_COOKIE_PAYLOAD_LEN` — this test pins that
+        // second gate so a future refactor that only kept the structural
+        // check would regress to silently accepting cookie-bloating
+        // `return_to` URLs.
+        let huge_return_to = "/r".to_string() + &"x".repeat(MAX_COOKIE_PAYLOAD_LEN);
+        let s = FlowState::new(
+            "s".into(),
+            "v".into(),
+            "n".into(),
+            huge_return_to,
+            "k/v".into(),
+        );
+        let err = encode_flow_cookie(&s, &key()).unwrap_err();
+        assert!(matches!(err, FlowCookieError::TooLarge));
+    }
+
+    #[test]
     fn constant_time_eq_works() {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));

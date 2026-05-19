@@ -175,4 +175,31 @@ mod tests {
         let until = Utc::now();
         assert!(candidate_months(until, 0).unwrap().is_empty());
     }
+
+    #[test]
+    fn month_lower_bound_returns_first_instant_of_month() {
+        let lb = month_lower_bound(2026, 3).unwrap();
+        assert_eq!(lb, Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn month_lower_bound_rejects_invalid_month() {
+        // month=13 is out of range — NaiveDate::from_ymd_opt returns None.
+        assert!(month_lower_bound(2026, 13).is_none());
+        assert!(month_lower_bound(2026, 0).is_none());
+    }
+
+    #[test]
+    fn candidate_months_breaks_on_year_underflow() {
+        // chrono's NaiveDate min year is i32::MIN. `checked_sub_months`
+        // returns None when subtracting would overflow. We exercise this
+        // by starting near the minimum representable date and asking for
+        // more months than exist before underflow.
+        let early = Utc.with_ymd_and_hms(-262143, 2, 15, 0, 0, 0).unwrap();
+        let months = candidate_months(early, 12).unwrap();
+        // We get at least one (the start month) but fewer than max
+        // because the loop breaks when subtraction underflows.
+        assert!(!months.is_empty());
+        assert!(months.len() < 12, "expected break before reaching cap, got {months:?}");
+    }
 }

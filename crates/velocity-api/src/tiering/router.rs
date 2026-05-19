@@ -159,4 +159,104 @@ mod tests {
             .classify(now, now - Duration::days(90) - Duration::seconds(1));
         assert_eq!(t, Tier::Warm);
     }
+
+    struct StubReader {
+        label: &'static str,
+        rows: Vec<EventRow>,
+    }
+
+    #[async_trait]
+    impl EventReader for StubReader {
+        async fn events_for(
+            &self,
+            _path: &str,
+            _entity_id: Uuid,
+            _until: DateTime<Utc>,
+            _limit: u32,
+        ) -> Result<Vec<EventRow>, TierError> {
+            // Tag rows with the reader label by stuffing it into
+            // `operation` so the test can assert which path was taken.
+            Ok(self
+                .rows
+                .iter()
+                .cloned()
+                .map(|mut r| {
+                    r.operation = self.label.to_string();
+                    r
+                })
+                .collect())
+        }
+    }
+
+    fn row() -> EventRow {
+        EventRow {
+            occurred_at: Utc::now(),
+            operation: "create".into(),
+            diff: None,
+            payload: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatches_hot_to_hot_reader() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![row()] });
+        let warm = Arc::new(StubReader { label: "warm", rows: vec![row()] });
+        let r = TieredEventReader::new(hot, Some(warm));
+        let until = Utc::now() - Duration::days(1);
+        let rows = r.events_for("a/b/c", Uuid::nil(), until, 10).await.unwrap();
+        assert_eq!(rows[0].operation, "hot");
+    }
+
+    #[tokio::test]
+    async fn dispatches_warm_to_warm_reader_when_configured() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![row()] });
+        let warm = Arc::new(StubReader { label: "warm", rows: vec![row()] });
+        let r = TieredEventReader::new(hot, Some(warm));
+        let until = Utc::now() - Duration::days(180);
+        let rows = r.events_for("a/b/c", Uuid::nil(), until, 10).await.unwrap();
+        assert_eq!(rows[0].operation, "warm");
+    }
+
+    #[tokio::test]
+    async fn warm_without_reader_returns_warm_not_configured() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![] });
+        let r = TieredEventReader::new(hot, None);
+        let until = Utc::now() - Duration::days(180);
+        let err = r.events_for("a/b/c", Uuid::nil(), until, 10).await.unwrap_err();
+        assert!(matches!(err, TierError::WarmNotConfigured));
+    }
+
+    #[tokio::test]
+    async fn cold_returns_cold_not_supported() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![] });
+        let warm = Arc::new(StubReader { label: "warm", rows: vec![] });
+        let r = TieredEventReader::new(hot, Some(warm));
+        let until = Utc::now() - Duration::days(365 * 10);
+        let err = r.events_for("a/b/c", Uuid::nil(), until, 10).await.unwrap_err();
+        assert!(matches!(err, TierError::ColdNotSupported));
+    }
+
+    #[test]
+    fn with_windows_replaces_default_windows() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![] });
+        let r = TieredEventReader::new(hot, None)
+            .with_windows(TierWindows { hot_days: 1, warm_years: 1 });
+        // 2 days back is now Warm (was Hot under defaults).
+        let until = Utc::now() - Duration::days(2);
+        assert_eq!(r.classify(until), Tier::Warm);
+    }
+
+    #[test]
+    fn debug_includes_reader_placeholders() {
+        let hot = Arc::new(StubReader { label: "hot", rows: vec![] });
+        let r_with_warm = TieredEventReader::new(
+            hot.clone(),
+            Some(Arc::new(StubReader { label: "warm", rows: vec![] })),
+        );
+        let r_without = TieredEventReader::new(hot, None);
+        let s1 = format!("{:?}", r_with_warm);
+        let s2 = format!("{:?}", r_without);
+        assert!(s1.contains("<EventReader>"));
+        assert!(s2.contains("<none>"));
+    }
 }

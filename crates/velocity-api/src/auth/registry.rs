@@ -147,3 +147,55 @@ impl Default for AuthRegistry {
         Self { inner: ArcSwap::from_pointee(Inner::default()) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_types::crds::auth::{AuthStrategyConfig, AuthStrategySpec, AuthStrategyType};
+
+    fn strat(key_name: &str) -> ResolvedAuthStrategy {
+        let r = NamespacedRef { namespace: "acme-platform".into(), name: key_name.into() };
+        let spec = AuthStrategySpec {
+            kind: AuthStrategyType::Jwt,
+            config: AuthStrategyConfig::default(),
+        };
+        ResolvedAuthStrategy::from_spec(&r, spec)
+    }
+
+    #[test]
+    fn upsert_then_resolve_and_count() {
+        let reg = AuthRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+
+        reg.upsert(strat("default"));
+        assert!(!reg.is_empty());
+        assert_eq!(reg.len(), 1);
+
+        let r = NamespacedRef { namespace: "acme-platform".into(), name: "default".into() };
+        assert!(reg.resolve(&r).is_some());
+    }
+
+    #[test]
+    fn remove_drops_only_the_named_entry() {
+        let reg = AuthRegistry::new();
+        reg.upsert(strat("default"));
+        reg.upsert(strat("oidc"));
+        assert_eq!(reg.len(), 2);
+
+        let target = NamespacedRef { namespace: "acme-platform".into(), name: "default".into() };
+        reg.remove(&target);
+        assert_eq!(reg.len(), 1);
+        assert!(reg.resolve(&target).is_none());
+
+        let other = NamespacedRef { namespace: "acme-platform".into(), name: "oidc".into() };
+        assert!(reg.resolve(&other).is_some());
+    }
+
+    #[test]
+    fn default_is_an_empty_registry() {
+        let reg = AuthRegistry::default();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+    }
+}

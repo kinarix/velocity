@@ -120,4 +120,18 @@ mod tests {
         assert!(ctx.fail_modes[0].overridden);
         assert_eq!(ctx.fail_modes[0].label, "redis_revocation_fail_open");
     }
+
+    #[test]
+    fn anonymous_identity_carries_safe_defaults() {
+        let id = Identity::anonymous();
+        assert_eq!(id.actor_id, "anonymous");
+        assert!(matches!(id.actor_type, ActorType::Anonymous));
+        assert!(id.roles.is_empty());
+        assert!(id.attributes.is_empty());
+        assert_eq!(id.strategy, "none");
+        assert!(id.issuer.is_none());
+        // Anonymous must not satisfy any role check.
+        assert!(!id.has_role("admin"));
+        assert!(!id.has_any_role(["admin", "reader"]));
+    }
 }

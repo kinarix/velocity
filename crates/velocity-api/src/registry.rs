@@ -359,6 +359,17 @@ mod tests {
     }
 
     #[test]
+    fn registry_inner_len_and_is_empty_track_upserts() {
+        let (r, _) = SchemaRegistry::new();
+        assert!(r.snapshot().is_empty());
+        assert_eq!(r.snapshot().len(), 0);
+        r.upsert(make("acme"));
+        let snap = r.snapshot();
+        assert!(!snap.is_empty());
+        assert_eq!(snap.len(), 1);
+    }
+
+    #[test]
     fn field_index_separates_filterable_and_sortable() {
         let spec = spec_with_fields(vec![
             field("po_number", true, true),

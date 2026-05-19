@@ -193,4 +193,50 @@ mod tests {
         assert!(SchemaPath::from_str("a/b/c/d/").is_err());
         assert!(SchemaPath::from_str("a/b/c/d/v1/extra").is_err());
     }
+
+    #[test]
+    fn ref_key_default_is_id_and_skipped_on_serialize() {
+        // Hits `default_ref_key` (line 94) and `is_default_ref_key` (line 97).
+        // serde calls both during a round-trip:
+        //   - deserialize a `Reference` without a `key` field
+        //   - serialize a `Reference` whose key is "id" → field is skipped
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Reference {
+            org: String,
+            app: String,
+            domain: String,
+            object: String,
+            version: String,
+            #[serde(default = "default_ref_key", skip_serializing_if = "is_default_ref_key")]
+            key: String,
+        }
+
+        let json = serde_json::json!({
+            "org": "a", "app": "b", "domain": "c", "object": "d", "version": "v1"
+        });
+        let r: Reference = serde_json::from_value(json).unwrap();
+        assert_eq!(r.key, "id", "default key should be `id`");
+
+        let out = serde_json::to_value(&r).unwrap();
+        assert!(out.get("key").is_none(), "default `id` key must be omitted from output: {out}");
+
+        // Non-default key must round-trip through serialize.
+        let r2 = Reference { key: "po_number".into(), ..r };
+        let out2 = serde_json::to_value(&r2).unwrap();
+        assert_eq!(out2["key"], "po_number");
+    }
+
+    #[test]
+    fn preserve_unknown_fields_emits_kube_extension() {
+        // The function is consumed by `#[schemars(schema_with = ...)]`
+        // attribute macros, so to cover it directly we just call it
+        // with a fresh generator and inspect the JSON shape.
+        let mut gen = schemars::SchemaGenerator::default();
+        let schema = preserve_unknown_fields(&mut gen);
+        let v: serde_json::Value = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            v["x-kubernetes-preserve-unknown-fields"], true,
+            "schema must carry kube preserve-unknown-fields extension: {v}"
+        );
+    }
 }

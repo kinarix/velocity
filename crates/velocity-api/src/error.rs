@@ -261,4 +261,100 @@ mod tests {
         assert_eq!(ApiError::UnknownField("x".into()).status(), StatusCode::BAD_REQUEST);
         assert_eq!(ApiError::UnknownField("x".into()).code(), "UNKNOWN_FIELD");
     }
+
+    /// Pin every remaining variant's `status()` and `code()` so the
+    /// match arms can't silently drift. Each line below covers one
+    /// arm; together they close the gap llvm-cov reports on this file.
+    #[test]
+    fn every_variant_status_and_code() {
+        let cases: Vec<(ApiError, StatusCode, &'static str)> = vec![
+            (ApiError::NotFound, StatusCode::NOT_FOUND, "NOT_FOUND"),
+            (ApiError::VersionConflict, StatusCode::CONFLICT, "VERSION_CONFLICT"),
+            (ApiError::IdempotencyConflict, StatusCode::CONFLICT, "IDEMPOTENCY_CONFLICT"),
+            (ApiError::RestoreNoOp, StatusCode::CONFLICT, "RESTORE_NO_OP"),
+            (ApiError::NotFilterable("f".into()), StatusCode::BAD_REQUEST, "FIELD_NOT_FILTERABLE"),
+            (ApiError::NotSortable("f".into()), StatusCode::BAD_REQUEST, "FIELD_NOT_SORTABLE"),
+            (ApiError::BadRequest("b".into()), StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            (ApiError::PayloadTooLarge, StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE"),
+            (ApiError::Unauthenticated("u".into()), StatusCode::UNAUTHORIZED, "UNAUTHENTICATED"),
+            (ApiError::InvalidToken("t".into()), StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
+            (
+                ApiError::IssuerUnavailable("i".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ISSUER_UNAVAILABLE",
+            ),
+            (
+                ApiError::AuthStrategyMissing("s".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTH_STRATEGY_MISSING",
+            ),
+            (ApiError::Revoked, StatusCode::FORBIDDEN, "ACTOR_REVOKED"),
+            (
+                ApiError::RevocationUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "REVOCATION_UNAVAILABLE",
+            ),
+            (
+                ApiError::SessionUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SESSION_UNAVAILABLE",
+            ),
+            (ApiError::AccessDenied, StatusCode::FORBIDDEN, "ACCESS_DENIED"),
+            (ApiError::PolicyDenied("p".into()), StatusCode::FORBIDDEN, "POLICY_DENIED"),
+            (
+                ApiError::FieldWriteDenied(vec!["x".into()]),
+                StatusCode::FORBIDDEN,
+                "FIELD_WRITE_DENIED",
+            ),
+            (
+                ApiError::Internal("oops".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+            ),
+            (
+                ApiError::WarmTierNotConfigured,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "WARM_TIER_NOT_CONFIGURED",
+            ),
+            (
+                ApiError::WarmTierUnavailable("w".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "WARM_TIER_UNAVAILABLE",
+            ),
+            (
+                ApiError::RestoreTierUnsupported,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "RESTORE_TIER_UNSUPPORTED",
+            ),
+            (
+                ApiError::CrossSchemaAccessDenied("inc".into()),
+                StatusCode::FORBIDDEN,
+                "CROSS_SCHEMA_ACCESS_DENIED",
+            ),
+            (
+                ApiError::SearchUnconfigured,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SEARCH_NOT_CONFIGURED",
+            ),
+            (
+                ApiError::SearchUnavailable("s".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SEARCH_UNAVAILABLE",
+            ),
+        ];
+        for (err, status, code) in cases {
+            assert_eq!(err.status(), status, "status for {code}");
+            assert_eq!(err.code(), code, "code for {code}");
+        }
+    }
+
+    #[test]
+    fn database_error_status_and_code() {
+        // Forge a sqlx::Error to exercise the Database arm — it carries
+        // the inner detail to logs but renders as INTERNAL_SERVER_ERROR
+        // to the client.
+        let err = ApiError::Database(sqlx::Error::RowNotFound);
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.code(), "DATABASE_ERROR");
+    }
 }

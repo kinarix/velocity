@@ -505,4 +505,105 @@ mod tests {
         assert_eq!(v["ssn"], "***");
         assert_eq!(v["extra"], "y");
     }
+
+    #[test]
+    fn apply_recurses_into_nested_arrays_under_object_key() {
+        // Hits line 133 — when a top-level value is itself an array of
+        // objects (e.g. a jsonb column returned by row_to_json), the
+        // mask must descend into each item.
+        let s = spec(vec![masked_field(
+            "ssn",
+            FieldKind::String,
+            MaskingStrategyKind::Redact,
+            None,
+            &[],
+        )]);
+        let idx = MaskingIndex::from_spec(&s);
+        let mut v = json!({
+            "rows": [
+                { "ssn": "111", "name": "a" },
+                { "ssn": "222", "name": "b" },
+            ]
+        });
+        idx.apply_for_read(&mut v, &[]);
+        assert_eq!(v["rows"][0]["ssn"], "***");
+        assert_eq!(v["rows"][1]["ssn"], "***");
+    }
+
+    #[test]
+    fn apply_is_noop_on_scalar_root() {
+        // Hits the `_ => {}` arm at line 142 — a plain scalar passed in
+        // should round-trip unchanged.
+        let s = spec(vec![masked_field(
+            "ssn",
+            FieldKind::String,
+            MaskingStrategyKind::Redact,
+            None,
+            &[],
+        )]);
+        let idx = MaskingIndex::from_spec(&s);
+        let mut s_val = json!("hello");
+        idx.apply_for_read(&mut s_val, &[]);
+        assert_eq!(s_val, json!("hello"));
+        let mut n_val = json!(7);
+        idx.apply_for_read(&mut n_val, &[]);
+        assert_eq!(n_val, json!(7));
+    }
+
+    #[test]
+    fn len_counts_masked_fields() {
+        // Lines 148–150 — `len()` is the only boilerplate consumer of
+        // by_field.len(), exercise it for parity.
+        let s = spec(vec![
+            masked_field("ssn", FieldKind::String, MaskingStrategyKind::Redact, None, &[]),
+            masked_field("dob", FieldKind::String, MaskingStrategyKind::Hash, None, &[]),
+        ]);
+        let idx = MaskingIndex::from_spec(&s);
+        assert_eq!(idx.len(), 2);
+    }
+
+    #[test]
+    fn partial_mask_coerces_non_string_value() {
+        // Hits the `other => other.to_string()` arm at line 200 in
+        // `apply_strategy`. We compile Partial on a string-shaped field,
+        // then feed it a numeric runtime value (simulating a stored
+        // value that violates the schema). It must still get masked.
+        let s = spec(vec![masked_field(
+            "national_id",
+            FieldKind::String,
+            MaskingStrategyKind::Partial,
+            Some(2),
+            &[],
+        )]);
+        let idx = MaskingIndex::from_spec(&s);
+        let mut v = json!({ "national_id": 1234567 });
+        idx.apply_for_read(&mut v, &[]);
+        let masked = v["national_id"].as_str().unwrap();
+        // The exact prefix is implementation-detail; what matters is
+        // that the numeric value was stringified and then masked
+        // (no longer a raw number, length preserves keep_last=2).
+        assert!(masked.contains('*'), "partial mask should produce stars: {masked}");
+        assert!(masked.ends_with("67"), "partial keeps last two: {masked}");
+    }
+
+    #[test]
+    fn hash_mask_coerces_non_string_value() {
+        // Hits the `other => other.to_string()` arm at line 212 in
+        // `apply_strategy` (Hash branch). Stringifies a non-string value
+        // before hashing so a numeric column still produces a digest.
+        let s = spec(vec![masked_field(
+            "score",
+            FieldKind::Integer,
+            MaskingStrategyKind::Hash,
+            None,
+            &[],
+        )]);
+        let idx = MaskingIndex::from_spec(&s);
+        let mut v = json!({ "score": 42 });
+        idx.apply_for_read(&mut v, &[]);
+        let masked = v["score"].as_str().unwrap();
+        // The hash should be a stable digest, not the original number.
+        assert_ne!(masked, "42");
+        assert!(masked.starts_with("sha256:"), "hash should be sha256-prefixed: {masked}");
+    }
 }

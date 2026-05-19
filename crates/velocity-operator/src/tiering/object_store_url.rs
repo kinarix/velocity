@@ -59,6 +59,31 @@ mod tests {
     }
 
     #[test]
+    fn build_rejects_malformed_url() {
+        // Triggers the with_context branch on the url::Url::parse line.
+        let err = build("not a url").unwrap_err();
+        assert!(format!("{err:#}").contains("invalid storage URL"));
+    }
+
+    #[test]
+    fn build_rejects_unsupported_scheme() {
+        // object_store::parse_url rejects unknown schemes — exercises the
+        // second with_context branch.
+        let err = build("ftp://example.com/bucket").unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported storage URL"));
+    }
+
+    #[test]
+    fn build_with_empty_prefix_returns_bare_store() {
+        // memory:// with no path → empty prefix → hits the Arc::from(store)
+        // branch (line 20) instead of the PrefixStore wrap.
+        let store = build("memory:///").expect("memory:// should resolve");
+        // Bare store implements list/put — a smoke check confirms it is a
+        // usable ObjectStore (it cannot be the prefixed variant).
+        assert!(store.to_string().contains("Memory"));
+    }
+
+    #[test]
     fn month_key_handles_five_segment_registry_key() {
         // schema_org in event_log is the 5-segment registry_key
         // (org/app/domain/object/version). The exporter passes it
