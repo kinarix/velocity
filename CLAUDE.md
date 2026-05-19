@@ -839,16 +839,6 @@ async fn test_cross_schema_join_requires_target_access() {
 }
 ```
 
-### Webhook tests
-
-Run against a real k3d cluster in CI:
-
-```bash
-k3d cluster create velocity-test
-cargo test --test webhook_integration -- --nocapture
-k3d cluster delete velocity-test
-```
-
 ---
 
 ## Security Requirements (Non-Negotiable)
