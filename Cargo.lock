@@ -5303,6 +5303,10 @@ name = "velocity-archive-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "kube",
+ "serde",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

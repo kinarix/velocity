@@ -35,6 +35,43 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 use thiserror::Error;
+use velocity_types::crds::SchemaDefinitionSpec;
+
+pub mod worker;
+
+/// Canonical system-column order — must match the operator's
+/// `ddl_builder::SYSTEM_COLUMNS`. The archive mirror table is created with
+/// exactly these columns (in this order) followed by the user fields, so
+/// the INSERT column list inside [`archive_batch`] has to enumerate them
+/// the same way or Postgres rejects the move with a type-mismatch.
+///
+/// If the operator ever changes its system-column set, the integration
+/// tests that move real rows through hot → archive will fail loudly on
+/// the first `INSERT INTO archive (...) SELECT (...)` — wrong column
+/// count or wrong type position. That's the lock-step gate.
+pub const SYSTEM_COLUMN_NAMES: &[&str] = &[
+    "id",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+    "version",
+    "created_by",
+    "updated_by",
+    "archived_at",
+    "archive_ref",
+];
+
+/// Build the ordered column-name list for a `SchemaDefinitionSpec`: the
+/// system columns first, then user fields in declaration order. The
+/// `__fts` generated column is intentionally NOT included — it's
+/// regenerated on insert into the archive table from the source columns.
+pub fn ordered_column_names(spec: &SchemaDefinitionSpec) -> Vec<String> {
+    let mut out: Vec<String> = SYSTEM_COLUMN_NAMES.iter().map(|s| (*s).to_string()).collect();
+    for f in &spec.fields {
+        out.push(f.name.clone());
+    }
+    out
+}
 
 /// Result of a single [`archive_batch`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
