@@ -50,40 +50,41 @@ pub struct OperatorConfig {
 
 impl OperatorConfig {
     pub fn from_env() -> Result<Self> {
-        let pg_url = match std::env::var("VELOCITY_OPERATOR_PG_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-        {
-            Ok(url) => url,
-            Err(_) => Self::compose_pg_url()
+        Self::from_env_with(|k| std::env::var(k).ok())
+    }
+
+    pub fn from_env_with(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let pg_url = match get("VELOCITY_OPERATOR_PG_URL").or_else(|| get("DATABASE_URL")) {
+            Some(url) => url,
+            None => Self::compose_pg_url(&get)
                 .context("VELOCITY_OPERATOR_PG_URL/DATABASE_URL not set and PG_HOST/PORT/USER/DB/PASSWORD env vars are incomplete")?,
         };
 
-        let health_addr = std::env::var("VELOCITY_OPERATOR_HEALTH_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+        let health_addr =
+            get("VELOCITY_OPERATOR_HEALTH_ADDR").unwrap_or_else(|| "0.0.0.0:8081".to_string());
 
-        let requeue_after = std::env::var("VELOCITY_OPERATOR_REQUEUE_SECS")
-            .ok()
+        let requeue_after = get("VELOCITY_OPERATOR_REQUEUE_SECS")
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(300));
 
-        let watch_namespace = std::env::var("VELOCITY_OPERATOR_NAMESPACE").ok();
-        let leader_election = std::env::var("VELOCITY_OPERATOR_LEADER_ELECTION")
+        let watch_namespace = get("VELOCITY_OPERATOR_NAMESPACE");
+        let leader_election = get("VELOCITY_OPERATOR_LEADER_ELECTION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let pretty_logs = std::env::var("VELOCITY_OPERATOR_PRETTY_LOGS")
+        let pretty_logs = get("VELOCITY_OPERATOR_PRETTY_LOGS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let redis_url = std::env::var("VELOCITY_OPERATOR_REDIS_URL").ok();
-        let redis_revoked_key = std::env::var("VELOCITY_OPERATOR_REDIS_REVOKED_KEY")
-            .unwrap_or_else(|_| "revoked_actors".to_string());
+        let redis_url = get("VELOCITY_OPERATOR_REDIS_URL");
+        let redis_revoked_key =
+            get("VELOCITY_OPERATOR_REDIS_REVOKED_KEY").unwrap_or_else(|| "revoked_actors".into());
 
-        let warm_storage_url = std::env::var("VELOCITY_OPERATOR_WARM_STORAGE_URL").ok();
+        let warm_storage_url = get("VELOCITY_OPERATOR_WARM_STORAGE_URL");
 
-        let typesense_url = std::env::var("VELOCITY_OPERATOR_TYPESENSE_URL").ok();
-        let typesense_api_key = std::env::var("VELOCITY_OPERATOR_TYPESENSE_API_KEY").ok();
+        let typesense_url = get("VELOCITY_OPERATOR_TYPESENSE_URL");
+        let typesense_api_key = get("VELOCITY_OPERATOR_TYPESENSE_API_KEY");
         if typesense_url.is_some() && typesense_api_key.is_none() {
             anyhow::bail!(
                 "VELOCITY_OPERATOR_TYPESENSE_URL is set but VELOCITY_OPERATOR_TYPESENSE_API_KEY is missing"
@@ -108,12 +109,12 @@ impl OperatorConfig {
     /// Build `postgres://user:password@host:port/db` from the piecewise env vars
     /// used by the Helm chart. The password is percent-encoded so reserved
     /// URL chars (`:/@?#[]`) round-trip cleanly.
-    fn compose_pg_url() -> Result<String> {
-        let host = std::env::var("VELOCITY_OPERATOR_PG_HOST").context("PG_HOST")?;
-        let port = std::env::var("VELOCITY_OPERATOR_PG_PORT").unwrap_or_else(|_| "5432".into());
-        let user = std::env::var("VELOCITY_OPERATOR_PG_USER").context("PG_USER")?;
-        let db = std::env::var("VELOCITY_OPERATOR_PG_DB").context("PG_DB")?;
-        let password = std::env::var("VELOCITY_OPERATOR_PG_PASSWORD").context("PG_PASSWORD")?;
+    fn compose_pg_url(get: &dyn Fn(&str) -> Option<String>) -> Result<String> {
+        let host = get("VELOCITY_OPERATOR_PG_HOST").context("PG_HOST")?;
+        let port = get("VELOCITY_OPERATOR_PG_PORT").unwrap_or_else(|| "5432".into());
+        let user = get("VELOCITY_OPERATOR_PG_USER").context("PG_USER")?;
+        let db = get("VELOCITY_OPERATOR_PG_DB").context("PG_DB")?;
+        let password = get("VELOCITY_OPERATOR_PG_PASSWORD").context("PG_PASSWORD")?;
         Ok(format!(
             "postgres://{}:{}@{}:{}/{}",
             percent_encode(&user),
@@ -145,12 +146,135 @@ fn percent_encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_encode;
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::collections::HashMap;
+
+    fn lookup<'a>(map: &'a HashMap<&'a str, &'a str>) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k: &str| map.get(k).map(|s| s.to_string())
+    }
 
     #[test]
     fn percent_encode_reserved_chars() {
         assert_eq!(percent_encode("plain"), "plain");
         assert_eq!(percent_encode("a:b/c@d"), "a%3Ab%2Fc%40d");
         assert_eq!(percent_encode("pass#word?"), "pass%23word%3F");
+    }
+
+    #[test]
+    fn from_env_uses_pg_url_when_set() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://primary/db");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.pg_url, "postgres://primary/db");
+        assert_eq!(cfg.health_addr, "0.0.0.0:8081");
+        assert_eq!(cfg.requeue_after, Duration::from_secs(300));
+        assert!(!cfg.leader_election);
+        assert!(!cfg.pretty_logs);
+        assert!(cfg.redis_url.is_none());
+        assert_eq!(cfg.redis_revoked_key, "revoked_actors");
+    }
+
+    #[test]
+    fn from_env_falls_back_to_database_url() {
+        let mut env = HashMap::new();
+        env.insert("DATABASE_URL", "postgres://fallback/db");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.pg_url, "postgres://fallback/db");
+    }
+
+    #[test]
+    fn from_env_composes_pg_url_and_percent_encodes_password() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_HOST", "pg");
+        env.insert("VELOCITY_OPERATOR_PG_USER", "vel_op");
+        env.insert("VELOCITY_OPERATOR_PG_DB", "velocity");
+        env.insert("VELOCITY_OPERATOR_PG_PASSWORD", "pa:ss/word");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.pg_url, "postgres://vel_op:pa%3Ass%2Fword@pg:5432/velocity");
+    }
+
+    #[test]
+    fn from_env_composes_pg_url_with_custom_port() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_HOST", "pg");
+        env.insert("VELOCITY_OPERATOR_PG_PORT", "6432");
+        env.insert("VELOCITY_OPERATOR_PG_USER", "u");
+        env.insert("VELOCITY_OPERATOR_PG_DB", "d");
+        env.insert("VELOCITY_OPERATOR_PG_PASSWORD", "p");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert!(cfg.pg_url.contains(":6432/"));
+    }
+
+    #[test]
+    fn from_env_compose_missing_required_part_errors() {
+        let env = HashMap::new();
+        let err = OperatorConfig::from_env_with(lookup(&env)).unwrap_err();
+        assert!(format!("{err:#}").contains("env vars are incomplete"));
+    }
+
+    #[test]
+    fn from_env_typesense_url_without_key_fails_loud() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_TYPESENSE_URL", "http://typesense:8108");
+        let err = OperatorConfig::from_env_with(lookup(&env)).unwrap_err();
+        assert!(format!("{err:#}").contains("TYPESENSE_API_KEY is missing"));
+    }
+
+    #[test]
+    fn from_env_typesense_pair_accepted() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_TYPESENSE_URL", "http://typesense:8108");
+        env.insert("VELOCITY_OPERATOR_TYPESENSE_API_KEY", "key");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.typesense_url.as_deref(), Some("http://typesense:8108"));
+        assert_eq!(cfg.typesense_api_key.as_deref(), Some("key"));
+    }
+
+    #[test]
+    fn from_env_leader_and_pretty_logs_truthy_values() {
+        for v in ["1", "true", "TRUE"] {
+            let mut env = HashMap::new();
+            env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+            env.insert("VELOCITY_OPERATOR_LEADER_ELECTION", v);
+            env.insert("VELOCITY_OPERATOR_PRETTY_LOGS", v);
+            let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+            assert!(cfg.leader_election, "value {v:?} should be truthy");
+            assert!(cfg.pretty_logs, "value {v:?} should be truthy");
+        }
+    }
+
+    #[test]
+    fn from_env_requeue_secs_invalid_falls_back_to_default() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_REQUEUE_SECS", "not-a-number");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.requeue_after, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn from_env_requeue_secs_valid_parsed() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_REQUEUE_SECS", "60");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.requeue_after, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn from_env_custom_revoked_key() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_REDIS_REVOKED_KEY", "custom_revoked");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.redis_revoked_key, "custom_revoked");
+    }
+
+    #[test]
+    fn from_env_wrapper_is_invokable() {
+        let _ = OperatorConfig::from_env();
     }
 }
