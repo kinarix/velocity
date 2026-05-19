@@ -1,13 +1,22 @@
 name: release
 
-# Trigger on tags shaped `v<semver>`. The same workflow is also runnable
-# from the Actions tab via `workflow_dispatch` for dry runs — the upload
-# step is conditional on `github.event_name == 'push'`, so a manual run
-# builds + smoke-tests the binaries without publishing.
+# Triggers:
+#   - push to main           → run the four-target CLI build matrix +
+#                              the test job. Publish/formula skip. This
+#                              catches cross-compile regressions (musl,
+#                              macOS link, lld override, 20 MB size
+#                              guard) at merge-time instead of at the
+#                              next release.
+#   - tag v<semver>          → same matrix runs, but publish + formula
+#                              now also fire (gated on tests passing
+#                              AND build succeeding).
+#   - workflow_dispatch      → dry run from the Actions tab. Matrix +
+#                              test run, publish/formula skip — same
+#                              shape as a main push.
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags:     ['v*']
   workflow_dispatch:
 
 permissions:
@@ -42,6 +51,53 @@ env:
   CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS: ""
 
 jobs:
+  # Tests gate publish (not build). Same pattern as docker.yml: build
+  # runs in parallel with tests; only the actual artefact upload waits
+  # for tests to pass. Mirrors ci.yml's test job exactly — keep the
+  # three in sync by hand (a reusable workflow would deduplicate but
+  # adds indirection).
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER:     postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB:       velocity
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      VELOCITY_API_TEST_PG_URL:  postgres://postgres:postgres@localhost:5434/velocity
+      VELOCITY_API_TEST_API_URL: postgres://velocity_api:velocity_api_dev@localhost:5434/velocity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Bootstrap platform schema + roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for f in db/init/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+          for f in migrations/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+
+      - run: cargo build --workspace --locked
+      - run: make test
+
   # One job per target triple. Linux uses musl so the binary is fully
   # static (no glibc surprises on older distros / Alpine). macOS uses
   # the default Apple system libraries — there's no "static libc" on
@@ -155,8 +211,15 @@ jobs:
 
   publish:
     name: publish release
-    needs: build
-    if: github.event_name == 'push'  # never publish on manual dry runs
+    # Gate on both test and build. Build only verifies the four targets
+    # compile + smoke-test + fit under the size cap; test is what proves
+    # the workspace is shippable. Either failing skips publish.
+    needs: [build, test]
+    # Two-part guard: must be a push event (no manual dry runs), AND
+    # the ref must be a v<semver> tag. Before the on-main-push trigger
+    # was added this was just `github.event_name == 'push'`; we now
+    # need the tag check too or every main merge would publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +241,11 @@ jobs:
   formula:
     name: update homebrew formula
     needs: publish
-    if: github.event_name == 'push'
+    # Inherits the tag gate transitively via `needs: publish`, but we
+    # set it explicitly here too — defense in depth against someone
+    # removing the dependency edge later. Same shape as the publish
+    # job's guard.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
