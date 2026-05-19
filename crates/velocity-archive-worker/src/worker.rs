@@ -45,10 +45,12 @@ use sqlx::PgPool;
 use velocity_types::common::sanitize;
 use velocity_types::crds::{ArchivePolicy, ReconcilePhase, SchemaDefinition};
 
+use crate::s3_destination::{archive_batch_to_s3, S3ArchiveArgs};
 use crate::{
     archive_batch_with_predicate, ordered_column_names, purge_batch, table_size_bytes,
     ArchiveBatchArgs, ArchiveError, ArchivePredicate, FieldOp, PurgeBatchArgs,
 };
+use object_store::ObjectStore;
 
 const MANAGER: &str = "velocity-archive-worker";
 
@@ -70,6 +72,11 @@ pub struct WorkerConfig {
     /// When set, restricts the watch to a single namespace; `None`
     /// means cluster-scoped.
     pub watch_namespace: Option<String>,
+    /// Optional object-store sink for `destination.backend = "s3"`
+    /// policies. When `None`, s3-destined policies are skipped (the
+    /// worker logs a warning per tick rather than failing).
+    #[allow(clippy::type_complexity)]
+    pub s3_store: Option<Arc<dyn ObjectStore>>,
 }
 
 impl Default for WorkerConfig {
@@ -80,6 +87,7 @@ impl Default for WorkerConfig {
             default_batch_size: 500,
             default_max_duration: Duration::from_secs(600),
             watch_namespace: None,
+            s3_store: None,
         }
     }
 }
@@ -179,7 +187,10 @@ pub fn is_eligible(policy: &ArchivePolicy, min_run_interval: Duration) -> bool {
     if status.phase != Some(ReconcilePhase::Ready) {
         return false;
     }
-    if policy.spec.destination.backend != "postgres-cold" {
+    if !matches!(
+        policy.spec.destination.backend.as_str(),
+        "postgres-cold" | "s3"
+    ) {
         return false;
     }
     if !matches!(
@@ -380,6 +391,9 @@ async fn run_policy(
             }
         }
 
+        let use_s3 = policy.spec.destination.backend == "s3";
+        let s3_prefix = policy.spec.destination.bucket.clone().unwrap_or_default();
+
         loop {
             if started.elapsed() >= max_duration {
                 tracing::info!(
@@ -389,6 +403,41 @@ async fn run_policy(
                     "policy hit max_duration; stopping"
                 );
                 break 'schemas;
+            }
+
+            if use_s3 {
+                let Some(store) = cfg.s3_store.as_ref() else {
+                    tracing::warn!(
+                        policy = %policy.name_any(),
+                        "destination=s3 but worker has no s3_store configured; skipping"
+                    );
+                    break;
+                };
+                let s3_args = S3ArchiveArgs {
+                    hot_schema: &hot_schema,
+                    hot_table: &table,
+                    columns: &columns,
+                    min_age: min_age.unwrap_or(std::time::Duration::from_secs(1)),
+                    batch_size,
+                    prefix: &s3_prefix,
+                };
+                match archive_batch_to_s3(pool, store.as_ref(), &s3_args).await {
+                    Ok(r) => {
+                        total += r.rows_archived;
+                        if !r.more_pending {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            policy = %policy.name_any(),
+                            table = %table, error = %e,
+                            "archive_batch_to_s3 error; skipping table"
+                        );
+                        break;
+                    }
+                }
+                continue;
             }
 
             let args = ArchiveBatchArgs {
@@ -606,9 +655,16 @@ mod tests {
     }
 
     #[test]
-    fn not_eligible_for_s3_backend() {
+    fn eligible_for_s3_backend() {
         let mut p = ready_policy();
         p.spec.destination.backend = "s3".into();
+        assert!(is_eligible(&p, Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn not_eligible_for_unknown_backend() {
+        let mut p = ready_policy();
+        p.spec.destination.backend = "azure-blob".into();
         assert!(!is_eligible(&p, Duration::from_secs(300)));
     }
 

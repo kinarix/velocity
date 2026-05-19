@@ -33,3 +33,8 @@ kube               = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 chrono             = { workspace = true }
+uuid               = { workspace = true }
+arrow              = { workspace = true }
+parquet            = { workspace = true, features = ["async", "object_store"] }
+object_store       = { workspace = true }
+bytes              = "1"

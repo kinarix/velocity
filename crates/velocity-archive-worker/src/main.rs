@@ -25,6 +25,8 @@ async fn main() -> Result<()> {
         .await
         .context("building kube client (in-cluster or kubeconfig)")?;
 
+    let s3_store = build_s3_store()?;
+
     let cfg = WorkerConfig {
         tick_interval: Duration::from_secs(env_u64("ARCHIVE_TICK_INTERVAL_SECS", 60)),
         min_run_interval: Duration::from_secs(env_u64("ARCHIVE_MIN_RUN_INTERVAL_SECS", 300)),
@@ -34,6 +36,7 @@ async fn main() -> Result<()> {
             600,
         )),
         watch_namespace: std::env::var("WATCH_NAMESPACE").ok().filter(|s| !s.is_empty()),
+        s3_store,
     };
 
     tracing::info!(
@@ -60,4 +63,21 @@ fn env_u32(key: &str, default: u32) -> u32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+/// Build an `Arc<dyn ObjectStore>` when `ARCHIVE_S3_BUCKET` is set;
+/// `None` otherwise (s3-destined ArchivePolicies are skipped with a
+/// warning). Credentials come from the standard AWS SDK chain.
+fn build_s3_store() -> Result<Option<std::sync::Arc<dyn object_store::ObjectStore>>> {
+    let Some(bucket) = std::env::var("ARCHIVE_S3_BUCKET").ok().filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let mut builder = object_store::aws::AmazonS3Builder::from_env().with_bucket_name(&bucket);
+    if let Ok(region) = std::env::var("AWS_REGION") {
+        builder = builder.with_region(region);
+    }
+    let store = builder
+        .build()
+        .context("building AmazonS3 object_store")?;
+    Ok(Some(std::sync::Arc::new(store)))
 }

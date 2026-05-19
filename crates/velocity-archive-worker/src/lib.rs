@@ -37,7 +37,14 @@ use sqlx::PgPool;
 use thiserror::Error;
 use velocity_types::crds::SchemaDefinitionSpec;
 
+pub mod s3_destination;
 pub mod worker;
+
+/// `pub` re-export of the crate-private identifier validator so the
+/// `s3_destination` module can reuse it without forking the rule.
+pub fn validate_ident_pub(s: &str) -> Result<(), ArchiveError> {
+    validate_ident(s)
+}
 
 /// Canonical system-column order — must match the operator's
 /// `ddl_builder::SYSTEM_COLUMNS`. The archive mirror table is created with

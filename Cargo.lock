@@ -5303,8 +5303,12 @@ name = "velocity-archive-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow",
+ "bytes",
  "chrono",
  "kube",
+ "object_store",
+ "parquet",
  "serde",
  "serde_json",
  "sqlx",
@@ -5312,6 +5316,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "velocity-types",
 ]
 
