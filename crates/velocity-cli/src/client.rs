@@ -81,6 +81,118 @@ impl ApiClient {
         }
         Err(parse_error(status, resp).await)
     }
+
+    /// Fetch a single record by id. Path is the canonical
+    /// `org/app/domain/object/version` shape — same as the URL the API
+    /// exposes, no rewriting on the CLI side.
+    pub(crate) async fn get_record(
+        &self,
+        path: &SchemaPath,
+        id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let url = format!("{}/api/{}/{}", self.base_url, path.as_url(), id);
+        let resp = self.inner.get(&url).send().await?;
+        decode_json(resp).await
+    }
+
+    /// LIST with optional query-string params (limit/cursor passed via
+    /// query, filters via the POST `/query` endpoint instead — see
+    /// `query_records`). Returns the raw envelope `{ items, next_cursor }`.
+    pub(crate) async fn list_records(
+        &self,
+        path: &SchemaPath,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<ListEnvelope, ApiError> {
+        let mut url = format!("{}/api/{}", self.base_url, path.as_url());
+        let mut sep = '?';
+        if let Some(l) = limit {
+            url.push(sep);
+            url.push_str(&format!("limit={l}"));
+            sep = '&';
+        }
+        if let Some(c) = cursor {
+            url.push(sep);
+            url.push_str("cursor=");
+            url.push_str(c);
+        }
+        let resp = self.inner.get(&url).send().await?;
+        decode_json(resp).await
+    }
+
+    /// POST a query DSL body (`{ limit, cursor, sort, filter }`). The
+    /// CLI doesn't validate the shape — the server is the source of
+    /// truth, and lockstep validation would mean a CLI rebuild whenever
+    /// the DSL grows a field. We forward bytes and surface server errors.
+    pub(crate) async fn query_records(
+        &self,
+        path: &SchemaPath,
+        body: &serde_json::Value,
+    ) -> Result<ListEnvelope, ApiError> {
+        let url = format!("{}/api/{}/query", self.base_url, path.as_url());
+        let resp = self.inner.post(&url).json(body).send().await?;
+        decode_json(resp).await
+    }
+}
+
+/// 5-segment data-plane path. Validates shape eagerly so a typo at the
+/// command line doesn't reach the API and come back as a confusing 404.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchemaPath {
+    pub org: String,
+    pub app: String,
+    pub domain: String,
+    pub object: String,
+    pub version: String,
+}
+
+impl SchemaPath {
+    pub(crate) fn parse(s: &str) -> Result<Self> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 5 {
+            anyhow::bail!(
+                "schema path `{s}` must have 5 segments: org/app/domain/object/version"
+            );
+        }
+        for (i, p) in parts.iter().enumerate() {
+            if p.is_empty() {
+                anyhow::bail!("schema path segment #{} is empty in `{s}`", i + 1);
+            }
+        }
+        Ok(Self {
+            org: parts[0].into(),
+            app: parts[1].into(),
+            domain: parts[2].into(),
+            object: parts[3].into(),
+            version: parts[4].into(),
+        })
+    }
+
+    pub(crate) fn as_url(&self) -> String {
+        format!("{}/{}/{}/{}/{}", self.org, self.app, self.domain, self.object, self.version)
+    }
+}
+
+/// List/query response shape (matches `velocity-api`'s `ListEnvelope`).
+/// We deserialise to `serde_json::Value` for items so the CLI doesn't
+/// know about per-schema fields — server is the truth.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ListEnvelope {
+    #[serde(default)]
+    pub items: Vec<serde_json::Value>,
+    #[serde(default, rename = "nextCursor", alias = "next_cursor")]
+    pub next_cursor: Option<String>,
+}
+
+async fn decode_json<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, ApiError> {
+    let status = resp.status();
+    if status.is_success() {
+        let v: T = resp.json().await?;
+        return Ok(v);
+    }
+    Err(parse_error(status, resp).await)
 }
 
 /// Mirrors the API's `/version` JSON. Kept narrow on purpose — fields

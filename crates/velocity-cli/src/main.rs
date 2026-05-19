@@ -29,6 +29,7 @@ mod kube_cmd;
 mod kube_helpers;
 mod output;
 mod reconcile;
+mod record_cmd;
 mod status;
 mod version_cmd;
 
@@ -38,6 +39,7 @@ use drift::DriftCmd;
 use kube_cmd::{ApplyArgs, DeleteArgs, DescribeArgs, DiffArgs, GetArgs};
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
+use record_cmd::RecordCmd;
 use status::StatusArgs;
 use version_cmd::VersionArgs;
 
@@ -109,6 +111,11 @@ enum Cmd {
     Delete(DeleteArgs),
     /// Show what `apply` would change, against the current cluster state.
     Diff(DiffArgs),
+    /// Data-plane reads against the API (get / list / query / export).
+    Record {
+        #[command(subcommand)]
+        cmd: RecordCmd,
+    },
 }
 
 #[tokio::main]
@@ -144,5 +151,8 @@ async fn main() -> Result<()> {
         Cmd::Describe(args) => kube_cmd::describe(args, &cli.kubeconfig).await,
         Cmd::Delete(args) => kube_cmd::delete(args, &cli.kubeconfig).await,
         Cmd::Diff(args) => kube_cmd::diff(args, &cli.kubeconfig).await,
+        Cmd::Record { cmd } => {
+            record_cmd::run(cmd, cli.config.as_deref(), cli.context.as_deref()).await
+        }
     }
 }
