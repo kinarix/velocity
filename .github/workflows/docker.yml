@@ -57,10 +57,45 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    # Same Postgres service container shape as ci.yml — kept in lockstep
+    # by hand rather than via a reusable workflow. If you change one,
+    # change both (verifying with a `diff` is faster than abstracting).
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER:     postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB:       velocity
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      VELOCITY_API_TEST_PG_URL:  postgres://postgres:postgres@localhost:5434/velocity
+      VELOCITY_API_TEST_API_URL: postgres://velocity_api:velocity_api_dev@localhost:5434/velocity
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Bootstrap platform schema + roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for f in db/init/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+          for f in migrations/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+
       - run: cargo build --workspace --locked
       - run: make test
 

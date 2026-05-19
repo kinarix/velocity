@@ -48,10 +48,59 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    # Real Postgres so the ~18 integration tests in crates/velocity-api/tests
+    # actually exercise RLS, audit chain, JSONB containment, time machine,
+    # idempotency, etc. Without it they read the unset env var and silently
+    # skip — green CI on unit tests alone, which is exactly what we don't
+    # want for a DB-heavy platform.
+    #
+    # Port 5434 matches the Makefile's PG_PORT so the test defaults
+    # (and any helper that hardcodes localhost:5434) work unchanged.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER:     postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB:       velocity
+        ports:
+          - 5434:5432
+        # Health check gates job start until pg_isready returns success
+        # — saves us a manual `until` loop before the bootstrap step.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Tests pick these up via the test_support helpers. _PG_URL is the
+      # superuser channel used to spin up per-test schemas; _API_URL is
+      # the NOBYPASSRLS channel the test API server itself uses.
+      VELOCITY_API_TEST_PG_URL:  postgres://postgres:postgres@localhost:5434/velocity
+      VELOCITY_API_TEST_API_URL: postgres://velocity_api:velocity_api_dev@localhost:5434/velocity
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Bootstrap platform schema + roles
+        # docker-compose's first-boot entrypoint applies db/init/*.sql and
+        # the operator's reconciler applies migrations/*.sql in production.
+        # Neither runs here, so we apply both up-front with psql against
+        # the service container. PGPASSWORD avoids a libpq prompt.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for f in db/init/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+          for f in migrations/*.sql; do
+            echo "==> applying $f"
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
+          done
+
       # Belt-and-braces: build with --locked first so a drifted Cargo.lock
       # fails loudly before tests run. `make test` itself doesn't pass
       # --locked because local devs change Cargo.toml often and the lock
