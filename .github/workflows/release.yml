@@ -30,6 +30,16 @@ env:
   # there and necessary on the macOS jobs.)
   RUSTC_WRAPPER: ""
   SCCACHE_GHA_ENABLED: "false"
+  # Override .cargo/config.toml's lld linker for the two macOS targets.
+  # The config points at Homebrew's ld64.lld (/opt/homebrew/... on
+  # Apple Silicon, /usr/local/... on Intel) so local devs get a faster
+  # link; GitHub's macos-latest runner doesn't install lld, and clang
+  # rejects the argument with "invalid linker name". Empty value here
+  # wins over the config table per cargo's env-overrides-config rule.
+  # (cargo's env knob is the documented escape hatch — see comments
+  # at the top of .cargo/config.toml.)
+  CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ""
+  CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS: ""
 
 jobs:
   # One job per target triple. Linux uses musl so the binary is fully
