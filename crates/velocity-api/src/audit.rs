@@ -24,7 +24,7 @@
 //! [`RevocationDecision::as_audit_str`]: crate::auth::RevocationDecision::as_audit_str
 
 use serde_json::{json, Value};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::auth::AuthDecision;
 use crate::identity::Identity;
@@ -34,15 +34,17 @@ use crate::registry::ResolvedSchema;
 /// route-level RBAC ops in [`crate::rbac::op`] for cross-referencing.
 pub mod action {
     pub const CREATE: &str = "create";
+    pub const READ: &str = "read";
     pub const UPDATE: &str = "update";
     pub const DELETE: &str = "delete";
+    pub const QUERY: &str = "query";
+    pub const SEARCH: &str = "search";
 }
 
 pub mod outcome {
     pub const SUCCESS: &str = "success";
     #[allow(dead_code)]
     pub const ERROR: &str = "error";
-    #[allow(dead_code)]
     pub const DENIED: &str = "denied";
 }
 
@@ -112,6 +114,60 @@ pub async fn write_audit(
     .bind(request_id)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// Write a denial audit row in its own short transaction.
+///
+/// Denials are raised BEFORE the data-write transaction opens (RBAC →
+/// ABAC → field-filter all run pre-tx), so they cannot share that tx
+/// the way success-path audit does. The trade-off: a denial row is
+/// not atomic with anything else — but there is no "anything else" to
+/// be atomic with. The 403 happens regardless.
+///
+/// `entity_id` is always NULL (the row that would have been touched
+/// either doesn't exist yet or wasn't reached). `payload` carries the
+/// error code so a SOC analyst can pivot on `payload->>'code'` to
+/// separate RBAC denials from ABAC, field-filter, and cross-schema
+/// denials without re-parsing the action.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_audit_denial(
+    pool: &PgPool,
+    schema: &ResolvedSchema,
+    identity: &Identity,
+    action: &str,
+    code: &str,
+    decision: Option<&AuthDecision>,
+    request_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let fail_modes = build_fail_modes(decision);
+    let payload = json!({ "code": code });
+
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "SELECT platform.audit_insert(
+            p_actor       => $1,
+            p_action      => $2,
+            p_outcome     => $3,
+            p_schema_org  => $4,
+            p_entity_id   => NULL::uuid,
+            p_payload     => $5,
+            p_fail_modes  => $6,
+            p_request_id  => $7,
+            p_reason      => NULL,
+            p_ticket_ref  => NULL
+         )",
+    )
+    .bind(&identity.actor_id)
+    .bind(action)
+    .bind(outcome::DENIED)
+    .bind(crate::registry::registry_key(&schema.path))
+    .bind(payload)
+    .bind(fail_modes)
+    .bind(request_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 

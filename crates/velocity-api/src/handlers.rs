@@ -37,6 +37,60 @@ use crate::state::AppState;
 use crate::validate::{validate_fields, validate_rules, WriteMode};
 
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Read the request id the `SetRequestIdLayer` attached. Returns `None`
+/// when the header is absent or non-ASCII (it shouldn't be either, but
+/// audit-write paths must never blow up on header weirdness).
+fn request_id_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers.get(REQUEST_ID_HEADER).and_then(|v| v.to_str().ok())
+}
+
+/// Wrap a result and, if it is a 401/403-class `ApiError`, write a
+/// denial audit row in a short side-tx before returning the error.
+///
+/// Audit-write failure does NOT block the response — we log + continue.
+/// The intent is observability, not a security gate; the 403 is
+/// already happening upstream.
+async fn audit_if_denied<T>(
+    state: &AppState,
+    schema: &ResolvedSchema,
+    identity: &Identity,
+    action: &str,
+    decision: Option<&AuthDecision>,
+    request_id: Option<&str>,
+    result: Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            let status = err.status();
+            if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
+                let code = err.code();
+                if let Err(e) = audit::write_audit_denial(
+                    &state.pool,
+                    schema,
+                    identity,
+                    action,
+                    code,
+                    decision,
+                    request_id,
+                )
+                .await
+                {
+                    tracing::error!(
+                        error = %e,
+                        code = %code,
+                        action = %action,
+                        actor = %identity.actor_id,
+                        "denial audit write failed"
+                    );
+                }
+            }
+            Err(err)
+        }
+    }
+}
 
 /// URL path: `/api/{org}/{app}/{domain}/{object}/{version}`.
 pub(crate) type SchemaPathParts = (String, String, String, String, String);
@@ -136,11 +190,24 @@ pub async fn list(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
     Query(q): Query<ListQuery>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, parts)?;
     let identity = identity_from_ext(identity_ext);
-    check_access(&schema, &identity, op::READ)?;
+    let decision = decision_ext.map(|Extension(d)| d);
+    let request_id = request_id_from_headers(&headers);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::READ,
+        decision.as_ref(),
+        request_id,
+        check_access(&schema, &identity, op::READ),
+    )
+    .await?;
     let compiled = build_list(&schema, &q, &identity)?;
 
     let items = with_session_context(
@@ -204,7 +271,17 @@ pub async fn create(
     let schema = resolve_schema(&state, parts)?;
     let identity = identity_from_ext(identity_ext);
     let decision = decision_ext.map(|Extension(d)| d);
-    check_access(&schema, &identity, op::CREATE)?;
+    let request_id = request_id_from_headers(&headers).map(str::to_owned);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::CREATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_access(&schema, &identity, op::CREATE),
+    )
+    .await?;
 
     let payload_obj = payload
         .as_object()
@@ -215,18 +292,36 @@ pub async fn create(
     // validation (deeper field/CEL checks). A policy that needs the full
     // payload sees the un-touched submission — same view the SQL builder
     // will operate on.
-    policy::evaluate_for(
-        &schema.compiled_policies,
-        op::CREATE,
-        &Value::Object(payload_obj.clone()),
+    audit_if_denied(
+        &state,
+        &schema,
         &identity,
+        action::CREATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        policy::evaluate_for(
+            &schema.compiled_policies,
+            op::CREATE,
+            &Value::Object(payload_obj.clone()),
+            &identity,
+        )
+        .await,
     )
     .await?;
 
     // Layer-5 field-filter — reject before idempotency stores anything,
     // so a 403 on the first attempt doesn't poison the idempotency-key
     // cache with a no-op response that future retries would replay.
-    check_field_writes(&schema.field_filter, &payload_obj, &identity)?;
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::CREATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_field_writes(&schema.field_filter, &payload_obj, &identity),
+    )
+    .await?;
 
     // ── Idempotency (#16) — if present, replay or 409 before doing work.
     let idempotency_key = headers
@@ -416,11 +511,24 @@ pub async fn get_one(
         String,
         String,
     )>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
     let identity = identity_from_ext(identity_ext);
-    check_access(&schema, &identity, op::READ)?;
+    let decision = decision_ext.map(|Extension(d)| d);
+    let request_id = request_id_from_headers(&headers);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::READ,
+        decision.as_ref(),
+        request_id,
+        check_access(&schema, &identity, op::READ),
+    )
+    .await?;
     let table = schema.pg_qualified.clone();
     // id is $1, so row-filter binds start at $2.
     let scope = row_filter::predicate_for(&schema, &identity, 2)?;
@@ -454,6 +562,7 @@ pub async fn update(
         String,
         String,
     )>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
     decision_ext: Option<Extension<AuthDecision>>,
     Json(payload): Json<Value>,
@@ -461,7 +570,17 @@ pub async fn update(
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
     let identity = identity_from_ext(identity_ext);
     let decision = decision_ext.map(|Extension(d)| d);
-    check_access(&schema, &identity, op::UPDATE)?;
+    let request_id = request_id_from_headers(&headers).map(str::to_owned);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::UPDATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_access(&schema, &identity, op::UPDATE),
+    )
+    .await?;
 
     let payload_obj = payload
         .as_object()
@@ -472,18 +591,36 @@ pub async fn update(
     // the *requested* mutation, not the merged post-image; that's
     // intentional, so a "you may only set X to Y" rule fires on the
     // submitted value rather than on the row that already exists.
-    policy::evaluate_for(
-        &schema.compiled_policies,
-        op::UPDATE,
-        &Value::Object(payload_obj.clone()),
+    audit_if_denied(
+        &state,
+        &schema,
         &identity,
+        action::UPDATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        policy::evaluate_for(
+            &schema.compiled_policies,
+            op::UPDATE,
+            &Value::Object(payload_obj.clone()),
+            &identity,
+        )
+        .await,
     )
     .await?;
 
     // Layer-5 field-filter on writes. `version` is on every UPDATE payload
     // but it isn't a user-declared field, so `check_writes` will pass it
     // through (FieldFilterIndex keys on declared field names only).
-    check_field_writes(&schema.field_filter, &payload_obj, &identity)?;
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::UPDATE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_field_writes(&schema.field_filter, &payload_obj, &identity),
+    )
+    .await?;
 
     let expected_version: i32 = payload_obj
         .get("version")
@@ -689,17 +826,38 @@ pub async fn delete_soft(
         String,
         String,
     )>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
     decision_ext: Option<Extension<AuthDecision>>,
 ) -> Result<StatusCode, ApiError> {
     let schema = resolve_schema(&state, (org, app, domain, object, version))?;
     let identity = identity_from_ext(identity_ext);
     let decision = decision_ext.map(|Extension(d)| d);
-    check_access(&schema, &identity, op::DELETE)?;
+    let request_id = request_id_from_headers(&headers).map(str::to_owned);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::DELETE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_access(&schema, &identity, op::DELETE),
+    )
+    .await?;
     // Layer-2 ABAC on delete. The policy sees `self = null` since the
     // request body is empty — useful for "only admin actors may delete"
     // expressed as `identity.attributes.role == 'admin'`.
-    policy::evaluate_for(&schema.compiled_policies, op::DELETE, &Value::Null, &identity).await?;
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::DELETE,
+        decision.as_ref(),
+        request_id.as_deref(),
+        policy::evaluate_for(&schema.compiled_policies, op::DELETE, &Value::Null, &identity)
+            .await,
+    )
+    .await?;
     let table = schema.pg_qualified.clone();
     // id is $1, so row-filter binds start at $2.
     let scope = row_filter::predicate_for(&schema, &identity, 2)?;
@@ -804,15 +962,39 @@ pub async fn delete_soft(
 pub async fn query(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
     Json(dsl): Json<crate::dsl::QueryDsl>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, parts)?;
     let identity = identity_from_ext(identity_ext);
-    check_access(&schema, &identity, op::READ)?;
+    let decision = decision_ext.map(|Extension(d)| d);
+    let request_id = request_id_from_headers(&headers).map(str::to_owned);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::QUERY,
+        decision.as_ref(),
+        request_id.as_deref(),
+        check_access(&schema, &identity, op::READ),
+    )
+    .await?;
 
     let signer = state.cursor_signer.as_deref();
-    let compiled = crate::dsl::build(&schema, &dsl, &identity, &state.registry, signer)?;
+    // dsl::build raises CrossSchemaAccessDenied from inside the include
+    // resolver — wrap it so that denial path produces an audit row.
+    let compiled = audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::QUERY,
+        decision.as_ref(),
+        request_id.as_deref(),
+        crate::dsl::build(&schema, &dsl, &identity, &state.registry, signer),
+    )
+    .await?;
 
     let include_names: Vec<String> = dsl.include.clone();
     let page_limit = compiled.limit;
@@ -921,12 +1103,25 @@ pub struct SearchRequest {
 pub async fn search(
     State(state): State<AppState>,
     Path(parts): Path<SchemaPathParts>,
+    headers: HeaderMap,
     identity_ext: Option<Extension<Identity>>,
+    decision_ext: Option<Extension<AuthDecision>>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let schema = resolve_schema(&state, parts)?;
     let identity = identity_from_ext(identity_ext);
-    check_access(&schema, &identity, op::READ)?;
+    let decision = decision_ext.map(|Extension(d)| d);
+    let request_id = request_id_from_headers(&headers);
+    audit_if_denied(
+        &state,
+        &schema,
+        &identity,
+        action::SEARCH,
+        decision.as_ref(),
+        request_id,
+        check_access(&schema, &identity, op::READ),
+    )
+    .await?;
 
     if !matches!(schema.spec.search.tier, SearchTier::Tier3) {
         return Err(ApiError::BadRequest(
