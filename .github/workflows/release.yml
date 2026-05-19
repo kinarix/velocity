@@ -1,0 +1,140 @@
+name: release
+
+# Trigger on tags shaped `v<semver>`. The same workflow is also runnable
+# from the Actions tab via `workflow_dispatch` for dry runs — the upload
+# step is conditional on `github.event_name == 'push'`, so a manual run
+# builds + smoke-tests the binaries without publishing.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # creating the release + uploading assets
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Forward into the build so `velocity version` reports the source
+  # commit. Same env name the CLI reads in version_cmd.rs.
+  VELOCITY_GIT_SHA: ${{ github.sha }}
+
+jobs:
+  # One job per target triple. Linux uses musl so the binary is fully
+  # static (no glibc surprises on older distros / Alpine). macOS uses
+  # the default Apple system libraries — there's no "static libc" on
+  # macOS, so we ship dynamically linked but with no third-party deps.
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # `cross` for musl targets gives us the right linker + libc
+      # without setting up cross-compilers manually.
+      - name: install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build (release)
+        env:
+          # Tells the workspace's binaries to bake the commit into
+          # `option_env!("VELOCITY_GIT_SHA")`. See version_cmd.rs.
+          VELOCITY_GIT_SHA: ${{ github.sha }}
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p velocity-cli --locked
+          else
+            cargo build --release --target ${{ matrix.target }} -p velocity-cli --locked
+          fi
+
+      - name: smoke (--version)
+        # On Linux this requires Docker (the cross image); skip and
+        # rely on the build itself to fail loud. On macOS, run it.
+        if: matrix.cross == false
+        run: |
+          ./target/${{ matrix.target }}/release/velocity --version
+          ./target/${{ matrix.target }}/release/velocity --help > /dev/null
+
+      - name: size guard
+        # CLAUDE.md / phases.md says < 20 MB. Fail the release if the
+        # stripped binary exceeds it — a regression is worth catching
+        # before publishing.
+        run: |
+          bin=./target/${{ matrix.target }}/release/velocity
+          # macOS strip is built in; Linux musl already has none.
+          if [ "${{ runner.os }}" = "macOS" ]; then strip "$bin"; fi
+          size=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
+          echo "binary size: $size bytes"
+          if [ "$size" -gt 20971520 ]; then
+            echo "::error::velocity binary exceeds 20 MB ($size bytes)"
+            exit 1
+          fi
+
+      - name: package
+        id: pkg
+        run: |
+          name="velocity-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/${{ matrix.target }}/release/velocity "dist/$name/"
+          cp README.md LICENSE 2>/dev/null "dist/$name/" || true
+          (cd dist && tar -czf "$name.tar.gz" "$name")
+          sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256" \
+            || shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/$name.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velocity-${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.checksum }}
+
+  publish:
+    name: publish release
+    needs: build
+    if: github.event_name == 'push'  # never publish on manual dry runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
