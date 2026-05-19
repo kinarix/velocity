@@ -18,6 +18,7 @@ pub mod metrics;
 pub mod migration_diff;
 pub mod partition_manager;
 pub mod provisioner;
+pub mod reap_sweeper;
 pub mod redis_notify;
 pub mod search_rebuild;
 pub mod startup;

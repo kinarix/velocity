@@ -80,6 +80,18 @@ pub async fn verify_platform_schema(pool: &PgPool) -> Result<()> {
         bail!("platform.audit_insert function missing — apply migrations/0002_audit_insert.sql");
     }
 
+    let has_reap_queue: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_tables \
+            WHERE schemaname='platform' AND tablename='pending_typesense_reaps')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_reap_queue {
+        bail!(
+            "platform.pending_typesense_reaps missing — apply migrations/0005_pending_typesense_reaps.sql"
+        );
+    }
+
     tracing::info!("platform schema verified");
     Ok(())
 }

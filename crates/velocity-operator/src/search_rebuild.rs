@@ -114,6 +114,10 @@ pub struct RebuildArgs {
     pub typesense: TypesenseClient,
     pub namespace: String,
     pub crd_name: String,
+    /// SchemaDefinition `metadata.uid` — passed through so the reap
+    /// queue row can be traced back to its owning CRD even after
+    /// the CRD itself is deleted from the cluster.
+    pub schema_uid: String,
     pub path: SchemaPath,
     pub pg_schema: String,
     pub pg_table: String,
@@ -306,28 +310,42 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     )
     .await?;
 
-    // ── Reap the old concrete after a grace period. Detached
-    // task — if the operator is killed during this window the
-    // collection lingers; the next reconcile will note it as a
-    // drift candidate (Phase 5d-3c is the only place that would
-    // sweep it).
-    let ts = args.typesense.clone();
-    let to_drop = args.source_concrete.clone();
-    let alias_for_log = args.alias.clone();
-    let grace = reap_grace();
-    tokio::spawn(async move {
-        tokio::time::sleep(grace).await;
-        if let Err(e) = ts.delete_collection(&to_drop).await {
-            warn!(
-                alias = %alias_for_log,
-                old = %to_drop,
-                error = %e,
-                "failed to delete old Typesense collection after grace period"
-            );
-        } else {
-            info!(alias = %alias_for_log, old = %to_drop, "reaped old Typesense collection");
-        }
-    });
+    // ── Enqueue the old concrete for reap. The sweeper
+    // (`reap_sweeper::run`) deletes it after the grace period. The
+    // queue lives in `platform.pending_typesense_reaps` so a
+    // restart during the window doesn't leak the old collection —
+    // an in-task sleep can't survive a process bounce, especially
+    // at the spec's default grace of 24h.
+    let grace_secs = i64::try_from(reap_grace().as_secs()).unwrap_or(i64::MAX);
+    if let Err(e) = crate::reap_sweeper::enqueue(
+        &args.pool,
+        &args.source_concrete,
+        &args.alias,
+        &args.schema_uid,
+        grace_secs,
+    )
+    .await
+    {
+        // Don't fail the rebuild over a queue-insert hiccup — the
+        // alias is already flipped and search is serving from the
+        // new concrete. Worst case the old concrete lingers until
+        // a human notices it. Surface loud so that "human notices"
+        // is a realistic outcome.
+        warn!(
+            alias = %args.alias,
+            old = %args.source_concrete,
+            error = %e,
+            "failed to enqueue old Typesense collection for reap; \
+             rebuild succeeded but reap will need manual cleanup"
+        );
+    } else {
+        info!(
+            alias = %args.alias,
+            old = %args.source_concrete,
+            reap_after_secs = grace_secs,
+            "enqueued old Typesense collection for reap"
+        );
+    }
 
     Ok(rows_processed)
 }

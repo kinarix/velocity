@@ -10,8 +10,8 @@ use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use velocity_operator::{
     controllers::{application, domain, organisation, role_binding, schema_definition},
-    drift_sweep, health, partition_manager, startup, tiering, Context, OperatorConfig,
-    RedisNotify,
+    drift_sweep, health, partition_manager, reap_sweeper, startup, tiering, Context,
+    OperatorConfig, RedisNotify,
 };
 use velocity_types::crds::{Application, Domain, Organisation, RoleBinding, SchemaDefinition};
 
@@ -137,6 +137,24 @@ async fn main() -> Result<()> {
     // partition loop have no shared state.
     let partition_pool = ctx.pg.clone();
     let _partition_handle = tokio::spawn(async move { partition_manager::run(partition_pool).await });
+
+    // Phase 5d-3c persistent reap. Polls
+    // `platform.pending_typesense_reaps` on a fixed interval and
+    // drops expired concrete collections via the Typesense client.
+    // Only meaningful when a Typesense client is wired — without
+    // one the queue can still accumulate rows (from a previous
+    // typesense-enabled run on the same DB) but nobody to drain
+    // them; log loudly so a forgotten config doesn't go unnoticed.
+    let _reap_handle = if let Some(ts) = ctx.typesense.clone() {
+        let reap_pool = ctx.pg.clone();
+        Some(tokio::spawn(async move { reap_sweeper::run(reap_pool, ts).await }))
+    } else {
+        tracing::warn!(
+            "VELOCITY_OPERATOR_TYPESENSE_URL unset — reap sweeper disabled; any rows in \
+             platform.pending_typesense_reaps will linger until a typesense-enabled operator runs"
+        );
+        None
+    };
 
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments

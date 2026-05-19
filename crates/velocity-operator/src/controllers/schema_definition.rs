@@ -232,6 +232,7 @@ fn spawn_rebuild(
         typesense,
         namespace: namespace.to_string(),
         crd_name: crd_name.to_string(),
+        schema_uid: uid.to_string(),
         path: path.clone(),
         pg_schema,
         pg_table,
