@@ -70,6 +70,22 @@ if [ "$branch" != "$expected_branch" ]; then
   die "on branch '$branch'; expected '$expected_branch' (override with VELOCITY_BRANCH)"
 fi
 
+# Collect the subjects of every commit on HEAD but not on origin/$branch.
+# These are offered as the default at every commit-message prompt below
+# — whatever you've already written makes a much better starting point
+# for the release commit than an auto-generated label. If origin/$branch
+# isn't reachable yet (fresh clone, no upstream), the redirect to
+# /dev/null swallows the error and we fall through to an empty default.
+# Must be computed BEFORE the dirty-tree check because `set -u` flags
+# any reference to an unset variable.
+unpushed_subjects="$(
+  git log "origin/$branch..HEAD" --pretty=format:%s 2>/dev/null | paste -sd ',' - | sed 's/,/, /g'
+)"
+if [ -n "$unpushed_subjects" ]; then
+  info "unpushed commit subjects will be offered as the default message:"
+  echo "  $unpushed_subjects"
+fi
+
 # Working tree may be dirty — that's fine. We surface what would be
 # swept up and capture a commit message now, then reuse it for the
 # combined "your changes + version bump" commit so git history shows
@@ -81,7 +97,16 @@ if ! git diff-index --quiet HEAD -- || [ -n "$(git ls-files --others --exclude-s
   git status --short
   echo
   if [ -z "$release_msg" ]; then
-    read -r -p "${B}commit message for the dirty changes (will also serve as the release commit)${N}: " release_msg
+    # Offer unpushed commit subjects as the default; if there are none,
+    # require the user to type something rather than guess. A bad
+    # default here gets baked into the release commit message.
+    dirty_default="$unpushed_subjects"
+    if [ -n "$dirty_default" ]; then
+      read -r -p "${B}commit message [${dirty_default}]${N}: " release_msg
+      release_msg="${release_msg:-$dirty_default}"
+    else
+      read -r -p "${B}commit message for the dirty changes (will also serve as the release commit)${N}: " release_msg
+    fi
     if [ -z "$release_msg" ]; then
       die "a commit message is required when the working tree is dirty"
     fi
@@ -114,10 +139,12 @@ non_doc=$(printf '%s\n' "$changed" | awk '
 if [ -n "$changed" ] && [ -z "$non_doc" ]; then
   warn "only docs/website/runbooks changed — skipping version bump"
   # If we already captured a message from the dirty-tree check, reuse
-  # it. Otherwise prompt now with a docs-flavoured default.
+  # it. Otherwise prefer unpushed commit subjects; fall back to a
+  # docs-flavoured default if none.
   if [ -z "$release_msg" ]; then
-    read -r -p "${B}commit message [docs: update]${N}: " release_msg
-    release_msg="${release_msg:-docs: update}"
+    docs_default="${unpushed_subjects:-docs: update}"
+    read -r -p "${B}commit message [${docs_default}]${N}: " release_msg
+    release_msg="${release_msg:-$docs_default}"
   fi
   git add docs website runbooks README* CHANGELOG* 2>/dev/null || true
   git commit -m "$release_msg"
@@ -232,14 +259,30 @@ fi
 
 # ─── commit + push main ──────────────────────────────────────────────────────
 echo
-default_msg="release: ${kind} v${ver}"
-# Precedence: VELOCITY_RELEASE_MSG > the message captured for dirty
-# changes earlier > prompt with the auto-generated default.
+# Default precedence at the release prompt:
+#   1. unpushed commit subjects (if any) — what you already wrote wins
+#   2. auto-generated "release: <kind> v<ver>" fallback
+# The version suffix is appended below regardless of which default — or
+# user override — won, so the release commit always records the tag.
+default_msg="${unpushed_subjects:-release: ${kind} v${ver}}"
+
+# Precedence for the actual message used:
+#   1. VELOCITY_RELEASE_MSG (CI / scripted override)
+#   2. message captured earlier from the dirty-tree prompt
+#   3. interactive prompt with $default_msg suggested
 msg="${VELOCITY_RELEASE_MSG:-${release_msg:-}}"
 if [ -z "$msg" ]; then
   read -r -p "${B}commit message [${default_msg}]${N}: " msg
   msg="${msg:-$default_msg}"
 fi
+
+# Make sure the version shows up in the message — if the user accepted
+# unpushed-subjects as-is, those subjects almost certainly don't
+# mention the new version yet.
+case "$msg" in
+  *"v${ver}"*) ;;
+  *)           msg="$msg (v${ver})" ;;
+esac
 
 git add -A
 git commit -m "$msg"
