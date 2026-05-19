@@ -212,7 +212,133 @@ velocity drift check
 #      velocity drift restore <table> to recreate the SchemaDefinition
 ```
 
-Quarantine moves the orphan to `{org}_archive_quarantine` schema for manual review.
+Quarantine moves the orphan to `{org}_archive_quarantine` schema for
+manual review. This is unrelated to the per-domain `*_archive` schema
+provisioned by ArchivePolicy (Phase 8 slice 2) — quarantine is for
+orphan **hot** tables, the archive schema holds **archived** rows.
+
+---
+
+## 2a. Archive & Purge Operations (Phase 8)
+
+The archive subsystem is split between the operator (provisioning,
+validation, purge approval) and `velocity-archive-worker` (batched
+data movement). Both write status fields on the CRDs; nothing about
+the archive lifecycle is hidden in operator logs.
+
+### Inspecting an ArchivePolicy
+
+```bash
+kubectl get archivepolicy -n acme-supply-chain-procurement
+# NAME                    PHASE   AGE
+# procurement-archive     Ready   17d
+
+kubectl describe archivepolicy procurement-archive -n acme-supply-chain-procurement
+# Status:
+#   Phase:              Ready
+#   Last Run At:        2026-05-18T02:00:11Z
+#   Records Archived:   18234
+#   Records Purged:     412
+#   Archive Schema:     acme_supply_chain_procurement_archive
+#   Mirrored Tables:    [purchase_order_v1 receipt_v1]
+#   Conditions:
+#     ScheduleValid              True
+#     TriggerValid               True
+#     DestinationValid           True
+#     ArchiveSchemaProvisioned   True
+#     ArchiveMirrorsProvisioned  True
+```
+
+**`phase=Pending`** — operator hasn't reconciled yet, or one of the
+provisioning steps is still running. Wait, then re-check.
+
+**`phase=Failed`** — at least one `Condition` is `False`. Look there
+first; the message field carries the specific reason (cron shape,
+bad backend, bad duration, missing bucket, etc.). The worker will
+NOT touch a Failed policy.
+
+**`lastRunAt` not advancing** — worker is up but the policy isn't
+running:
+1. Check `phase` — must be `Ready` and `destination.backend` must
+   currently be one the worker handles (`postgres-cold` or `s3`).
+2. Check trigger type — `cel` is validated but the worker has no
+   evaluator yet (Phase 8 deferred), so cel-trigger policies are
+   silently skipped.
+3. For s3 destinations, confirm `ARCHIVE_S3_BUCKET` and `AWS_REGION`
+   are set on the worker; without them s3-destined policies skip
+   with a warning.
+4. Confirm the worker process is up (`kubectl logs deploy/velocity-archive-worker`)
+   and the tick interval has elapsed since `lastRunAt`.
+
+### Approving a PurgeRequest
+
+PurgeRequests are raised by the operator when archived rows reach
+their retention boundary (or applied manually by an operator). The
+controller idles in `phase=Pending` with `Approved=False` until a
+human applies the approval annotation.
+
+```bash
+# 1. Find pending requests
+kubectl get purgerequest -A
+# NAMESPACE                          NAME                              PHASE     APPROVED
+# acme-supply-chain-procurement      purchase-order-purge-2026q1       Pending   <none>
+
+# 2. Inspect — read the reason, estimatedRecords, olderThan window
+kubectl describe purgerequest purchase-order-purge-2026q1 \
+  -n acme-supply-chain-procurement
+
+# 3. Approve — the annotation value MUST identify the human, not
+#    "auto" / "operator" / anything programmatic. The string is
+#    surfaced in status.approvedBy and is auditable.
+kubectl annotate purgerequest purchase-order-purge-2026q1 \
+  -n acme-supply-chain-procurement \
+  velocity.sh/approved-by="ravi.kumar@acme.com" \
+  --overwrite
+
+# 4. Observe — the next reconcile runs the DELETE and writes
+#    status.purgedAt + status.purgedRecords.
+kubectl get purgerequest purchase-order-purge-2026q1 \
+  -n acme-supply-chain-procurement -o yaml | yq .status
+```
+
+The DELETE is a single statement against the archive schema:
+
+```sql
+DELETE FROM <org>_<app>_<dom>_archive.<schema>_<version>
+WHERE archived_at < $olderThan;
+```
+
+It is idempotent — a re-applied PurgeRequest with the same spec
+re-runs the DELETE, which is a no-op once the window has drained.
+
+**To rescind a PurgeRequest that hasn't been approved yet**: delete
+the CRD (`kubectl delete purgerequest …`). The controller has no
+auto-approval path and will not act without the annotation.
+
+**There is no undo for an approved PurgeRequest.** The rows are
+hard-deleted from the archive store; the hot copy may also have been
+purged via `ArchivePolicy.spec.purgeAfter`. Recovery requires
+Postgres PITR for the `*_archive` schema or, for s3 destinations,
+recovering the Parquet object from the bucket's lifecycle / version
+history.
+
+### S3 destination — orphan recovery
+
+`s3_destination::archive_batch_to_s3` runs in three phases:
+**pick → upload → mark**. A crash between *upload* and *mark* leaves
+an orphan Parquet object that the next tick re-picks (different uuid,
+different key), producing a duplicate. The hot row is still correct
+— `archived_at` remains NULL until the third phase succeeds — so no
+data is lost.
+
+**Detecting orphans:** list the `<prefix>/<schema>/<table>/dt=…/`
+prefix in the bucket and cross-reference against
+`SELECT archive_ref FROM <hot> WHERE archived_at IS NOT NULL`. Any
+object whose key is not referenced by a hot row is an orphan.
+
+**Cleaning up orphans:** delete the orphan Parquet object directly
+from S3. A reaper sweep is on the roadmap (Phase 8 slice 12 per the
+slice 10 commit); until then this is manual.
 
 ---
 
@@ -644,6 +770,8 @@ Each runbook is a separate file under `runbooks/`:
 - `slo-breach.md` — diagnose ongoing SLO violation
 - `quota-exceeded.md` — quota increase request and emergency procedure
 - `secret-leak.md` — rotate compromised API keys / OIDC client secrets
+- `archive-stuck.md` — ArchivePolicy not advancing `lastRunAt`; see §2a
+- `purge-approval.md` — PurgeRequest annotation workflow; see §2a
 
 Each runbook follows the same structure:
 1. Symptoms (how you know this is happening)

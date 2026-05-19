@@ -341,7 +341,156 @@ Rotation: create new key with --copy-from <old>, switch consumer, revoke old
 
 ### 1.8 ArchivePolicy
 
-(Unchanged from v1 — see original design.md for full spec.)
+Source of truth: `velocity-types/src/crds/policies.rs` (`ArchivePolicySpec`).
+
+```yaml
+apiVersion: velocity.sh/v1
+kind: ArchivePolicy
+metadata:
+  name:      procurement-archive
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+spec:
+  schedule:    "0 2 * * *"        # 5- or 6-field cron
+  trigger:
+    type:     age                  # age | field | tableSize | cel
+    # age trigger:
+    value:    "90d"                # Nu — u ∈ {s, m, h, d}
+    # field trigger (alternative):
+    # field:  status
+    # op:     eq                   # lt | le | gt | ge | eq | ne
+    # value:  archived
+    # tableSize trigger (alternative):
+    # value:  "50GiB"              # bytes or N{B|KiB|MiB|GiB|TiB}
+    # cel trigger (alternative, validated only — see Phase 8 deferred):
+    # rule:           "self.status == 'closed' && self.closed_at < now - duration('90d')"
+    # maxExecutionMs: 10
+  batchSize:    1000               # rows per archive_batch CTE; falls back to
+                                   # worker.default_batch_size (500) when unset.
+                                   # build_archive_batch_sql clamps to 1..=10_000.
+  maxDuration:  "10m"              # per-tick cap; worker exits the policy loop when exceeded
+  destination:
+    backend:  postgres-cold        # postgres-cold | s3
+    # s3-only:
+    # bucket: acme-velocity-archive
+    # format: parquet              # parquet only today
+  purgeAfter:   "365d"             # OPTIONAL — hard-DELETE hot rows once
+                                   # archived_at + purgeAfter has elapsed.
+                                   # The archive copy is the durable home.
+status:
+  phase: Ready                     # Pending | Ready | Failed
+  lastRunAt:        "2026-05-18T02:00:11Z"   # RFC 3339
+  recordsArchived:  18234          # cumulative
+  recordsPurged:    412            # cumulative; only set when purgeAfter present
+  archiveSchema:    acme_supply_chain_procurement_archive   # postgres-cold only
+  archiveRoles:                                              # postgres-cold only
+    - acme_supply_chain_procurement_archive_reader
+    - acme_supply_chain_procurement_archive_writer
+    - acme_supply_chain_procurement_archive_admin
+  mirroredTables:                  # sorted, one per SchemaDefinition in the namespace
+    - purchase_order_v1
+    - receipt_v1
+  conditions:
+    - type: ScheduleValid
+      status: "True"
+    - type: TriggerValid
+      status: "True"
+    - type: DestinationValid
+      status: "True"
+    - type: PurgeAfterValid
+      status: "True"
+    - type: ArchiveSchemaProvisioned
+      status: "True"
+    - type: ArchiveMirrorsProvisioned
+      status: "True"
+```
+
+**Lifecycle (operator side).** Slice 1 validates the spec and surfaces
+results as `Condition`s; a single `False` condition flips `phase` to
+`Failed` and stops downstream provisioning. Slice 2 provisions the
+`<org>_<app>_<domain>_archive` schema and reader/writer/admin roles
+(idempotent, shares the `sync_domain` advisory lock); `velocity_api`
+is granted membership in each role so the API server's `SET LOCAL
+ROLE` still resolves for archive reads (ADR-007). Slice 3 lists every
+SchemaDefinition in the namespace and provisions a column-for-column
+archive mirror table per schema — no FKs, no indexes, no `__fts`
+generated column — surfacing the result in `status.mirroredTables`.
+
+**Worker side.** `velocity-archive-worker` (slices 4–6, 8, 10) wakes
+every `tick_interval`, lists Ready policies, and for each one runs
+`archive_batch` / `archive_batch_to_s3` until caught up or
+`maxDuration` is hit, then runs `purge_batch` if `purgeAfter` is set.
+The single-transaction CTE primitive moves bounded rows from hot to
+archive (or uploads + marks for s3) atomically. The hot row's
+`archived_at` column is the source of truth for "moved"; the archive
+copy is the durable home.
+
+**Trigger predicates (slice 8).** The worker dispatches the right
+predicate per trigger kind:
+
+```
+age        → WHERE created_at < now() - $age
+field      → WHERE $field $op $value
+tableSize  → if pg_total_relation_size > threshold: drain Oldest
+oldest     → ORDER BY created_at LIMIT $batch_size   (internal)
+cel        → SKIPPED (slice 1 validates spec, worker has no evaluator yet)
+```
+
+### 1.9 PurgeRequest
+
+Source of truth: `velocity-types/src/crds/purge.rs` (`PurgeRequestSpec`).
+Phase 8 slice 7. Manual hard-delete of archived rows from
+`<org>_<app>_<domain>_archive.<schema>_<version>`. Approval is a
+human-applied annotation — no programmatic auto-approval path exists.
+
+```yaml
+apiVersion: velocity.sh/v1
+kind: PurgeRequest
+metadata:
+  name:      purchase-order-purge-2026q1
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+  annotations:
+    velocity.sh/approved-by: "ravi.kumar@acme.com"   # MUST be set by a human; controller idles until present
+spec:
+  schema:           purchase-order
+  version:          v1
+  olderThan:        "2025-01-01T00:00:00Z"     # RFC 3339; rows with archived_at < this are eligible
+  estimatedRecords: 12450                       # informational; set by operator at raise-time
+  reason:           "7-year SEBI retention boundary"
+status:
+  phase:          Ready                    # Pending until approved; Failed on validation/DELETE error
+  approved:       true
+  approvedBy:     "ravi.kumar@acme.com"
+  purgedAt:       "2026-05-19T11:02:03Z"
+  purgedRecords:  12448
+  conditions:
+    - type: SchemaValid
+      status: "True"
+    - type: VersionValid
+      status: "True"
+    - type: OlderThanValid
+      status: "True"
+    - type: Approved
+      status: "True"
+    - type: Purged
+      status: "True"
+```
+
+**Idempotency.** A re-applied PurgeRequest with the same spec re-runs
+the single-statement DELETE, which is a no-op once the matching
+window has already drained.
+
+**Identifier safety.** The controller re-validates both `pg_schema`
+and `table` strings at the SQL boundary (`is_safe_ident`) — belt and
+braces against any future code path that constructs the qualified
+name from a less-validated source.
 
 ---
 
@@ -460,6 +609,49 @@ GET  /{id}/replay                          # SSE stream
 }
 ```
 
+### 2.4a Archive endpoints (Phase 8 slice 9)
+
+Three endpoints sitting over the per-domain `<…>_archive.<table>`
+mirror provisioned by Phase 8 slices 2–3. All three honour the same
+RBAC, field filter, and masking as the hot endpoints — the archive
+isn't a privilege-escalation backdoor.
+
+```
+GET  /api/{org}/{app}/{domain}/{object}/{version}/{id}/archive
+        RBAC: op::READ
+        → 200 { ...row...   }     # row from the archive mirror, __fts stripped
+        → 404                     # no archive copy under this id
+        → 403                     # caller lacks READ on the schema
+
+POST /api/{org}/{app}/{domain}/{object}/{version}/archive/query
+        RBAC: op::READ
+        Body:
+          {
+            "archivedAfter": "2025-01-01T00:00:00Z",    # OPTIONAL RFC 3339 floor
+            "limit":         100,                        # OPTIONAL, default 100, clamp 1..=1000
+            "offset":        0                           # OPTIONAL, default 0
+          }
+        ORDER BY archived_at DESC, id
+        → 200 { "items": [...], "limit": N, "offset": M }
+
+POST /api/{org}/{app}/{domain}/{object}/{version}/{id}/unarchive
+        RBAC: op::UPDATE
+        Single transaction:
+          1. UPDATE <hot> SET archived_at = NULL, archive_ref = NULL
+             WHERE id = $1 AND archived_at IS NOT NULL RETURNING id
+          2. DELETE FROM <archive> WHERE id = $1
+        → 200 { "id": "...", "unarchived": true }
+        → 410 { "code": "ARCHIVE_HOT_ROW_PURGED", ... }
+             # the hot row has been hard-deleted via purgeAfter;
+             # the archive copy is the last surviving record and
+             # restore-from-archive is not supported via this endpoint
+```
+
+The hot table is the source of truth for "is this row archived" —
+`archived_at IS NOT NULL` on the hot row means an archive copy
+exists; unarchive clears the marker first and drops the archive copy
+in the same transaction, so either both happen or neither does.
+
 ### 2.5 Error shape
 
 ```json
@@ -485,6 +677,7 @@ FORBIDDEN            FIELD_FORBIDDEN          PAGINATION_LIMIT_EXCEEDED
 NOT_FOUND            QUOTA_EXCEEDED           RESTORE_NO_OP
 SCHEMA_DEPRECATED    RATE_LIMITED             COLD_TIER_RETRIEVAL_REQUIRED
 IDEMPOTENCY_CONFLICT (same key, different payload)
+ARCHIVE_HOT_ROW_PURGED (unarchive after purgeAfter elapsed; 410)
 ```
 
 ---
@@ -494,14 +687,21 @@ IDEMPOTENCY_CONFLICT (same key, different payload)
 ### 3.1 Naming
 
 ```
-Postgres schema:        {org}_{app}_{domain}             snake_case
-Postgres schema (cold): {org}_{app}_{domain}_archive
-Table name:             {object}_{version}
-History table:          {object}_{version}_history
-Outbox table:           {object}_{version}_outbox
-Connection role:        velocity_api (single, non-superuser, NOBYPASSRLS)
-Per-domain roles:       {org}_{app}_{domain}_{reader|writer|admin}
+Postgres schema:            {org}_{app}_{domain}             snake_case
+Postgres schema (archive):  {org}_{app}_{domain}_archive     # Phase 8 slice 2
+Table name:                 {object}_{version}
+History table:              {object}_{version}_history
+Outbox table:               {object}_{version}_outbox
+Archive mirror table:       {object}_{version}               # in the *_archive schema
+Connection role:            velocity_api (single, non-superuser, NOBYPASSRLS)
+Per-domain roles:           {org}_{app}_{domain}_{reader|writer|admin}
+Per-domain archive roles:   {org}_{app}_{domain}_archive_{reader|writer|admin}
 ```
+
+The archive schema is provisioned for the domain when any ArchivePolicy
+in the namespace validates and uses `destination.backend = postgres-cold`.
+`velocity_api` is granted membership in each archive role so the API
+server's `SET LOCAL ROLE` still resolves for archive reads (ADR-007).
 
 ### 3.2 Mandatory columns
 
@@ -525,6 +725,29 @@ CREATE UNIQUE INDEX idx_{table}_{field}_active
 ON {table} ({field})
 WHERE deleted_at IS NULL;
 ```
+
+### 3.3a Archive mirror table (Phase 8 slice 3)
+
+Provisioned per `SchemaDefinition` in the namespace once the archive
+schema exists. **Same column set as the hot table, in the same order,
+including the system columns** — column-by-column shape match is the
+load-bearing invariant: `velocity-archive-worker`'s `archive_batch`
+emits `INSERT INTO archive (cols…) SELECT cols… FROM hot`, and any
+divergence fails the move with a Postgres column-count error.
+
+What the mirror does **not** carry:
+
+- No foreign keys (the referenced rows may already be archived or
+  purged in their own domain)
+- No indexes besides the implicit `PRIMARY KEY (id)` (write-mostly
+  surface; reads are id-keyed or `archived_at DESC` scans)
+- No `__fts` generated column (search is a hot-tier concern)
+- No outbox or history triggers (the archive is the terminal store
+  for the row's history; further events don't occur on it)
+
+The mirror keeps `archived_at` and `archive_ref` like every other
+table, but with different semantics: on the archive copy they record
+when this *copy* was written, not when the *hot* row was archived.
 
 ### 3.4 Outbox table (Tier-3 search schemas only)
 

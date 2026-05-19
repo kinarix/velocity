@@ -604,6 +604,104 @@ matches what's actually in the binary — no asterisks.
 - Unarchive removes stub, restores main row
 - PurgeRequest without approval annotation → no purge action
 
+**Phase 8 — shipped vs deferred:**
+
+Shipped across slices 1–10:
+
+- Slice 1: ArchivePolicy validation controller — schedule (5/6-field
+  cron shape), trigger kind (age/field/tableSize/cel), destination
+  (postgres-cold | s3), purgeAfter / maxDuration durations. Failed
+  validation surfaces as `phase=Failed` + `False` conditions; no
+  worker activity until valid.
+- Slice 2: Operator provisions per-domain `<org>_<app>_<dom>_archive`
+  Postgres schema and reader/writer/admin roles when an ArchivePolicy
+  for that domain validates and `destination.backend == postgres-cold`.
+  Shares the `sync_domain` advisory lock; `velocity_api` is granted
+  membership in each role so `SET LOCAL ROLE` still works for archive
+  reads (ADR-007).
+- Slice 3: Archive mirror table provisioning — column-for-column
+  `CREATE TABLE IF NOT EXISTS` per SchemaDefinition in the namespace.
+  No FKs, no indexes, no `__fts` generated column. Surfaced in
+  `status.mirroredTables` (sorted) and an
+  `ArchiveMirrorsProvisioned` condition. This slice also renamed
+  slice 2's `_cold` operator status fields to `_archive` to match the
+  pre-existing `archived_at` / `archive_ref` system columns.
+- Slice 4: `archive_batch` primitive — single-transaction CTE moves
+  bounded rows from hot to archive mirror
+  (`WITH picked → INSERT … ON CONFLICT (id) DO NOTHING → UPDATE hot
+  SET archived_at = now() RETURNING id`). Hot row's `archived_at` is
+  the source of truth for "moved"; archive copy is the durable home.
+  Soft-delete filter (`deleted_at IS NULL`) chained so already-deleted
+  rows don't migrate. Pure `build_archive_batch_sql` helper for
+  identifier/bound validation without a DB.
+- Slice 5: `velocity-archive-worker` driver loop — wakes every
+  `tick_interval`, lists ArchivePolicies, runs `archive_batch` until
+  caught up or `maxDuration` expires per Ready postgres-cold
+  age-trigger policy. Patches `status.lastRunAt` (RFC 3339) and
+  cumulative `status.recordsArchived`. Per-policy / per-table errors
+  logged but don't abort the tick.
+- Slice 6: `purge_batch` primitive + worker integration — hard
+  `DELETE` from the hot table once `archived_at + purgeAfter` has
+  elapsed. Same single-transaction CTE shape as slice 4. Adds
+  `status.recordsPurged` counter.
+- Slice 7: PurgeRequest controller — manual hard-delete of archived
+  rows from `<…>_archive.<table>` gated by a human-applied
+  `velocity.sh/approved-by` annotation. Lifecycle: spec validation
+  → Approval gate (idles in `Pending` until annotated) → single-
+  statement `DELETE FROM … WHERE archived_at < $olderThan` → status
+  writes `phase=Ready`, `approved=true`, `approvedBy`, `purgedAt`,
+  `purgedRecords`. Idempotent — re-applied request re-runs DELETE
+  (no-op once drained).
+- Slice 8: field / tableSize triggers — `ArchivePredicate` enum
+  covering `Age { min_age }`, `Field { field, op, value }`
+  (lt/le/gt/ge/eq/ne), and `Oldest` (no predicate; drain oldest by
+  `created_at`). For tableSize triggers the worker pre-checks
+  `pg_total_relation_size` and dispatches `Oldest` when over.
+  `parse_byte_size_value` accepts bytes integer or
+  N{B|KiB|MiB|GiB|TiB}.
+- Slice 9: Archive API — `GET /{id}/archive` (single row),
+  `POST /archive/query` (paginated, optional `archivedAfter` floor,
+  default 100 / max 1000, `ORDER BY archived_at DESC, id`),
+  `POST /{id}/unarchive` (clears `archived_at` on hot row, drops
+  archive copy; 410 `ARCHIVE_HOT_ROW_PURGED` when the hot row has
+  already been purged via `purgeAfter`). All three honour the same
+  RBAC + field filter + masking as the hot endpoints.
+- Slice 10: S3 Parquet destination —
+  `s3_destination::archive_batch_to_s3` is the S3 sibling of slice 4.
+  Three-phase: pick → upload to `object_store` under
+  `<prefix>/<schema>/<table>/dt=YYYY-MM-DD/<uuid>.parquet` (Snappy) →
+  mark source rows with `archived_at = now()` + `archive_ref = <key>`.
+  MVP encodes every value as JSON text inside nullable Utf8 columns
+  — queryable via DuckDB/Athena `CAST`, less efficient than typed
+  Arrow columns (future polish). Worker reads `ARCHIVE_S3_BUCKET` +
+  `AWS_REGION`; without them, s3-destined policies skip with a
+  warning.
+
+Deferred (explicit, not silent):
+
+- **CEL trigger** — `cel-interpreter` plumbing + per-row evaluation
+  not wired. Slice 1 still validates a CEL trigger spec, but slice
+  8's predicate enum doesn't carry a `Cel` variant yet, so the
+  worker silently skips policies whose `trigger.type == cel`. Picked
+  up when CEL hot-path use-cases land.
+- **Sharded archive workers with `FOR UPDATE SKIP LOCKED`** — slice 4
+  documented single-writer assumption; horizontal scale + lock
+  contention is a slice 11+ concern.
+- **S3 orphan recovery sweep** — a crash between Parquet upload and
+  hot-row marking in slice 10 leaves an orphan object that the next
+  tick re-picks (different uuid). Reaping orphan parquets is "slice
+  12" per the slice 10 commit.
+- **Cron-precise scheduling** — slice 5 ticks on a fixed interval
+  with `min_run_interval` debounce, not on actual cron firing
+  instants. Calendrical scheduling lands when load demands it.
+- **Typed Arrow column schemas keyed off `FieldKind`** — slice 10
+  uses all-Utf8 columns as a deliberate MVP shortcut.
+- **Version lifecycle (VersionOperator, `410 Gone` for deprecated /
+  sunset schemas)** — listed in the Phase 8 plan above but not yet
+  in the binary. Schema deprecation today is informational only; the
+  status transitions and the 410 response path are a future slice
+  alongside the multi-version migration tooling.
+
 ---
 
 ## Phase 9 — CLI (1 week)
