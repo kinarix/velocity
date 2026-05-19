@@ -15,6 +15,7 @@ pub mod controllers;
 pub mod ddl_builder;
 pub mod drift_sweep;
 pub mod health;
+pub mod log_policy;
 pub mod metrics;
 pub mod migration_diff;
 pub mod partition_manager;

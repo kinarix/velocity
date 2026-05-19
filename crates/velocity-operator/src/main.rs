@@ -168,6 +168,15 @@ async fn main() -> Result<()> {
         velocity_operator::anomaly::run(anomaly_pool, anomaly_webhook).await
     });
 
+    // Phase 6b — render LogFilterPolicy + LogRoutingPolicy CRDs to a
+    // single cluster-wide ConfigMap that velocity-log-processor mounts.
+    // The processor polls the file every 30s; aligning the sweep to
+    // the same cadence keeps observed-policy lag bounded by one tick.
+    let log_policy_kube = ctx.kube.clone();
+    let _log_policy_handle = tokio::spawn(async move {
+        velocity_operator::log_policy::run(log_policy_kube).await
+    });
+
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments
     // `velocity_drift_detected_total{kind="orphan_table"}` per orphan
