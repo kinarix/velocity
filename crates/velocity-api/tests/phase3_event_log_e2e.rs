@@ -79,7 +79,10 @@ fn schema_spec() -> SchemaDefinitionSpec {
             }],
             ..AccessSpec::default()
         },
-        fields: vec![field("po_number", FieldKind::String), field("supplier_code", FieldKind::String)],
+        fields: vec![
+            field("po_number", FieldKind::String),
+            field("supplier_code", FieldKind::String),
+        ],
         validations: Vec::new(),
         search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
         time_machine: None,
@@ -91,20 +94,16 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str, schema_org: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
     // event_log persists across schema drops (it's a platform table) — clear
     // rows for this schema path so test runs don't leak into each other.
     let _ = sqlx::query("DELETE FROM platform.event_log WHERE schema_org = $1")
         .bind(schema_org)
         .execute(admin)
         .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -238,9 +237,7 @@ async fn create_update_delete_emits_three_event_log_rows() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string()))
         .unwrap();
     let (status, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     assert_eq!(status, StatusCode::CREATED, "create body: {body}");
@@ -260,11 +257,8 @@ async fn create_update_delete_emits_three_event_log_rows() {
     assert_eq!(status, StatusCode::OK, "update body: {body}");
 
     // DELETE (soft)
-    let delete_req = Request::builder()
-        .method("DELETE")
-        .uri(item_uri(&h, &id))
-        .body(Body::empty())
-        .unwrap();
+    let delete_req =
+        Request::builder().method("DELETE").uri(item_uri(&h, &id)).body(Body::empty()).unwrap();
     let (status, _) = body_json(build_app(&h).oneshot(delete_req).await.unwrap()).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -311,9 +305,7 @@ async fn get_history_returns_paginated_events_newest_first() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -380,9 +372,7 @@ async fn history_at_t_returns_state_at_that_point() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "ACME-V1" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "ACME-V1" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -489,11 +479,8 @@ async fn history_at_t_after_deletion_returns_404() {
     let id = body["id"].as_str().unwrap().to_string();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let delete_req = Request::builder()
-        .method("DELETE")
-        .uri(item_uri(&h, &id))
-        .body(Body::empty())
-        .unwrap();
+    let delete_req =
+        Request::builder().method("DELETE").uri(item_uri(&h, &id)).body(Body::empty()).unwrap();
     let _ = body_json(build_app(&h).oneshot(delete_req).await.unwrap()).await;
     let t_after_delete = chrono::Utc::now();
 
@@ -529,9 +516,7 @@ async fn diff_endpoint_returns_json_patch_between_two_timestamps() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -630,9 +615,7 @@ async fn restore_applies_old_state_as_new_event() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -684,10 +667,8 @@ async fn restore_applies_old_state_as_new_event() {
     assert_eq!(reason.as_deref(), Some("rolling back per INC-123"));
     // Diff captures the V2→V1 transition on /supplier_code.
     let ops = diff.as_array().expect("diff is array");
-    let supplier_op = ops
-        .iter()
-        .find(|op| op["path"] == "/supplier_code")
-        .expect("/supplier_code in diff");
+    let supplier_op =
+        ops.iter().find(|op| op["path"] == "/supplier_code").expect("/supplier_code in diff");
     assert_eq!(supplier_op["value"], "V1");
 
     cleanup(&h.admin_pool, &h.pg_schema, &h.schema_org).await;
@@ -709,9 +690,7 @@ async fn restore_returns_409_when_target_matches_current() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "ONLY" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "ONLY" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -724,7 +703,8 @@ async fn restore_returns_409_when_target_matches_current() {
         .uri(format!("{}/restore", item_uri(&h, &id)))
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "at": t_after_create.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) }).to_string(),
+            json!({ "at": t_after_create.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) })
+                .to_string(),
         ))
         .unwrap();
     let (status, body) = body_json(build_app(&h).oneshot(restore_req).await.unwrap()).await;
@@ -783,9 +763,7 @@ async fn replay_streams_all_events_oldest_first() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "V1" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -817,10 +795,7 @@ async fn replay_streams_all_events_oldest_first() {
     let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 SSE");
 
     // Expect two "event:" lines — one create, one update — oldest-first.
-    let event_lines: Vec<&str> = text
-        .lines()
-        .filter(|l| l.starts_with("event: "))
-        .collect();
+    let event_lines: Vec<&str> = text.lines().filter(|l| l.starts_with("event: ")).collect();
     assert_eq!(event_lines, vec!["event: create", "event: update"]);
     // And a data: line per event, both parseable as our HistoryEvent.
     let data_lines: Vec<&str> = text.lines().filter(|l| l.starts_with("data: ")).collect();
@@ -848,9 +823,7 @@ async fn update_event_diff_reflects_changed_field() {
         .method("POST")
         .uri(collection_uri(&h))
         .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string(),
-        ))
+        .body(Body::from(json!({ "po_number": "PO-001", "supplier_code": "TATA001" }).to_string()))
         .unwrap();
     let (_, body) = body_json(build_app(&h).oneshot(create_req).await.unwrap()).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -902,10 +875,7 @@ async fn update_event_diff_reflects_changed_field() {
 fn snapshot_uri(h: &Harness, at: &str) -> String {
     // The snapshot route is scoped at the domain level, NOT object/version.
     // Encode `at` once via the same chrono RFC3339 form the handler accepts.
-    format!(
-        "/api/{}/{}/{}/history/snapshot?at={}",
-        h.path.org, h.path.app, h.path.domain, at
-    )
+    format!("/api/{}/{}/{}/history/snapshot?at={}", h.path.org, h.path.app, h.path.domain, at)
 }
 
 async fn create_entity(h: &Harness, po: &str, supplier: &str) -> String {
@@ -939,21 +909,15 @@ async fn snapshot_returns_all_live_entities_under_domain() {
     let _id3 = create_entity(&h, "PO-A3", "TATA003").await;
 
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let req = Request::builder()
-        .method("POST")
-        .uri(snapshot_uri(&h, &at))
-        .body(Body::empty())
-        .unwrap();
+    let req =
+        Request::builder().method("POST").uri(snapshot_uri(&h, &at)).body(Body::empty()).unwrap();
     let (status, body) = body_json(build_app(&h).oneshot(req).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK, "snapshot body: {body}");
     assert_eq!(body["count"], 3, "expected 3 live entities, body: {body}");
     let items = body["items"].as_array().expect("items array");
     assert_eq!(items.len(), 3);
     // Every item must carry schema + entity_id + reconstructed state.
-    let pos: Vec<&str> = items
-        .iter()
-        .map(|i| i["state"]["po_number"].as_str().unwrap())
-        .collect();
+    let pos: Vec<&str> = items.iter().map(|i| i["state"]["po_number"].as_str().unwrap()).collect();
     for expected in ["PO-A1", "PO-A2", "PO-A3"] {
         assert!(pos.contains(&expected), "snapshot missing {expected}: {body}");
     }
@@ -988,11 +952,8 @@ async fn snapshot_excludes_deleted_entities() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let req = Request::builder()
-        .method("POST")
-        .uri(snapshot_uri(&h, &at))
-        .body(Body::empty())
-        .unwrap();
+    let req =
+        Request::builder().method("POST").uri(snapshot_uri(&h, &at)).body(Body::empty()).unwrap();
     let (status, body) = body_json(build_app(&h).oneshot(req).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["count"], 1, "snapshot must skip deleted entity; body: {body}");

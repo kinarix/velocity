@@ -29,18 +29,12 @@ use axum::{Extension, Json, Router};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use velocity_api::auth::api_key::{
-    ApiKeyChecker, ApiKeyError, ApiKeyRecord,
-};
-use velocity_api::auth::{
-    authenticate, AuthRegistry, AuthState, JwksCache, ResolvedAuthStrategy,
-};
+use velocity_api::auth::api_key::{ApiKeyChecker, ApiKeyError, ApiKeyRecord};
+use velocity_api::auth::{authenticate, AuthRegistry, AuthState, JwksCache, ResolvedAuthStrategy};
 use velocity_api::registry::ResolvedSchema;
 use velocity_api::{Identity, SchemaRegistry};
 use velocity_types::common::{NamespacedRef, SchemaPath};
-use velocity_types::crds::auth::{
-    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType,
-};
+use velocity_types::crds::auth::{AuthStrategyConfig, AuthStrategySpec, AuthStrategyType};
 use velocity_types::crds::schema::{
     AccessSpec, AuthSpec, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
     SearchTier,
@@ -103,18 +97,14 @@ fn jwt_child() -> ResolvedAuthStrategy {
     // when a `Bearer` header *was* present, verification would fail loudly.
     // Tests rely on this: the negative test ("Bearer reaches JWT child")
     // expects 401, not 200.
-    let spec = AuthStrategySpec {
-        kind: AuthStrategyType::Jwt,
-        config: AuthStrategyConfig::default(),
-    };
+    let spec =
+        AuthStrategySpec { kind: AuthStrategyType::Jwt, config: AuthStrategyConfig::default() };
     ResolvedAuthStrategy::from_spec(&child_ref(JWT_CHILD), spec)
 }
 
 fn api_key_child() -> ResolvedAuthStrategy {
-    let spec = AuthStrategySpec {
-        kind: AuthStrategyType::ApiKey,
-        config: AuthStrategyConfig::default(),
-    };
+    let spec =
+        AuthStrategySpec { kind: AuthStrategyType::ApiKey, config: AuthStrategyConfig::default() };
     ResolvedAuthStrategy::from_spec(&child_ref(API_KEY_CHILD), spec)
 }
 
@@ -145,14 +135,10 @@ fn build_router(checker: Arc<dyn ApiKeyChecker>) -> Router {
     strategies.upsert(jwt_child());
     strategies.upsert(api_key_child());
 
-    let auth_state =
-        AuthState::new(schemas, strategies, JwksCache::new()).with_api_keys(checker);
+    let auth_state = AuthState::new(schemas, strategies, JwksCache::new()).with_api_keys(checker);
 
     Router::new()
-        .route(
-            "/api/{org}/{app}/{domain}/{object}/{version}",
-            get(echo_identity),
-        )
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_identity))
         .layer(from_fn_with_state(auth_state, authenticate))
 }
 
@@ -172,7 +158,11 @@ async fn echo_identity(identity: Option<Extension<Identity>>) -> impl IntoRespon
 
 async fn read_body(body: Body) -> Value {
     let bytes = body.collect().await.unwrap().to_bytes();
-    if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() }
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }
 
 fn req_with_auth(header: &str) -> Request<Body> {
@@ -278,10 +268,8 @@ async fn composite_with_both_schemes_picks_first_listed_child() {
     // headers; axum exposes them via `headers().get_all()`. The
     // dispatcher reads the first via `headers().get(...)`, so this
     // setup pins "the first-listed scheme is what's seen."
-    req.headers_mut().append(
-        axum::http::header::AUTHORIZATION,
-        format!("ApiKey {VALID_KEY}").parse().unwrap(),
-    );
+    req.headers_mut()
+        .append(axum::http::header::AUTHORIZATION, format!("ApiKey {VALID_KEY}").parse().unwrap());
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }

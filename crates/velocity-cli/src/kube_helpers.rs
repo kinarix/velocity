@@ -108,9 +108,7 @@ pub(crate) fn find_resource(
 pub(crate) fn parse_manifests(source: &str) -> Result<Vec<DynamicObject>> {
     let raw = if source == "-" {
         let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading manifest from stdin")?;
+        std::io::stdin().read_to_string(&mut buf).context("reading manifest from stdin")?;
         buf
     } else {
         std::fs::read_to_string(source)

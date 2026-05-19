@@ -38,21 +38,25 @@ impl EventReader for PostgresEventReader {
             return Err(TierError::BadRequest("empty schema path".into()));
         }
         let limit = limit.max(1) as i64;
-        let rows: Vec<(DateTime<Utc>, String, Option<serde_json::Value>, Option<serde_json::Value>)> =
-            sqlx::query_as(
-                "SELECT occurred_at, operation, diff, payload \
+        let rows: Vec<(
+            DateTime<Utc>,
+            String,
+            Option<serde_json::Value>,
+            Option<serde_json::Value>,
+        )> = sqlx::query_as(
+            "SELECT occurred_at, operation, diff, payload \
                  FROM platform.event_log \
                  WHERE schema_org = $1 AND entity_id = $2::uuid AND occurred_at <= $3 \
                  ORDER BY occurred_at DESC \
                  LIMIT $4",
-            )
-            .bind(path)
-            .bind(entity_id)
-            .bind(until)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| TierError::Hot(e.to_string()))?;
+        )
+        .bind(path)
+        .bind(entity_id)
+        .bind(until)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| TierError::Hot(e.to_string()))?;
 
         Ok(rows
             .into_iter()
@@ -75,14 +79,12 @@ mod tests {
         // construct the reader and exercise pre-DB validation. Use
         // sqlx::pool::PoolOptions to override the default 30-second
         // connect timeout so unreachable-DB tests fail fast.
-        use sqlx::postgres::PgConnectOptions;
         use sqlx::pool::PoolOptions;
+        use sqlx::postgres::PgConnectOptions;
         use std::str::FromStr;
         use std::time::Duration;
         let opts = PgConnectOptions::from_str("postgres://stub:stub@127.0.0.1:1/stub").unwrap();
-        PoolOptions::new()
-            .acquire_timeout(Duration::from_millis(200))
-            .connect_lazy_with(opts)
+        PoolOptions::new().acquire_timeout(Duration::from_millis(200)).connect_lazy_with(opts)
     }
 
     #[tokio::test]

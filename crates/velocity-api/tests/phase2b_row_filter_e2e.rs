@@ -110,10 +110,7 @@ fn schema_spec() -> SchemaDefinitionSpec {
             row_filter,
             policies: Vec::new(),
         },
-        fields: vec![
-            field("po_number", FieldKind::String),
-            field("region", FieldKind::String),
-        ],
+        fields: vec![field("po_number", FieldKind::String), field("region", FieldKind::String)],
         validations: Vec::new(),
         search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
         time_machine: None,
@@ -125,14 +122,10 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -177,12 +170,7 @@ async fn seed_rows(h: &Harness) {
              VALUES ($1, $2, 'seed', 'seed')",
             h.table
         );
-        sqlx::query(&sql)
-            .bind(po)
-            .bind(region)
-            .execute(&h.admin_pool)
-            .await
-            .expect("seed insert");
+        sqlx::query(&sql).bind(po).bind(region).execute(&h.admin_pool).await.expect("seed insert");
     }
 }
 

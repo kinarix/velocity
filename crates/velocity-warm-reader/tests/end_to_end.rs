@@ -43,7 +43,8 @@ fn arrow_schema() -> Arc<Schema> {
 
 async fn write_test_object(store: Arc<dyn ObjectStore>, key: &str, entity: Uuid) {
     let path = object_store::path::Path::from(key.to_string());
-    let writer = object_store::buffered::BufWriter::with_capacity(store.clone(), path, 4 * 1024 * 1024);
+    let writer =
+        object_store::buffered::BufWriter::with_capacity(store.clone(), path, 4 * 1024 * 1024);
     let schema = arrow_schema();
     let mut pq = AsyncArrowWriter::try_new(writer, schema.clone(), None).unwrap();
 
@@ -53,11 +54,17 @@ async fn write_test_object(store: Arc<dyn ObjectStore>, key: &str, entity: Uuid)
 
     let occurred = TimestampMicrosecondArray::from(vec![Some(create_ts), Some(update_ts)])
         .with_timezone("UTC");
-    let so = StringArray::from(vec!["acme/supply-chain/procurement/purchase-order/v1", "acme/supply-chain/procurement/purchase-order/v1"]);
+    let so = StringArray::from(vec![
+        "acme/supply-chain/procurement/purchase-order/v1",
+        "acme/supply-chain/procurement/purchase-order/v1",
+    ]);
     let eid_s = entity.hyphenated().to_string();
     let eid = StringArray::from(vec![Some(eid_s.clone()), Some(eid_s.clone())]);
     let op = StringArray::from(vec!["create", "update"]);
-    let diff = StringArray::from(vec![None::<&str>, Some(r#"[{"op":"replace","path":"/qty","value":7}]"#)]);
+    let diff = StringArray::from(vec![
+        None::<&str>,
+        Some(r#"[{"op":"replace","path":"/qty","value":7}]"#),
+    ]);
     let payload = StringArray::from(vec![Some(r#"{"qty":1}"#), Some(r#"{"qty":7}"#)]);
 
     let batch = RecordBatch::try_new(

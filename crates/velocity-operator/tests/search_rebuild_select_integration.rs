@@ -53,14 +53,8 @@ async fn connect() -> Option<PgPool> {
 /// for the doc shape.
 async fn make_fixture(pool: &PgPool, schema: &str, table: &str) -> String {
     // Belt-and-braces — drop any leftover from a prior failed run.
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).execute(pool).await.unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(pool).await.unwrap();
     sqlx::query(&format!(
         "CREATE TABLE {schema}.{table} (
             id         UUID NOT NULL PRIMARY KEY,
@@ -76,10 +70,7 @@ async fn make_fixture(pool: &PgPool, schema: &str, table: &str) -> String {
 }
 
 async fn drop_fixture(pool: &PgPool, schema: &str) {
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).execute(pool).await.unwrap();
 }
 
 async fn insert_row(
@@ -151,9 +142,7 @@ async fn fetch_page_keyset_paginates_in_id_order() {
         "first page must be id-ASC"
     );
 
-    let next = search_rebuild::fetch_page(&pool, &qualified, Some(&b.to_string()))
-        .await
-        .unwrap();
+    let next = search_rebuild::fetch_page(&pool, &qualified, Some(&b.to_string())).await.unwrap();
     let next_ids: Vec<String> = next.iter().map(|(id, _)| id.clone()).collect();
     assert_eq!(next_ids, vec![c.to_string()], "keyset must skip past cursor");
 
@@ -243,14 +232,12 @@ async fn fetch_deleted_ids_cutoff_arithmetic() {
 
     // Cutoff before delete → id returned.
     let early = (base + ChronoDuration::seconds(5)).to_rfc3339();
-    let r1 =
-        search_rebuild::fetch_deleted_ids_page(&pool, &qualified, &early, None).await.unwrap();
+    let r1 = search_rebuild::fetch_deleted_ids_page(&pool, &qualified, &early, None).await.unwrap();
     assert_eq!(r1, vec![id.to_string()], "cutoff before delete must return id");
 
     // Cutoff after delete → empty.
     let late = (base + ChronoDuration::seconds(30)).to_rfc3339();
-    let r2 =
-        search_rebuild::fetch_deleted_ids_page(&pool, &qualified, &late, None).await.unwrap();
+    let r2 = search_rebuild::fetch_deleted_ids_page(&pool, &qualified, &late, None).await.unwrap();
     assert!(r2.is_empty(), "cutoff after delete must return empty");
 
     drop_fixture(&pool, "test_fdi_cutoff").await;

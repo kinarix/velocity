@@ -27,7 +27,7 @@
 //! [`ResolvedSchema`]: crate::registry::ResolvedSchema
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, header::AUTHORIZATION};
+use axum::http::{header::AUTHORIZATION, HeaderMap};
 use axum::Json;
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -62,10 +62,7 @@ fn request_id_from_headers(headers: &HeaderMap) -> Option<&str> {
 /// and matches; [`ApiError::AuditUnauthorized`] otherwise. The error is
 /// uniform — we never leak *which* part failed, so a probing client
 /// can't distinguish "no header" from "wrong scheme" from "wrong token".
-pub fn verify_platform_token(
-    headers: &HeaderMap,
-    expected: Option<&str>,
-) -> Result<(), ApiError> {
+pub fn verify_platform_token(headers: &HeaderMap, expected: Option<&str>) -> Result<(), ApiError> {
     let Some(expected) = expected else {
         // Unset at startup => deny everyone. The startup banner already
         // warned the operator; we keep the runtime behaviour boring.
@@ -73,9 +70,7 @@ pub fn verify_platform_token(
     };
     let h = headers.get(AUTHORIZATION).ok_or(ApiError::AuditUnauthorized)?;
     let s = h.to_str().map_err(|_| ApiError::AuditUnauthorized)?;
-    let token = s
-        .strip_prefix("Bearer ")
-        .ok_or(ApiError::AuditUnauthorized)?;
+    let token = s.strip_prefix("Bearer ").ok_or(ApiError::AuditUnauthorized)?;
     if token.as_bytes().ct_eq(expected.as_bytes()).into() {
         Ok(())
     } else {
@@ -103,10 +98,9 @@ pub async fn audit_list(
     // Stage 1: bearer-token gate. On failure, self-audit the denial
     // before returning — operators care more about authn failures on
     // this endpoint than on any other.
-    if let Err(e) = verify_platform_token(
-        &headers,
-        state.platform_audit_token.as_deref().map(String::as_str),
-    ) {
+    if let Err(e) =
+        verify_platform_token(&headers, state.platform_audit_token.as_deref().map(String::as_str))
+    {
         write_self_audit(
             &state,
             action::READ,
@@ -119,31 +113,26 @@ pub async fn audit_list(
     }
 
     // Stage 2: run the query (which enforces schema_org-required).
-    let page = match audit_query::list_audit(
-        &state.pool,
-        state.cursor_signer.as_ref(),
-        &params,
-    )
-    .await
-    {
-        Ok(page) => page,
-        Err(e) => {
-            // Filter-missing / cursor-tampered failures self-audit so
-            // a SOC analyst can spot scripted probing.
-            write_self_audit(
-                &state,
-                action::READ,
-                outcome::DENIED,
-                json!({
-                    "code": e.code(),
-                    "schema_org": params.schema_org.clone(),
-                }),
-                request_id.as_deref(),
-            )
-            .await;
-            return Err(e);
-        }
-    };
+    let page =
+        match audit_query::list_audit(&state.pool, state.cursor_signer.as_ref(), &params).await {
+            Ok(page) => page,
+            Err(e) => {
+                // Filter-missing / cursor-tampered failures self-audit so
+                // a SOC analyst can spot scripted probing.
+                write_self_audit(
+                    &state,
+                    action::READ,
+                    outcome::DENIED,
+                    json!({
+                        "code": e.code(),
+                        "schema_org": params.schema_org.clone(),
+                    }),
+                    request_id.as_deref(),
+                )
+                .await;
+                return Err(e);
+            }
+        };
 
     // Self-audit the successful read. Payload carries the filter set
     // + result size so a SOC analyst can reconstruct what was queried
@@ -196,10 +185,9 @@ pub async fn audit_verify(
 ) -> Result<Json<Value>, ApiError> {
     let request_id = request_id_from_headers(&headers).map(str::to_owned);
 
-    if let Err(e) = verify_platform_token(
-        &headers,
-        state.platform_audit_token.as_deref().map(String::as_str),
-    ) {
+    if let Err(e) =
+        verify_platform_token(&headers, state.platform_audit_token.as_deref().map(String::as_str))
+    {
         write_self_audit(
             &state,
             "verify",
@@ -213,9 +201,7 @@ pub async fn audit_verify(
 
     // Default window: trailing 1h ending now.
     let to = params.to.unwrap_or_else(Utc::now);
-    let from = params
-        .from
-        .unwrap_or_else(|| to - Duration::hours(DEFAULT_VERIFY_WINDOW_HOURS));
+    let from = params.from.unwrap_or_else(|| to - Duration::hours(DEFAULT_VERIFY_WINDOW_HOURS));
 
     let mismatches = match audit_query::verify_window(&state.pool, from, to).await {
         Ok(m) => m,
@@ -352,10 +338,7 @@ mod tests {
         // failure as a 500.
         let expected = "a-secure-audit-token-1234567890";
         let mut h = HeaderMap::new();
-        h.insert(
-            AUTHORIZATION,
-            HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap(),
-        );
+        h.insert(AUTHORIZATION, HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap());
         let err = verify_platform_token(&h, Some(expected)).unwrap_err();
         assert!(matches!(err, ApiError::AuditUnauthorized));
     }

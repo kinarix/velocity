@@ -82,14 +82,10 @@ fn spec(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -140,12 +136,17 @@ async fn crud_round_trip() {
     let identity = Identity::anonymous();
 
     // CREATE
-    let created = handler_create(&api_pool, &schema, &identity, &json!({
-        "po_number": "PO-0001",
-        "supplier_code": "TATA001",
-        "total": 1500,
-        "status": "draft",
-    }))
+    let created = handler_create(
+        &api_pool,
+        &schema,
+        &identity,
+        &json!({
+            "po_number": "PO-0001",
+            "supplier_code": "TATA001",
+            "total": 1500,
+            "status": "draft",
+        }),
+    )
     .await
     .expect("create");
     let id = created["id"].as_str().expect("inserted id").to_string();
@@ -157,9 +158,8 @@ async fn crud_round_trip() {
     assert_eq!(got["po_number"], "PO-0001");
 
     // LIST
-    let list_items = handler_list(&api_pool, &schema, &identity, &ListQuery::default())
-        .await
-        .unwrap();
+    let list_items =
+        handler_list(&api_pool, &schema, &identity, &ListQuery::default()).await.unwrap();
     assert!(list_items.iter().any(|r| r["id"].as_str() == Some(&id)));
 
     // UPDATE — happy path
@@ -236,8 +236,8 @@ async fn soft_delete_releases_unique_value() {
     let first_id = first["id"].as_str().unwrap().to_string();
 
     // Re-insert before delete → must fail on the partial unique index.
-    let dup = handler_create(&api_pool, &schema, &identity, &json!({ "po_number": "PO-UNIQUE" }))
-        .await;
+    let dup =
+        handler_create(&api_pool, &schema, &identity, &json!({ "po_number": "PO-UNIQUE" })).await;
     assert!(dup.is_err(), "second insert should violate the active unique index");
 
     // Soft delete.
@@ -313,8 +313,7 @@ async fn handler_get(
         })
     })
     .await?;
-    row.map(|r| sqlx::Row::get::<Value, _>(&r, "row"))
-        .ok_or(velocity_api::ApiError::NotFound)
+    row.map(|r| sqlx::Row::get::<Value, _>(&r, "row")).ok_or(velocity_api::ApiError::NotFound)
 }
 
 async fn handler_list(
@@ -326,9 +325,8 @@ async fn handler_list(
     let compiled = build_list(schema, q, identity)?;
     let rows = with_session_context(pool, schema, RoleClass::Reader, identity, move |tx| {
         Box::pin(async move {
-            let sql = compiled
-                .sql
-                .replacen("SELECT * FROM", "SELECT row_to_json(t.*) AS row FROM", 1);
+            let sql =
+                compiled.sql.replacen("SELECT * FROM", "SELECT row_to_json(t.*) AS row FROM", 1);
             let mut q = sqlx::query(&sql);
             for v in &compiled.params {
                 q = q.bind(v);
@@ -357,11 +355,7 @@ async fn handler_update(
         }
         if let Some(v) = obj.get(&f.name) {
             vals.push(v.clone());
-            sets.push(format!(
-                "{} = {}",
-                f.name,
-                handlers::cast_placeholder(vals.len(), f.kind)
-            ));
+            sets.push(format!("{} = {}", f.name, handlers::cast_placeholder(vals.len(), f.kind)));
         }
     }
     sets.push("updated_at = now()".into());
@@ -391,12 +385,11 @@ async fn handler_update(
                 return Ok(Some(sqlx::Row::get::<Value, _>(&r, "row")));
             }
             // probe: NotFound vs VersionConflict
-            let probe = sqlx::query(&format!(
-                "SELECT id FROM {probe_table} WHERE id = $1::uuid LIMIT 1"
-            ))
-            .bind(&id_probe)
-            .fetch_optional(&mut **tx)
-            .await?;
+            let probe =
+                sqlx::query(&format!("SELECT id FROM {probe_table} WHERE id = $1::uuid LIMIT 1"))
+                    .bind(&id_probe)
+                    .fetch_optional(&mut **tx)
+                    .await?;
             if probe.is_some() {
                 Err(sqlx::Error::Protocol("__version_conflict__".into()))
             } else {

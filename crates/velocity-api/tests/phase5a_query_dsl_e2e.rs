@@ -19,9 +19,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use sqlx::Row as _;
 
-use velocity_api::dsl::{
-    self, CursorSigner, DslOp, QueryDsl, SortField, WhereNode,
-};
+use velocity_api::dsl::{self, CursorSigner, DslOp, QueryDsl, SortField, WhereNode};
 use velocity_api::handlers;
 use velocity_api::identity::Identity;
 use velocity_api::registry::{ResolvedSchema, SchemaRegistry};
@@ -92,9 +90,7 @@ fn spec(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
 }
 
 fn signer() -> CursorSigner {
@@ -156,31 +152,32 @@ async fn run_query(
     let cursor_sort_fields = compiled.cursor_sort_fields.clone();
     let schema_key = compiled.schema_key.clone();
 
-    let rows: Vec<Value> = with_session_context(pool, schema, RoleClass::Reader, identity, move |tx| {
-        Box::pin(async move {
-            let mut q = sqlx::query(&compiled.sql);
-            for v in &compiled.params {
-                q = row_filter::bind_json_param(q, v);
-            }
-            let rows = q.fetch_all(&mut **tx).await?;
-            let mut out: Vec<Value> = Vec::with_capacity(rows.len());
-            for r in rows {
-                let mut obj = r.get::<Value, _>("__row");
-                for inc in &include_names {
-                    let alias = format!("__inc_{inc}");
-                    if let Ok(v) = r.try_get::<Value, _>(alias.as_str()) {
-                        if let Some(m) = obj.as_object_mut() {
-                            m.insert(inc.clone(), v);
+    let rows: Vec<Value> =
+        with_session_context(pool, schema, RoleClass::Reader, identity, move |tx| {
+            Box::pin(async move {
+                let mut q = sqlx::query(&compiled.sql);
+                for v in &compiled.params {
+                    q = row_filter::bind_json_param(q, v);
+                }
+                let rows = q.fetch_all(&mut **tx).await?;
+                let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+                for r in rows {
+                    let mut obj = r.get::<Value, _>("__row");
+                    for inc in &include_names {
+                        let alias = format!("__inc_{inc}");
+                        if let Ok(v) = r.try_get::<Value, _>(alias.as_str()) {
+                            if let Some(m) = obj.as_object_mut() {
+                                m.insert(inc.clone(), v);
+                            }
                         }
                     }
+                    out.push(obj);
                 }
-                out.push(obj);
-            }
-            Ok(out)
+                Ok(out)
+            })
         })
-    })
-    .await
-    .expect("query");
+        .await
+        .expect("query");
 
     let mut rows = rows;
     let has_more = rows.len() as u32 > page_limit;
@@ -271,8 +268,7 @@ async fn nested_where_and_in_and_between() {
         }),
         ..Default::default()
     };
-    let (rows, _) =
-        run_query(&api_pool, &schema, &identity, &registry, &q, None).await;
+    let (rows, _) = run_query(&api_pool, &schema, &identity, &registry, &q, None).await;
     let pos: Vec<String> =
         rows.iter().map(|r| r["po_number"].as_str().unwrap().to_string()).collect();
     assert!(pos.contains(&"PO-2".to_string()));
@@ -292,21 +288,14 @@ async fn nested_where_and_in_and_between() {
                         value: json!("approved"),
                     }),
                 },
-                WhereNode::Cmp {
-                    field: "status".into(),
-                    op: DslOp::IsNull,
-                    value: Value::Null,
-                },
+                WhereNode::Cmp { field: "status".into(), op: DslOp::IsNull, value: Value::Null },
             ],
         }),
         ..Default::default()
     };
-    let (rows, _) =
-        run_query(&api_pool, &schema, &identity, &registry, &q, None).await;
-    let statuses: std::collections::HashSet<String> = rows
-        .iter()
-        .map(|r| r["status"].as_str().unwrap().to_string())
-        .collect();
+    let (rows, _) = run_query(&api_pool, &schema, &identity, &registry, &q, None).await;
+    let statuses: std::collections::HashSet<String> =
+        rows.iter().map(|r| r["status"].as_str().unwrap().to_string()).collect();
     assert!(statuses.contains("draft"));
     assert!(statuses.contains("shipped"));
     assert!(!statuses.contains("approved"));
@@ -350,13 +339,8 @@ async fn cursor_paginates_across_pages() {
 
     // 12 rows; pages of 5.
     for i in 1..=12 {
-        insert_row(
-            &api_pool,
-            &schema,
-            &identity,
-            json!({ "po_number": format!("PO-{i:02}") }),
-        )
-        .await;
+        insert_row(&api_pool, &schema, &identity, json!({ "po_number": format!("PO-{i:02}") }))
+            .await;
     }
 
     let q1 = QueryDsl {
@@ -437,8 +421,7 @@ async fn include_left_joins_target_schema() {
     }]);
     let supplier_plan = velocity_operator::build_ddl(&supplier_spec, &supplier_path).unwrap();
     prov.sync_schema_tables(&supplier_plan, false).await.unwrap();
-    let supplier_schema =
-        ResolvedSchema::from_spec(supplier_path.clone(), supplier_spec);
+    let supplier_schema = ResolvedSchema::from_spec(supplier_path.clone(), supplier_spec);
 
     // Main: purchase-order with ref → supplier
     let po_path = SchemaPath::new(&org, app, domain, "purchase-order", "v1");
@@ -459,13 +442,8 @@ async fn include_left_joins_target_schema() {
     registry.replace_all(vec![supplier_schema.clone(), po_schema.clone()]);
 
     // Insert a supplier and a PO referencing it.
-    let supp = insert_row(
-        &api_pool,
-        &supplier_schema,
-        &identity,
-        json!({ "name": "Tata Steel" }),
-    )
-    .await;
+    let supp =
+        insert_row(&api_pool, &supplier_schema, &identity, json!({ "name": "Tata Steel" })).await;
     let supp_id = supp["id"].as_str().unwrap().to_string();
     insert_row(
         &api_pool,
@@ -475,10 +453,7 @@ async fn include_left_joins_target_schema() {
     )
     .await;
 
-    let q = QueryDsl {
-        include: vec!["supplier_id".into()],
-        ..Default::default()
-    };
+    let q = QueryDsl { include: vec!["supplier_id".into()], ..Default::default() };
     let (rows, _) = run_query(&api_pool, &po_schema, &identity, &registry, &q, None).await;
     assert_eq!(rows.len(), 1);
     let inc = &rows[0]["supplier_id"];
@@ -523,13 +498,8 @@ async fn cursor_tamper_rejected() {
     let other = CursorSigner::new(b"different-key-also-32-bytes-long.....".to_vec()).unwrap();
 
     for i in 1..=6 {
-        insert_row(
-            &api_pool,
-            &schema,
-            &identity,
-            json!({ "po_number": format!("PO-{i:02}") }),
-        )
-        .await;
+        insert_row(&api_pool, &schema, &identity, json!({ "po_number": format!("PO-{i:02}") }))
+            .await;
     }
 
     let q = QueryDsl {
@@ -537,7 +507,8 @@ async fn cursor_tamper_rejected() {
         limit: Some(3),
         ..Default::default()
     };
-    let (_page, cursor) = run_query(&api_pool, &schema, &identity, &registry, &q, Some(&real)).await;
+    let (_page, cursor) =
+        run_query(&api_pool, &schema, &identity, &registry, &q, Some(&real)).await;
     let cursor = cursor.unwrap();
 
     // Use a cursor minted with `real` against the API configured with `other` —

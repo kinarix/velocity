@@ -54,11 +54,7 @@ pub fn parse_pod_dir(dir_name: &str) -> Option<PodMeta> {
     if namespace.is_empty() || pod.is_empty() {
         return None;
     }
-    Some(PodMeta {
-        namespace: namespace.to_string(),
-        pod: pod.to_string(),
-        uid: uid.to_string(),
-    })
+    Some(PodMeta { namespace: namespace.to_string(), pod: pod.to_string(), uid: uid.to_string() })
 }
 
 /// Parse a single log line, returning the JSON record we'll forward.
@@ -68,11 +64,7 @@ pub fn parse_pod_dir(dir_name: &str) -> Option<PodMeta> {
 /// the operator-supplied ConfigMap that maps pod → labels).
 pub fn parse_line(raw: &str, container: &str, meta: &PodMeta) -> Value {
     let body = parse_body(raw);
-    let mut envelope = if let Value::Object(_) = &body {
-        body
-    } else {
-        json!({ "message": body })
-    };
+    let mut envelope = if let Value::Object(_) = &body { body } else { json!({ "message": body }) };
     if let Value::Object(map) = &mut envelope {
         map.insert(
             "kubernetes".to_string(),

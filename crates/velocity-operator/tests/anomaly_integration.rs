@@ -89,16 +89,15 @@ async fn seed(
     // wall clock, but the anomaly scanner reads occurred_at independently,
     // so backdating is safe for the scanner's window logic. (Audit
     // verification would notice; tests below don't exercise verify.)
-    let id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT platform.audit_insert($1, $2, $3, $4, NULL, '{}'::jsonb)",
-    )
-    .bind(actor)
-    .bind(action)
-    .bind(outcome)
-    .bind(schema_org)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let id: uuid::Uuid =
+        sqlx::query_scalar("SELECT platform.audit_insert($1, $2, $3, $4, NULL, '{}'::jsonb)")
+            .bind(actor)
+            .bind(action)
+            .bind(outcome)
+            .bind(schema_org)
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     sqlx::query("UPDATE platform.audit_log SET occurred_at = $1 WHERE id = $2")
         .bind(occurred_at)
@@ -158,15 +157,7 @@ async fn after_hours_write_alerts_and_dedupes_on_second_sweep() {
 
     // 03:00 UTC on a weekday — squarely after-hours.
     let early = Utc.with_ymd_and_hms(2026, 5, 19, 3, 0, 0).single().unwrap();
-    seed(
-        &pool,
-        &format!("{marker}ops"),
-        "update",
-        "success",
-        Some("o/a/d/x/v1"),
-        early,
-    )
-    .await;
+    seed(&pool, &format!("{marker}ops"), "update", "success", Some("o/a/d/x/v1"), early).await;
 
     let n1 = anomaly::sweep_once(&pool, None).await.unwrap();
     assert_eq!(n1, 1, "after_hours alert from first sweep");
@@ -177,15 +168,7 @@ async fn after_hours_write_alerts_and_dedupes_on_second_sweep() {
     // first row, but a fresh seed within the same hour exercises the
     // dedupe path.
     let early_2 = Utc.with_ymd_and_hms(2026, 5, 19, 3, 5, 0).single().unwrap();
-    seed(
-        &pool,
-        &format!("{marker}ops"),
-        "delete",
-        "success",
-        Some("o/a/d/x/v1"),
-        early_2,
-    )
-    .await;
+    seed(&pool, &format!("{marker}ops"), "delete", "success", Some("o/a/d/x/v1"), early_2).await;
 
     let n2 = anomaly::sweep_once(&pool, None).await.unwrap();
     assert_eq!(n2, 0, "second after_hours detection deduped by hourly unique index");

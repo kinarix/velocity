@@ -32,11 +32,7 @@ pub fn router(ready_rx: watch::Receiver<bool>) -> Router {
             "/metrics",
             get(|| async {
                 let body = metrics::gather();
-                (
-                    StatusCode::OK,
-                    [("content-type", "text/plain; version=0.0.4")],
-                    body,
-                )
+                (StatusCode::OK, [("content-type", "text/plain; version=0.0.4")], body)
                     .into_response()
             }),
         )

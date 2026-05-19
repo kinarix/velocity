@@ -74,4 +74,3 @@ pub(crate) async fn run(args: ReconcileArgs, kubeconfig: &Option<String>) -> Res
     eprintln!("requested reconcile of {} {name} at {now}", args.kind);
     Ok(())
 }
-

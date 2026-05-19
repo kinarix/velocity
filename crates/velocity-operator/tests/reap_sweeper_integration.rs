@@ -37,10 +37,7 @@ fn suite_lock() -> &'static Mutex<()> {
 /// Wipe the queue between tests. Cheap; the table is empty in steady
 /// state on a dev DB.
 async fn wipe(pool: &PgPool) {
-    sqlx::query("DELETE FROM platform.pending_typesense_reaps")
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query("DELETE FROM platform.pending_typesense_reaps").execute(pool).await.unwrap();
 }
 
 fn pg_url() -> Option<String> {
@@ -56,10 +53,7 @@ struct MockState {
     last_path: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
-async fn handle_delete(
-    State(state): State<MockState>,
-    Path(name): Path<String>,
-) -> StatusCode {
+async fn handle_delete(State(state): State<MockState>, Path(name): Path<String>) -> StatusCode {
     state.delete_count.fetch_add(1, Ordering::SeqCst);
     *state.last_path.lock().await = Some(name);
     StatusCode::from_u16(state.delete_status.load(Ordering::SeqCst)).unwrap()
@@ -74,9 +68,8 @@ async fn spawn_mock() -> (String, MockState) {
         delete_status: Arc::new(AtomicU16::new(200)),
         last_path: Arc::new(tokio::sync::Mutex::new(None)),
     };
-    let app = Router::new()
-        .route("/collections/{name}", delete(handle_delete))
-        .with_state(state.clone());
+    let app =
+        Router::new().route("/collections/{name}", delete(handle_delete)).with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

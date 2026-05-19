@@ -269,7 +269,12 @@ mod tests {
     async fn mock_create_then_lookup() {
         let store = MockSessionStore::new();
         let record = store
-            .create("ravi", "https://idp.acme.test", json!({"sub": "ravi"}), Utc::now() + chrono::Duration::hours(1))
+            .create(
+                "ravi",
+                "https://idp.acme.test",
+                json!({"sub": "ravi"}),
+                Utc::now() + chrono::Duration::hours(1),
+            )
             .await
             .unwrap();
         let fetched = store.lookup(record.id).await.unwrap();

@@ -59,13 +59,17 @@ pub enum CompiledMask {
     Redact,
     /// `keep_last` is clamped to a sane ceiling so a CRD that sets
     /// `keepLast: 1_000_000` doesn't blow up our string handling.
-    Partial { keep_last: u32 },
+    Partial {
+        keep_last: u32,
+    },
     Hash,
     /// A strategy/field-kind combination that doesn't make sense
     /// (Partial on an integer, say). Treated as Redact at runtime to
     /// avoid leaking the value; the operator/webhook is expected to
     /// reject the CRD long before it lands in the registry.
-    Broken { reason: &'static str },
+    Broken {
+        reason: &'static str,
+    },
 }
 
 /// Compiled per-field mask: strategy + exempt-role list + the field's
@@ -174,11 +178,7 @@ fn compile_field(f: &FieldSpec) -> Option<FieldMask> {
         }
         MaskingStrategyKind::Hash => CompiledMask::Hash,
     };
-    Some(FieldMask {
-        mask,
-        unmasked_for: spec.unmasked_for.clone(),
-        field_kind: f.kind,
-    })
+    Some(FieldMask { mask, unmasked_for: spec.unmasked_for.clone(), field_kind: f.kind })
 }
 
 fn apply_strategy(value: &mut Value, mask: &CompiledMask) {
@@ -467,10 +467,7 @@ mod tests {
         use velocity_types::crds::schema::FieldAccess;
 
         let mut gated = base_field("ssn", FieldKind::String);
-        gated.access = Some(FieldAccess {
-            read: vec!["pii-reader".into()],
-            write: Vec::new(),
-        });
+        gated.access = Some(FieldAccess { read: vec!["pii-reader".into()], write: Vec::new() });
         gated.mask = Some(MaskingSpec {
             strategy: MaskingStrategyKind::Redact,
             keep_last: None,

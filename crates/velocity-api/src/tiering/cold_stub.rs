@@ -74,11 +74,8 @@ impl ColdJobStore {
     /// bounded by `MAX_JOBS` and this only runs at the cap.
     fn evict_oldest(&self) {
         let target = MAX_JOBS / 10;
-        let mut entries: Vec<(Uuid, DateTime<Utc>)> = self
-            .jobs
-            .iter()
-            .map(|r| (*r.key(), r.value().created_at))
-            .collect();
+        let mut entries: Vec<(Uuid, DateTime<Utc>)> =
+            self.jobs.iter().map(|r| (*r.key(), r.value().created_at)).collect();
         entries.sort_by_key(|(_, ts)| *ts);
         for (id, _) in entries.into_iter().take(target) {
             self.jobs.remove(&id);

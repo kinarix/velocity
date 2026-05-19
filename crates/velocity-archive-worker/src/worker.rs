@@ -132,10 +132,7 @@ pub async fn tick(
     cfg: &WorkerConfig,
 ) -> Result<TickReport, kube::Error> {
     let policies = list_policies(kube, cfg.watch_namespace.as_deref()).await?;
-    let mut report = TickReport {
-        policies_considered: policies.len(),
-        ..Default::default()
-    };
+    let mut report = TickReport { policies_considered: policies.len(), ..Default::default() };
 
     for policy in policies {
         if !is_eligible(&policy, cfg.min_run_interval) {
@@ -187,16 +184,10 @@ pub fn is_eligible(policy: &ArchivePolicy, min_run_interval: Duration) -> bool {
     if status.phase != Some(ReconcilePhase::Ready) {
         return false;
     }
-    if !matches!(
-        policy.spec.destination.backend.as_str(),
-        "postgres-cold" | "s3"
-    ) {
+    if !matches!(policy.spec.destination.backend.as_str(), "postgres-cold" | "s3") {
         return false;
     }
-    if !matches!(
-        policy.spec.trigger.kind.as_str(),
-        "age" | "field" | "tableSize"
-    ) {
+    if !matches!(policy.spec.trigger.kind.as_str(), "age" | "field" | "tableSize") {
         return false;
     }
     match status.last_run_at.as_deref() {
@@ -342,24 +333,13 @@ async fn run_policy(
         .and_then(parse_age_duration)
         .unwrap_or(cfg.default_max_duration);
 
-    let hot_schema = format!(
-        "{}_{}_{}",
-        sanitize(&org),
-        sanitize(&app),
-        sanitize(&domain)
-    );
+    let hot_schema = format!("{}_{}_{}", sanitize(&org), sanitize(&app), sanitize(&domain));
     let archive_schema = format!("{hot_schema}_archive");
 
-    let sds: Vec<SchemaDefinition> = Api::namespaced(kube.clone(), namespace)
-        .list(&ListParams::default())
-        .await?
-        .items;
+    let sds: Vec<SchemaDefinition> =
+        Api::namespaced(kube.clone(), namespace).list(&ListParams::default()).await?.items;
 
-    let purge_after = policy
-        .spec
-        .purge_after
-        .as_deref()
-        .and_then(parse_age_duration);
+    let purge_after = policy.spec.purge_after.as_deref().and_then(parse_age_duration);
 
     let started = Instant::now();
     let mut total = 0usize;
@@ -452,11 +432,7 @@ async fn run_policy(
             let predicate = if let Some(d) = min_age {
                 ArchivePredicate::Age { min_age: d }
             } else if let Some(p) = &field_pred {
-                ArchivePredicate::Field {
-                    field: &p.field,
-                    op: p.op,
-                    value: &p.value,
-                }
+                ArchivePredicate::Field { field: &p.field, op: p.op, value: &p.value }
             } else {
                 ArchivePredicate::Oldest
             };
@@ -554,16 +530,8 @@ async fn patch_status(
     archived_now: usize,
     purged_now: usize,
 ) -> anyhow::Result<()> {
-    let prior_archived: u64 = policy
-        .status
-        .as_ref()
-        .and_then(|s| s.records_archived)
-        .unwrap_or(0);
-    let prior_purged: u64 = policy
-        .status
-        .as_ref()
-        .and_then(|s| s.records_purged)
-        .unwrap_or(0);
+    let prior_archived: u64 = policy.status.as_ref().and_then(|s| s.records_archived).unwrap_or(0);
+    let prior_purged: u64 = policy.status.as_ref().and_then(|s| s.records_purged).unwrap_or(0);
     let new_archived = prior_archived.saturating_add(archived_now as u64);
     let new_purged = prior_purged.saturating_add(purged_now as u64);
 
@@ -575,12 +543,8 @@ async fn patch_status(
             "recordsPurged": new_purged,
         }
     });
-    api.patch_status(
-        &policy.name_any(),
-        &PatchParams::apply(MANAGER),
-        &Patch::Merge(&patch),
-    )
-    .await?;
+    api.patch_status(&policy.name_any(), &PatchParams::apply(MANAGER), &Patch::Merge(&patch))
+        .await?;
     Ok(())
 }
 

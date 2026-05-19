@@ -112,7 +112,9 @@ pub async fn run(pool: PgPool, webhook: Option<WebhookConfig>) {
                 tracing::info!(alerts_emitted = n, "anomaly sweep tick produced alerts")
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "anomaly sweep tick failed; retrying next interval"),
+            Err(e) => {
+                tracing::warn!(error = %e, "anomaly sweep tick failed; retrying next interval")
+            }
         }
     }
 }
@@ -235,18 +237,20 @@ async fn fetch_window(
     // Composite tuple comparison gives a strict total ordering even when
     // two rows share an occurred_at down to the microsecond.
     match (last_scanned_occurred_at, last_scanned_id) {
-        (Some(ts), Some(id)) => sqlx::query_as::<_, AuditWindowRow>(
-            "SELECT id, occurred_at, actor, action, outcome, schema_org \
+        (Some(ts), Some(id)) => {
+            sqlx::query_as::<_, AuditWindowRow>(
+                "SELECT id, occurred_at, actor, action, outcome, schema_org \
              FROM platform.audit_log \
              WHERE (occurred_at, id) > ($1, $2) \
              ORDER BY occurred_at, id \
              LIMIT $3",
-        )
-        .bind(ts)
-        .bind(id)
-        .bind(SWEEP_BATCH)
-        .fetch_all(&mut **tx)
-        .await,
+            )
+            .bind(ts)
+            .bind(id)
+            .bind(SWEEP_BATCH)
+            .fetch_all(&mut **tx)
+            .await
+        }
         _ => {
             // First-ever sweep: process the most recent 5 minutes only,
             // so a freshly-deployed scanner doesn't backfill years of
@@ -292,11 +296,21 @@ pub trait AsAuditRow {
 }
 
 impl AsAuditRow for AuditWindowRow {
-    fn actor(&self) -> &str { &self.actor }
-    fn action(&self) -> &str { &self.action }
-    fn outcome(&self) -> &str { &self.outcome }
-    fn occurred_at(&self) -> DateTime<Utc> { self.occurred_at }
-    fn schema_org(&self) -> Option<&str> { self.schema_org.as_deref() }
+    fn actor(&self) -> &str {
+        &self.actor
+    }
+    fn action(&self) -> &str {
+        &self.action
+    }
+    fn outcome(&self) -> &str {
+        &self.outcome
+    }
+    fn occurred_at(&self) -> DateTime<Utc> {
+        self.occurred_at
+    }
+    fn schema_org(&self) -> Option<&str> {
+        self.schema_org.as_deref()
+    }
 }
 
 fn detect_bulk_readers<R: AsAuditRow>(
@@ -350,10 +364,7 @@ fn detect_after_hours<R: AsAuditRow>(
         // adding a 4th rule that would mostly duplicate this one.
         let h = r.occurred_at().hour();
         let weekday = r.occurred_at().weekday();
-        let is_business_day = !matches!(
-            weekday,
-            chrono::Weekday::Sat | chrono::Weekday::Sun
-        );
+        let is_business_day = !matches!(weekday, chrono::Weekday::Sat | chrono::Weekday::Sun);
         let in_hours = (BUSINESS_HOURS_START_UTC..BUSINESS_HOURS_END_UTC).contains(&h);
         if is_business_day && in_hours {
             continue;
@@ -419,13 +430,7 @@ fn detect_repeated_denials<R: AsAuditRow>(
 /// retry loop can chase undelivered alerts; we don't block on retry
 /// inline to keep the sweep tick fast.
 async fn deliver_webhook(pool: &PgPool, w: &WebhookConfig, alert: &AnomalyAlert) {
-    let res = w
-        .client
-        .post(&w.url)
-        .json(alert)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await;
+    let res = w.client.post(&w.url).json(alert).timeout(Duration::from_secs(5)).send().await;
     match res {
         Ok(r) if r.status().is_success() => {
             let _ = sqlx::query(
@@ -474,17 +479,25 @@ mod tests {
     }
 
     impl AsAuditRow for Row {
-        fn actor(&self) -> &str { self.actor }
-        fn action(&self) -> &str { self.action }
-        fn outcome(&self) -> &str { self.outcome }
-        fn occurred_at(&self) -> DateTime<Utc> { self.when }
-        fn schema_org(&self) -> Option<&str> { self.schema_org }
+        fn actor(&self) -> &str {
+            self.actor
+        }
+        fn action(&self) -> &str {
+            self.action
+        }
+        fn outcome(&self) -> &str {
+            self.outcome
+        }
+        fn occurred_at(&self) -> DateTime<Utc> {
+            self.when
+        }
+        fn schema_org(&self) -> Option<&str> {
+            self.schema_org
+        }
     }
 
     fn ts_at(hour: u32) -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 19, hour, 0, 0)
-            .single()
-            .unwrap()
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 19, hour, 0, 0).single().unwrap()
     }
 
     #[test]
@@ -552,15 +565,37 @@ mod tests {
         let mid_day = ts_at(14); // 14:00 UTC — squarely inside
         let late = ts_at(23); // 23:00 UTC — after business hours
         let rows = vec![
-            Row { actor: "ops", action: "create", outcome: "success", when: early, schema_org: Some("o/a/d/x/v1") },
-            Row { actor: "ops", action: "update", outcome: "success", when: mid_day, schema_org: Some("o/a/d/x/v1") },
-            Row { actor: "ops", action: "delete", outcome: "success", when: late, schema_org: Some("o/a/d/x/v1") },
+            Row {
+                actor: "ops",
+                action: "create",
+                outcome: "success",
+                when: early,
+                schema_org: Some("o/a/d/x/v1"),
+            },
+            Row {
+                actor: "ops",
+                action: "update",
+                outcome: "success",
+                when: mid_day,
+                schema_org: Some("o/a/d/x/v1"),
+            },
+            Row {
+                actor: "ops",
+                action: "delete",
+                outcome: "success",
+                when: late,
+                schema_org: Some("o/a/d/x/v1"),
+            },
         ];
         let alerts = detect_after_hours(&rows, early, late);
         // Two after-hours writes (early + late). Dedupe-within-tick
         // collapses to one alert per (actor, schema_org). Pinned so a
         // refactor that drops the in-fn dedupe doesn't spam.
-        assert_eq!(alerts.len(), 1, "in-tick dedupe collapses early+late into one alert: {alerts:?}");
+        assert_eq!(
+            alerts.len(),
+            1,
+            "in-tick dedupe collapses early+late into one alert: {alerts:?}"
+        );
         assert_eq!(alerts[0].rule, rule::AFTER_HOURS);
     }
 

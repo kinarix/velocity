@@ -69,11 +69,7 @@ pub fn validate_key(key: &str) -> Result<(), ApiError> {
 
 /// Look the key up. The lookup runs outside the per-domain role
 /// transaction — see module docstring.
-pub async fn lookup(
-    pool: &PgPool,
-    key: &str,
-    request_hash: &str,
-) -> Result<Lookup, ApiError> {
+pub async fn lookup(pool: &PgPool, key: &str, request_hash: &str) -> Result<Lookup, ApiError> {
     let row = sqlx::query(
         "SELECT request_hash, response_body, response_code
          FROM platform.idempotency_keys
@@ -93,10 +89,7 @@ pub async fn lookup(
     }
     let body: Option<Value> = row.try_get("response_body")?;
     let code: i32 = row.try_get("response_code")?;
-    Ok(Lookup::Replay(CachedResponse {
-        status: code as u16,
-        body: body.unwrap_or(Value::Null),
-    }))
+    Ok(Lookup::Replay(CachedResponse { status: code as u16, body: body.unwrap_or(Value::Null) }))
 }
 
 /// Record the response. Run after the work has committed. A unique-key

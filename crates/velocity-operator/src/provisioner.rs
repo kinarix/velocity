@@ -123,9 +123,7 @@ impl PostgresProvisioner {
         // advisory xact lock on a constant key forces strict ordering.
         // Lock is released at COMMIT/ROLLBACK; the constant is arbitrary
         // (just needs to be the same across all callers).
-        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)").execute(&mut *tx).await?;
 
         // 1. Schema
         exec(&mut tx, &format!("CREATE SCHEMA IF NOT EXISTS {schema}")).await?;
@@ -165,21 +163,13 @@ impl PostgresProvisioner {
             exec(&mut tx, &format!("GRANT USAGE ON SCHEMA platform TO {role}")).await?;
             // Read access to event_log so the time-machine endpoints —
             // which run under the same SET LOCAL ROLE — can SELECT from it.
-            exec(
-                &mut tx,
-                &format!("GRANT SELECT ON platform.event_log TO {role}"),
-            )
-            .await?;
+            exec(&mut tx, &format!("GRANT SELECT ON platform.event_log TO {role}")).await?;
         }
         // Writer / admin can append events; reader cannot. Restore lives
         // on writer (it produces a new event), so the writer grant covers
         // both standard CRUD and restore paths.
         for role in [&writer, &admin] {
-            exec(
-                &mut tx,
-                &format!("GRANT INSERT ON platform.event_log TO {role}"),
-            )
-            .await?;
+            exec(&mut tx, &format!("GRANT INSERT ON platform.event_log TO {role}")).await?;
             // Same lifetime as the writes above: audit_insert is the only
             // way the audit_log table accepts new rows. EXECUTE on the
             // function is what gates this for the domain role.
@@ -197,9 +187,7 @@ impl PostgresProvisioner {
             // + INSERT + UPDATE on platform.idempotency_keys too.
             exec(
                 &mut tx,
-                &format!(
-                    "GRANT SELECT, INSERT, UPDATE ON platform.idempotency_keys TO {role}"
-                ),
+                &format!("GRANT SELECT, INSERT, UPDATE ON platform.idempotency_keys TO {role}"),
             )
             .await?;
         }
@@ -287,9 +275,7 @@ impl PostgresProvisioner {
         // racing on pg_roles / pg_default_acl can return "tuple concurrently
         // updated". Reuse the same lock key so cold + hot provisioning of
         // different domains can't overlap on these system catalogs either.
-        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)").execute(&mut *tx).await?;
 
         exec(&mut tx, &format!("CREATE SCHEMA IF NOT EXISTS {schema}")).await?;
 
@@ -302,11 +288,8 @@ impl PostgresProvisioner {
             exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO {role}")).await?;
         }
         exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO velocity_api")).await?;
-        exec(
-            &mut tx,
-            &format!("GRANT USAGE, CREATE ON SCHEMA {schema} TO velocity_operator"),
-        )
-        .await?;
+        exec(&mut tx, &format!("GRANT USAGE, CREATE ON SCHEMA {schema} TO velocity_operator"))
+            .await?;
 
         exec(
             &mut tx,
@@ -335,10 +318,7 @@ impl PostgresProvisioner {
 
         tx.commit().await?;
 
-        Ok(ProvisionedArchiveSchema {
-            pg_schema: schema,
-            pg_roles: vec![reader, writer, admin],
-        })
+        Ok(ProvisionedArchiveSchema { pg_schema: schema, pg_roles: vec![reader, writer, admin] })
     }
 
     /// Provision a mirror of a hot table inside the archive schema.
@@ -365,9 +345,7 @@ impl PostgresProvisioner {
         let mut tx = self.pool.begin().await?;
         // Same advisory lock as sync_archive_schema so a mirror table
         // creation can't race with the schema-level grants being applied.
-        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)").execute(&mut *tx).await?;
         exec(&mut tx, &ddl).await?;
         tx.commit().await?;
         Ok(())
@@ -451,13 +429,9 @@ impl PostgresProvisioner {
             // ALTER we issue inside the tx — and even if they did,
             // an out-of-date hash just produces one extra rebuild,
             // never a wrong rebuild.
-            let live_hash =
-                fetch_existing_fts_hash(&self.pool, &pg_schema, &table).await?;
-            let fts_ops = fts_migration_ops(
-                &plan.qualified_table,
-                plan.fts_expression.as_deref(),
-                live_hash,
-            );
+            let live_hash = fetch_existing_fts_hash(&self.pool, &pg_schema, &table).await?;
+            let fts_ops =
+                fts_migration_ops(&plan.qualified_table, plan.fts_expression.as_deref(), live_hash);
             for stmt in fts_ops {
                 exec(&mut tx, &stmt).await?;
             }
@@ -676,9 +650,9 @@ mod tests {
             col("notes", "text", false),
         ];
         let ddl = build_archive_mirror_ddl("acme_sc_proc_archive", "purchase_order_v1", &cols);
-        assert!(ddl.starts_with(
-            "CREATE TABLE IF NOT EXISTS acme_sc_proc_archive.purchase_order_v1 ("
-        ));
+        assert!(
+            ddl.starts_with("CREATE TABLE IF NOT EXISTS acme_sc_proc_archive.purchase_order_v1 (")
+        );
         assert!(ddl.contains("id uuid NOT NULL"));
         assert!(ddl.contains("created_at timestamptz NOT NULL"));
         assert!(ddl.contains("po_number text NOT NULL"));
@@ -692,10 +666,7 @@ mod tests {
         let mut c = col("po_number", "varchar", true);
         c.length = Some(32);
         let ddl = build_archive_mirror_ddl("acme_sc_proc_archive", "po_v1", &[c]);
-        assert!(
-            ddl.contains("po_number varchar(32) NOT NULL"),
-            "got: {ddl}"
-        );
+        assert!(ddl.contains("po_number varchar(32) NOT NULL"), "got: {ddl}");
     }
 
     #[test]

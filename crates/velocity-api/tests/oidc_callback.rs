@@ -53,8 +53,8 @@ use velocity_api::router as api_router;
 use velocity_api::{Identity, SchemaRegistry};
 use velocity_types::common::{NamespacedRef, SchemaPath};
 use velocity_types::crds::auth::{
-    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType, ClaimMapping, IssuerConfig as CrdIssuer,
-    OidcConfig, SecretRef,
+    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType, ClaimMapping,
+    IssuerConfig as CrdIssuer, OidcConfig, SecretRef,
 };
 use velocity_types::crds::schema::{
     AccessSpec, AuthSpec, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
@@ -136,10 +136,7 @@ async fn token_handler(
     Form(form): Form<TokenForm>,
 ) -> impl IntoResponse {
     // RFC 6749 §2.3.1 — client_secret_basic.
-    let auth = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let auth = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
     let Some(basic) = auth.strip_prefix("Basic ") else {
         return (StatusCode::UNAUTHORIZED, "expected Basic auth").into_response();
     };
@@ -239,7 +236,11 @@ fn schema_spec() -> SchemaDefinitionSpec {
     }
 }
 
-fn strategy_spec(jwks_url: String, token_endpoint: String, redirect_uri: String) -> AuthStrategySpec {
+fn strategy_spec(
+    jwks_url: String,
+    token_endpoint: String,
+    redirect_uri: String,
+) -> AuthStrategySpec {
     let claims = ClaimMapping {
         actor_id: Some(Value::String("$.sub".into())),
         roles: Some(json!({
@@ -262,12 +263,7 @@ fn strategy_spec(jwks_url: String, token_endpoint: String, redirect_uri: String)
     AuthStrategySpec {
         kind: AuthStrategyType::Oidc,
         config: AuthStrategyConfig {
-            issuers: vec![CrdIssuer {
-                issuer: ISSUER.into(),
-                jwks_url,
-                audience: None,
-                claims,
-            }],
+            issuers: vec![CrdIssuer { issuer: ISSUER.into(), jwks_url, audience: None, claims }],
             oidc: Some(oidc),
             clock_skew: Some(30),
             ..Default::default()
@@ -292,8 +288,7 @@ async fn build_app(
     schemas.upsert(ResolvedSchema::from_spec(path, schema_spec()));
 
     let strategies = AuthRegistry::new();
-    let strategy_ref =
-        NamespacedRef { name: STRATEGY_NAME.into(), namespace: STRATEGY_NS.into() };
+    let strategy_ref = NamespacedRef { name: STRATEGY_NAME.into(), namespace: STRATEGY_NS.into() };
     let resolved = ResolvedAuthStrategy::from_spec(
         &strategy_ref,
         strategy_spec(jwks_url, token_endpoint, redirect_uri),
@@ -305,9 +300,8 @@ async fn build_app(
 
     let sessions: Arc<MockSessionStore> = Arc::new(MockSessionStore::new());
 
-    let auth_state =
-        AuthState::new(schemas, strategies.clone(), jwks.clone())
-            .with_sessions(sessions.clone() as Arc<dyn SessionStore>);
+    let auth_state = AuthState::new(schemas, strategies.clone(), jwks.clone())
+        .with_sessions(sessions.clone() as Arc<dyn SessionStore>);
     auth_state.prime_strategy(&resolved).unwrap();
 
     let handlers_state = AuthHandlersState {
@@ -324,10 +318,7 @@ async fn build_app(
     };
 
     let api = Router::new()
-        .route(
-            "/api/{org}/{app}/{domain}/{object}/{version}",
-            get(echo_identity),
-        )
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_identity))
         .layer(from_fn_with_state(auth_state, authenticate));
 
     let router = api.merge(api_router::build_auth(handlers_state));
@@ -581,10 +572,7 @@ async fn callback_rejects_when_id_token_aud_is_wrong() {
     // Override `aud` to a value the validation MUST reject. The extras
     // loop in token_handler runs after the default `aud=CLIENT_ID`, so
     // this overwrites it.
-    token_fixture
-        .extra_claims
-        .lock()
-        .insert("aud".into(), Value::String("wrong-service".into()));
+    token_fixture.extra_claims.lock().insert("aud".into(), Value::String("wrong-service".into()));
 
     let callback_req = Request::builder()
         .method("GET")

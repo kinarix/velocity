@@ -90,10 +90,7 @@ fn schema_spec() -> SchemaDefinitionSpec {
             ],
             ..AccessSpec::default()
         },
-        fields: vec![
-            field_open("po_number"),
-            field_gated(SENSITIVE_FIELD, &[FINANCE_ROLE]),
-        ],
+        fields: vec![field_open("po_number"), field_gated(SENSITIVE_FIELD, &[FINANCE_ROLE])],
         validations: Vec::new(),
         search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
         time_machine: None,
@@ -105,14 +102,10 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }

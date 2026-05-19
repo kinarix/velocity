@@ -21,7 +21,8 @@ use crate::http;
 pub fn build_object_store(
     url_str: &str,
 ) -> Result<(Arc<dyn ObjectStore>, object_store::path::Path)> {
-    let url = url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
+    let url =
+        url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
     let (store, prefix) = object_store::parse_url(&url)
         .with_context(|| format!("unsupported storage URL: {url_str}"))?;
     Ok((Arc::from(store), prefix))
@@ -42,7 +43,8 @@ pub fn build_object_store(
 /// fully decode every row we return anyway), turn it off and keep
 /// the downcast path single.
 pub fn build_session(url_str: &str, raw_store: Arc<dyn ObjectStore>) -> Result<SessionContext> {
-    let url = url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
+    let url =
+        url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
     let runtime = Arc::new(RuntimeEnv::default());
     runtime.register_object_store(&url, raw_store);
 
@@ -71,10 +73,7 @@ pub fn build_app_state(cfg: &WarmReaderConfig) -> Result<http::AppState> {
     let prefixed: Arc<dyn ObjectStore> = if prefix.as_ref().is_empty() {
         raw_store.clone()
     } else {
-        Arc::new(object_store::prefix::PrefixStore::new(
-            Arc::clone(&raw_store),
-            prefix.clone(),
-        ))
+        Arc::new(object_store::prefix::PrefixStore::new(Arc::clone(&raw_store), prefix.clone()))
     };
 
     let session = build_session(&cfg.storage_url, raw_store)?;

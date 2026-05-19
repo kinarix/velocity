@@ -34,8 +34,9 @@ fn admin_url() -> Option<String> {
 }
 
 fn api_url() -> String {
-    std::env::var("VELOCITY_API_TEST_API_URL")
-        .unwrap_or_else(|_| "postgres://velocity_api:velocity_api_dev@localhost:5434/velocity".into())
+    std::env::var("VELOCITY_API_TEST_API_URL").unwrap_or_else(|_| {
+        "postgres://velocity_api:velocity_api_dev@localhost:5434/velocity".into()
+    })
 }
 
 fn field(name: &str, kind: FieldKind, required: bool) -> FieldSpec {
@@ -70,14 +71,10 @@ fn spec(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str, idem_keys: &[&str]) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
     for k in idem_keys {

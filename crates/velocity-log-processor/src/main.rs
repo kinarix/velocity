@@ -57,7 +57,9 @@ async fn main() -> Result<()> {
                         current.store(Arc::new(snap));
                     }
                 }
-                Err(e) => tracing::warn!(error = %e, "policy reload failed; keeping previous bundle"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "policy reload failed; keeping previous bundle")
+                }
             }
         }
     });

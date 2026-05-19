@@ -31,17 +31,17 @@ impl std::fmt::Debug for WarmEventReader {
 }
 
 impl WarmEventReader {
-    pub fn new(base_url: impl Into<String>, bearer: impl Into<String>, timeout: Duration) -> Result<Self, TierError> {
+    pub fn new(
+        base_url: impl Into<String>,
+        bearer: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, TierError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(3))
             .build()
             .map_err(|e| TierError::WarmUnavailable(format!("client build: {e}")))?;
-        Ok(Self {
-            client,
-            base_url: base_url.into(),
-            bearer: bearer.into(),
-        })
+        Ok(Self { client, base_url: base_url.into(), bearer: bearer.into() })
     }
 }
 
@@ -95,7 +95,8 @@ impl EventReader for WarmEventReader {
             let body = resp.text().await.unwrap_or_default();
             return Err(TierError::WarmUnavailable(format!(
                 "warm-reader returned {}: {}",
-                status, truncate(&body, 500)
+                status,
+                truncate(&body, 500)
             )));
         }
 

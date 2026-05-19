@@ -35,6 +35,6 @@ pub mod parser;
 pub mod shipper;
 pub mod tail;
 
-pub use ingest::{CollectorConfig, Collector};
+pub use ingest::{Collector, CollectorConfig};
 pub use parser::{parse_pod_dir, PodMeta};
 pub use shipper::{Shipper, ShipperHandle};

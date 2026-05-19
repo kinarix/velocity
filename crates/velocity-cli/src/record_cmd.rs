@@ -140,7 +140,8 @@ fn read_json(source: &str) -> Result<serde_json::Value> {
         std::io::stdin().read_to_string(&mut buf).context("reading query body from stdin")?;
         buf
     } else {
-        std::fs::read_to_string(source).with_context(|| format!("reading query body from {source}"))?
+        std::fs::read_to_string(source)
+            .with_context(|| format!("reading query body from {source}"))?
     };
     serde_json::from_str(&raw).with_context(|| format!("parsing query body from {source}"))
 }
@@ -190,7 +191,9 @@ async fn export_loop(
         let env = api.list_records(path, Some(page_size), cursor.as_deref()).await?;
         for item in &env.items {
             if written >= max_records {
-                eprintln!("export hit --max-records={max_records}; stop here (next_cursor preserved)");
+                eprintln!(
+                    "export hit --max-records={max_records}; stop here (next_cursor preserved)"
+                );
                 return Ok(written);
             }
             let line =
@@ -227,10 +230,7 @@ mod tests {
         assert_eq!(p.org, "acme");
         assert_eq!(p.app, "supply-chain");
         assert_eq!(p.version, "v1");
-        assert_eq!(
-            p.as_url(),
-            "acme/supply-chain/procurement/purchase-order/v1"
-        );
+        assert_eq!(p.as_url(), "acme/supply-chain/procurement/purchase-order/v1");
     }
 
     #[test]

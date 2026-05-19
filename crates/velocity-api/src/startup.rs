@@ -114,34 +114,36 @@ pub fn build_tiered_reader(
     pool: PgPool,
 ) -> (Arc<TieredEventReader>, Arc<ColdJobStore>) {
     let hot: Arc<dyn EventReader> = Arc::new(PostgresEventReader::new(pool));
-    let warm: Option<Arc<dyn EventReader>> =
-        match (cfg.warm_reader_url.as_deref(), cfg.warm_reader_service_token.as_deref()) {
-            (Some(url), Some(token)) => {
-                match WarmEventReader::new(
-                    url,
-                    token,
-                    Duration::from_millis(cfg.warm_reader_timeout_ms),
-                ) {
-                    Ok(r) => {
-                        tracing::info!(warm_reader_url = %url, "warm-tier reader wired");
-                        Some(Arc::new(r))
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = ?e,
-                            "warm-tier reader could not be initialised — warm requests will return WARM_TIER_NOT_CONFIGURED"
-                        );
-                        None
-                    }
+    let warm: Option<Arc<dyn EventReader>> = match (
+        cfg.warm_reader_url.as_deref(),
+        cfg.warm_reader_service_token.as_deref(),
+    ) {
+        (Some(url), Some(token)) => {
+            match WarmEventReader::new(
+                url,
+                token,
+                Duration::from_millis(cfg.warm_reader_timeout_ms),
+            ) {
+                Ok(r) => {
+                    tracing::info!(warm_reader_url = %url, "warm-tier reader wired");
+                    Some(Arc::new(r))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = ?e,
+                        "warm-tier reader could not be initialised — warm requests will return WARM_TIER_NOT_CONFIGURED"
+                    );
+                    None
                 }
             }
-            _ => {
-                tracing::warn!(
+        }
+        _ => {
+            tracing::warn!(
                     "warm-tier reader not configured — time-machine reads older than the hot window will fail with WARM_TIER_NOT_CONFIGURED"
                 );
-                None
-            }
-        };
+            None
+        }
+    };
     (Arc::new(TieredEventReader::new(hot, warm)), ColdJobStore::new())
 }
 
@@ -220,11 +222,8 @@ mod tests {
         use sqlx::pool::PoolOptions;
         use sqlx::postgres::PgConnectOptions;
         use std::str::FromStr;
-        let opts =
-            PgConnectOptions::from_str("postgres://stub:stub@127.0.0.1:1/stub").unwrap();
-        PoolOptions::new()
-            .acquire_timeout(Duration::from_millis(200))
-            .connect_lazy_with(opts)
+        let opts = PgConnectOptions::from_str("postgres://stub:stub@127.0.0.1:1/stub").unwrap();
+        PoolOptions::new().acquire_timeout(Duration::from_millis(200)).connect_lazy_with(opts)
     }
 
     #[tokio::test]

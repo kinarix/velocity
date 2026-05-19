@@ -36,11 +36,11 @@ use velocity_types::crds::schema::SearchTier;
 
 use crate::registry::{ResolvedSchema, SchemaRegistry};
 use crate::typesense::{CollectionSpec, TypesenseClient};
+pub use velocity_typesense::cross_collection_name;
 use velocity_typesense::{
     collection_spec as ts_collection_spec, cross_collection_spec,
     schema_collection_name as ts_schema_collection_name,
 };
-pub use velocity_typesense::cross_collection_name;
 
 /// Hard cap per batch — bounds the worst-case Typesense round-trip
 /// cost per tick when an outbox table backs up.
@@ -171,7 +171,13 @@ async fn drain_outbox(
     let cross_enabled = schema.spec.search.cross_search;
     if cross_enabled {
         let cross_name = cross_collection_name(&schema.path.org);
-        ensure_collection(typesense, &cross_name, || cross_collection_spec(&schema.path.org), provisioned).await?;
+        ensure_collection(
+            typesense,
+            &cross_name,
+            || cross_collection_spec(&schema.path.org),
+            provisioned,
+        )
+        .await?;
     }
 
     let mut published_ids: Vec<i64> = Vec::with_capacity(rows.len());
@@ -188,9 +194,7 @@ async fn drain_outbox(
             "delete" => {
                 typesense.delete(&coll_name, &entity_id).await?;
                 if cross_enabled {
-                    typesense
-                        .delete(&cross_collection_name(&schema.path.org), &entity_id)
-                        .await?;
+                    typesense.delete(&cross_collection_name(&schema.path.org), &entity_id).await?;
                 }
             }
             // Treat insert + update + restore as upsert — Typesense's
@@ -200,9 +204,7 @@ async fn drain_outbox(
                 typesense.upsert(&coll_name, &doc).await?;
                 if cross_enabled {
                     let cross_doc = build_cross_doc(schema, &doc);
-                    typesense
-                        .upsert(&cross_collection_name(&schema.path.org), &cross_doc)
-                        .await?;
+                    typesense.upsert(&cross_collection_name(&schema.path.org), &cross_doc).await?;
                 }
             }
         }
@@ -213,12 +215,10 @@ async fn drain_outbox(
     // Mark rows published. If Typesense succeeded but this UPDATE fails,
     // we'll re-publish on the next loop — idempotent upserts make that
     // safe.
-    sqlx::query(&format!(
-        "UPDATE {outbox_table} SET published_at = now() WHERE id = ANY($1)"
-    ))
-    .bind(&published_ids)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query(&format!("UPDATE {outbox_table} SET published_at = now() WHERE id = ANY($1)"))
+        .bind(&published_ids)
+        .execute(&mut *tx)
+        .await?;
 
     tx.commit().await?;
     Ok(published_ids.len())
@@ -258,14 +258,9 @@ async fn ensure_aliased_collection(
     if provisioned.contains(&alias) {
         return Ok(());
     }
-    let concrete_name = velocity_typesense::schema_concrete_collection_name(
-        &schema.path,
-        &schema.spec,
-    );
-    let concrete_spec = velocity_typesense::concrete_collection_spec(
-        &schema.path,
-        &schema.spec,
-    );
+    let concrete_name =
+        velocity_typesense::schema_concrete_collection_name(&schema.path, &schema.spec);
+    let concrete_spec = velocity_typesense::concrete_collection_spec(&schema.path, &schema.spec);
     ts.create_collection(&concrete_spec).await?;
     if ts.get_alias(&alias).await?.is_none() {
         ts.upsert_alias(&alias, &concrete_name).await?;

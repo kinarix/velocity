@@ -74,11 +74,7 @@ impl std::fmt::Debug for TieredEventReader {
 
 impl TieredEventReader {
     pub fn new(hot: Arc<dyn EventReader>, warm: Option<Arc<dyn EventReader>>) -> Self {
-        Self {
-            hot,
-            warm,
-            windows: TierWindows::default(),
-        }
+        Self { hot, warm, windows: TierWindows::default() }
     }
 
     pub fn with_windows(mut self, windows: TierWindows) -> Self {
@@ -155,8 +151,8 @@ mod tests {
     fn just_inside_warm_boundary() {
         // 90 days + 1 second past = warm.
         let now = Utc::now();
-        let t = TierWindows::default()
-            .classify(now, now - Duration::days(90) - Duration::seconds(1));
+        let t =
+            TierWindows::default().classify(now, now - Duration::days(90) - Duration::seconds(1));
         assert_eq!(t, Tier::Warm);
     }
 
@@ -189,12 +185,7 @@ mod tests {
     }
 
     fn row() -> EventRow {
-        EventRow {
-            occurred_at: Utc::now(),
-            operation: "create".into(),
-            diff: None,
-            payload: None,
-        }
+        EventRow { occurred_at: Utc::now(), operation: "create".into(), diff: None, payload: None }
     }
 
     #[tokio::test]

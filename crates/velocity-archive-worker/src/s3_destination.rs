@@ -82,9 +82,7 @@ pub async fn archive_batch_to_s3(
         return Err(ArchiveError::InvalidColumns("columns list is empty".into()));
     }
     if !args.columns.iter().any(|c| c == "id") {
-        return Err(ArchiveError::InvalidColumns(
-            "columns must include `id`".into(),
-        ));
+        return Err(ArchiveError::InvalidColumns("columns must include `id`".into()));
     }
     for c in args.columns {
         crate::validate_ident_pub(c).map_err(|_| {
@@ -114,16 +112,9 @@ pub async fn archive_batch_to_s3(
          ORDER BY created_at LIMIT $2"
     );
     let _ = cols_csv; // future: column-projected SELECT
-    let rows = sqlx::query(&pick_sql)
-        .bind(age_secs)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(&pick_sql).bind(age_secs).bind(limit).fetch_all(pool).await?;
     if rows.is_empty() {
-        return Ok(ArchiveBatchResult {
-            rows_archived: 0,
-            more_pending: false,
-        });
+        return Ok(ArchiveBatchResult { rows_archived: 0, more_pending: false });
     }
 
     let mut ids: Vec<String> = Vec::with_capacity(rows.len());
@@ -151,27 +142,17 @@ pub async fn archive_batch_to_s3(
         "UPDATE {hot} SET archived_at = now(), archive_ref = $2 \
          WHERE id = ANY($1::uuid[]) AND archived_at IS NULL"
     );
-    let marked = sqlx::query(&mark_sql)
-        .bind(&ids)
-        .bind(&archive_ref)
-        .execute(pool)
-        .await?;
+    let marked = sqlx::query(&mark_sql).bind(&ids).bind(&archive_ref).execute(pool).await?;
     let n = marked.rows_affected() as usize;
 
-    Ok(ArchiveBatchResult {
-        rows_archived: n,
-        more_pending: n >= args.batch_size,
-    })
+    Ok(ArchiveBatchResult { rows_archived: n, more_pending: n >= args.batch_size })
 }
 
 /// Encode `rows` (already filtered to the columns of interest) as a
 /// Parquet file with every column as nullable `Utf8`. Non-string values
 /// are serialised to their JSON text form.
 pub fn encode_parquet(columns: &[String], rows: &[Value]) -> Result<Vec<u8>, String> {
-    let fields: Vec<Field> = columns
-        .iter()
-        .map(|c| Field::new(c, DataType::Utf8, true))
-        .collect();
+    let fields: Vec<Field> = columns.iter().map(|c| Field::new(c, DataType::Utf8, true)).collect();
     let schema = Arc::new(ArrowSchema::new(fields));
 
     let mut builders: Vec<StringBuilder> = (0..columns.len())
@@ -187,17 +168,13 @@ pub fn encode_parquet(columns: &[String], rows: &[Value]) -> Result<Vec<u8>, Str
             }
         }
     }
-    let arrays: Vec<ArrayRef> = builders
-        .into_iter()
-        .map(|mut b| Arc::new(b.finish()) as ArrayRef)
-        .collect();
-    let batch = RecordBatch::try_new(schema.clone(), arrays)
-        .map_err(|e| format!("record batch: {e}"))?;
+    let arrays: Vec<ArrayRef> =
+        builders.into_iter().map(|mut b| Arc::new(b.finish()) as ArrayRef).collect();
+    let batch =
+        RecordBatch::try_new(schema.clone(), arrays).map_err(|e| format!("record batch: {e}"))?;
 
     let mut buf: Vec<u8> = Vec::with_capacity(rows.len() * 256);
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
+    let props = WriterProperties::builder().set_compression(Compression::SNAPPY).build();
     let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))
         .map_err(|e| format!("writer init: {e}"))?;
     writer.write(&batch).map_err(|e| format!("write batch: {e}"))?;
@@ -246,12 +223,7 @@ mod tests {
 
     #[test]
     fn parquet_encodes_mixed_types() {
-        let cols = vec![
-            "id".to_string(),
-            "qty".to_string(),
-            "ok".to_string(),
-            "tags".to_string(),
-        ];
+        let cols = vec!["id".to_string(), "qty".to_string(), "ok".to_string(), "tags".to_string()];
         let rows = vec![
             json!({"id": "11111111-1111-1111-1111-111111111111", "qty": 5, "ok": true, "tags": ["a","b"]}),
             json!({"id": "22222222-2222-2222-2222-222222222222", "qty": null, "ok": false, "tags": []}),

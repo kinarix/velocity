@@ -40,9 +40,7 @@ fn archive_qualified(schema: &ResolvedSchema) -> Result<String, ApiError> {
     let s = format!("{}_archive", schema.pg_schema);
     let t = &schema.pg_table;
     if !is_safe_ident(&s) || !is_safe_ident(t) {
-        return Err(ApiError::Internal(
-            "refusing unsafe archive identifier".into(),
-        ));
+        return Err(ApiError::Internal("refusing unsafe archive identifier".into()));
     }
     Ok(format!("{s}.{t}"))
 }
@@ -224,9 +222,7 @@ pub async fn unarchive(
         .await
         .map_err(|e| ApiError::Internal(format!("unarchive delete: {e}")))?;
 
-    tx.commit()
-        .await
-        .map_err(|e| ApiError::Internal(format!("unarchive commit: {e}")))?;
+    tx.commit().await.map_err(|e| ApiError::Internal(format!("unarchive commit: {e}")))?;
 
     Ok((StatusCode::OK, Json(json!({ "id": id, "unarchived": true }))).into_response())
 }

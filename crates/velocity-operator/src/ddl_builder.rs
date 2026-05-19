@@ -150,20 +150,14 @@ pub fn build_ddl(spec: &SchemaDefinitionSpec, path: &SchemaPath) -> Result<DdlPl
         SearchTier::Tier2 | SearchTier::Tier3 => spec
             .fields
             .iter()
-            .filter(|f| {
-                f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum)
-            })
+            .filter(|f| f.searchable && matches!(f.kind, FieldKind::String | FieldKind::Enum))
             .map(|f| (sanitize(&f.name), f.fts_weight.unwrap_or_default()))
             .collect(),
         SearchTier::Tier1 => Vec::new(),
     };
     let fts_expression = build_fts_expression(&fts_columns);
-    let main_table = build_create_table_with_fts(
-        &qualified,
-        &columns,
-        &table,
-        fts_expression.as_deref(),
-    )?;
+    let main_table =
+        build_create_table_with_fts(&qualified, &columns, &table, fts_expression.as_deref())?;
     let history_table = build_history_table(&schema_name, &table)?;
     let outbox_table = match spec.search.tier {
         SearchTier::Tier3 => Some(build_outbox_table(&schema_name, &table)),
@@ -210,10 +204,7 @@ fn build_fts_expression(fields: &[(String, FtsWeight)]) -> Option<String> {
     let parts: Vec<String> = fields
         .iter()
         .map(|(col, w)| {
-            format!(
-                "setweight(to_tsvector('english', coalesce({col}, '')), '{}')",
-                w.as_pg_char()
-            )
+            format!("setweight(to_tsvector('english', coalesce({col}, '')), '{}')", w.as_pg_char())
         })
         .collect();
     Some(parts.join(" || "))
@@ -472,9 +463,7 @@ fn build_create_table_with_fts(
     // Tier-2 schema with `searchable: false` everywhere is
     // well-formed; it just doesn't get FTS.
     if let Some(expr) = fts_expression {
-        lines.push(format!(
-            "    __fts tsvector GENERATED ALWAYS AS ({expr}) STORED"
-        ));
+        lines.push(format!("    __fts tsvector GENERATED ALWAYS AS ({expr}) STORED"));
     }
     lines.push(format!("    CONSTRAINT {table}_pkey PRIMARY KEY (id)"));
     s.push_str(&lines.join(",\n"));
@@ -634,9 +623,7 @@ fn build_rls_policies(
     //    wildcard — anything previously emitted for a now-removed user
     //    role lingers and must be cleaned up by a manual ops procedure
     //    or a future "list pg_policies and reconcile" pass. Documented.
-    out.push(format!(
-        "DROP POLICY IF EXISTS pol_{table}_unrestricted ON {qualified};"
-    ));
+    out.push(format!("DROP POLICY IF EXISTS pol_{table}_unrestricted ON {qualified};"));
     for role in by_role.keys() {
         let suffix = policy_role_suffix(role);
         out.push(format!("DROP POLICY IF EXISTS pol_{table}_role_{suffix} ON {qualified};"));
@@ -717,7 +704,11 @@ fn render_clause_as_literal(
         serde_json::Value::String(s) => quote_literal(s),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => {
-            if *b { "TRUE".into() } else { "FALSE".into() }
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
         }
         other => {
             return Err(DdlError::UnsupportedDefault {
@@ -740,13 +731,7 @@ fn policy_role_suffix(role: &str) -> String {
 
     let sanitised: String = role
         .chars()
-        .map(|c| {
-            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' { c } else { '_' })
         .collect();
     let mut hasher = DefaultHasher::new();
     role.hash(&mut hasher);
@@ -978,10 +963,7 @@ mod tests {
         let mut f = field("description", FieldKind::String);
         f.searchable = true;
         let plan = build_ddl(&minimal_spec(vec![f], SearchTier::Tier1), &path()).unwrap();
-        assert!(
-            !plan.main_table.contains("__fts"),
-            "Tier-1 must not provision the FTS column"
-        );
+        assert!(!plan.main_table.contains("__fts"), "Tier-1 must not provision the FTS column");
         assert!(!plan.indexes.iter().any(|s| s.contains("__fts")));
     }
 
@@ -992,23 +974,23 @@ mod tests {
         let mut b = field("notes", FieldKind::String);
         b.searchable = true;
         let plain = field("po_number", FieldKind::String);
-        let plan =
-            build_ddl(&minimal_spec(vec![a, b, plain], SearchTier::Tier2), &path()).unwrap();
+        let plan = build_ddl(&minimal_spec(vec![a, b, plain], SearchTier::Tier2), &path()).unwrap();
         assert!(plan.main_table.contains("__fts tsvector GENERATED ALWAYS"));
         // Both searchable fields are wired in; the non-searchable one isn't.
         assert!(plan.main_table.contains("coalesce(title"));
         assert!(plan.main_table.contains("coalesce(notes"));
         assert!(!plan.main_table.contains("coalesce(po_number"));
         // GIN index emitted.
-        assert!(plan
-            .indexes
-            .iter()
-            .any(|s| s.contains("USING GIN (__fts)")));
+        assert!(plan.indexes.iter().any(|s| s.contains("USING GIN (__fts)")));
         // Phase 5d — default weight (D) emitted for every searchable field.
         // setweight() | setweight() composition replaces the Phase-5b
         // flat to_tsvector(... || ' ' || ...) form.
-        assert!(plan.main_table.contains("setweight(to_tsvector('english', coalesce(title, '')), 'D')"));
-        assert!(plan.main_table.contains("setweight(to_tsvector('english', coalesce(notes, '')), 'D')"));
+        assert!(plan
+            .main_table
+            .contains("setweight(to_tsvector('english', coalesce(title, '')), 'D')"));
+        assert!(plan
+            .main_table
+            .contains("setweight(to_tsvector('english', coalesce(notes, '')), 'D')"));
         assert!(plan.fts_expression.is_some());
     }
 
@@ -1016,14 +998,11 @@ mod tests {
     fn tier2_per_field_weights_emit_setweight_with_correct_class() {
         let mut title = field("title", FieldKind::String);
         title.searchable = true;
-        title.fts_weight =
-            Some(velocity_types::crds::schema::FtsWeight::A);
+        title.fts_weight = Some(velocity_types::crds::schema::FtsWeight::A);
         let mut body = field("body", FieldKind::String);
         body.searchable = true;
-        body.fts_weight =
-            Some(velocity_types::crds::schema::FtsWeight::C);
-        let plan =
-            build_ddl(&minimal_spec(vec![title, body], SearchTier::Tier2), &path()).unwrap();
+        body.fts_weight = Some(velocity_types::crds::schema::FtsWeight::C);
+        let plan = build_ddl(&minimal_spec(vec![title, body], SearchTier::Tier2), &path()).unwrap();
         // Title gets A, body gets C — order preserved from spec.fields[].
         let expr = plan.fts_expression.as_deref().unwrap();
         assert!(expr.contains("setweight(to_tsvector('english', coalesce(title, '')), 'A')"));
@@ -1178,8 +1157,7 @@ mod tests {
             .rls_policies
             .iter()
             .find(|s| {
-                s.starts_with("CREATE POLICY")
-                    && s.contains("pol_purchase_order_v1_unrestricted")
+                s.starts_with("CREATE POLICY") && s.contains("pol_purchase_order_v1_unrestricted")
             })
             .unwrap();
         assert!(wild.contains("= '*'"));
@@ -1221,8 +1199,7 @@ mod tests {
             .rls_policies
             .iter()
             .find(|s| {
-                s.starts_with("CREATE POLICY")
-                    && s.contains("pol_purchase_order_v1_role_west_")
+                s.starts_with("CREATE POLICY") && s.contains("pol_purchase_order_v1_role_west_")
             })
             .unwrap();
         assert!(west.contains("region = 'west'"));
@@ -1252,14 +1229,8 @@ mod tests {
             &path(),
         )
         .unwrap();
-        assert!(plan
-            .rls_policies
-            .iter()
-            .any(|s| s.contains("pol_purchase_order_v1_role_west_")));
-        assert!(plan
-            .rls_policies
-            .iter()
-            .any(|s| s.contains("pol_purchase_order_v1_role_east_")));
+        assert!(plan.rls_policies.iter().any(|s| s.contains("pol_purchase_order_v1_role_west_")));
+        assert!(plan.rls_policies.iter().any(|s| s.contains("pol_purchase_order_v1_role_east_")));
     }
 
     #[test]
@@ -1287,9 +1258,7 @@ mod tests {
         let create_idx = plan
             .rls_policies
             .iter()
-            .position(|s| {
-                s.starts_with("CREATE POLICY pol_purchase_order_v1_unrestricted")
-            })
+            .position(|s| s.starts_with("CREATE POLICY pol_purchase_order_v1_unrestricted"))
             .unwrap();
         assert!(drop_idx < create_idx, "DROP must precede CREATE in the same plan");
     }
@@ -1318,10 +1287,7 @@ mod tests {
             .unwrap();
         // No dashes in the identifier.
         let policy_name = policy.split(" ON ").next().unwrap();
-        assert!(
-            !policy_name.contains('-'),
-            "policy identifier must be sanitised: {policy_name}"
-        );
+        assert!(!policy_name.contains('-'), "policy identifier must be sanitised: {policy_name}");
         // The role literal in the membership check keeps the original form.
         assert!(policy.contains("'regional-reader-west' = ANY"));
     }
@@ -1382,8 +1348,7 @@ mod tests {
             .rls_policies
             .iter()
             .find(|s| {
-                s.starts_with("CREATE POLICY")
-                    && s.contains("pol_purchase_order_v1_role_west_")
+                s.starts_with("CREATE POLICY") && s.contains("pol_purchase_order_v1_role_west_")
             })
             .unwrap();
         assert!(policy.contains("'west''); DROP TABLE x;--'"));

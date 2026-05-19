@@ -39,10 +39,22 @@ pub enum CompiledRule {
     /// Compiled CEL program. Wrapped in `Arc` so we can move a cheap handle
     /// into `tokio::task::spawn_blocking` without requiring `Program: Clone`
     /// or paying a copy per request.
-    Cel { program: Arc<Program>, message: String, max_ms: u64 },
-    Compare { left: String, op: CompareOp, right: CompareOperand, message: String },
+    Cel {
+        program: Arc<Program>,
+        message: String,
+        max_ms: u64,
+    },
+    Compare {
+        left: String,
+        op: CompareOp,
+        right: CompareOperand,
+        message: String,
+    },
     /// Compile / parse failure. The rule's intent is unknown; fail-closed.
-    Broken { reason: String, message: String },
+    Broken {
+        reason: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,12 +110,14 @@ fn compile_one(rule: &ValidationRule) -> CompiledRule {
                 Ok(program) => CompiledRule::Cel {
                     program: Arc::new(program),
                     message,
-                    max_ms: rule.max_execution_ms.map(|m| (m as u64).min(CEL_MAX_MS)).unwrap_or(CEL_MAX_MS),
+                    max_ms: rule
+                        .max_execution_ms
+                        .map(|m| (m as u64).min(CEL_MAX_MS))
+                        .unwrap_or(CEL_MAX_MS),
                 },
-                Err(e) => CompiledRule::Broken {
-                    reason: format!("CEL compile error: {e}"),
-                    message,
-                },
+                Err(e) => {
+                    CompiledRule::Broken { reason: format!("CEL compile error: {e}"), message }
+                }
             }
         }
         ValidationKind::Compare => {
@@ -190,9 +204,8 @@ fn check_field_value(spec: &FieldSpec, value: &Value) -> Result<(), ApiError> {
     let name = &spec.name;
     match spec.kind {
         FieldKind::String | FieldKind::Enum | FieldKind::Ref => {
-            let s = value
-                .as_str()
-                .ok_or_else(|| bad(format!("field `{name}` must be a string")))?;
+            let s =
+                value.as_str().ok_or_else(|| bad(format!("field `{name}` must be a string")))?;
             if let Some(max) = spec.max_length {
                 if s.chars().count() > max as usize {
                     return Err(bad(format!(
@@ -205,18 +218,13 @@ fn check_field_value(spec: &FieldSpec, value: &Value) -> Result<(), ApiError> {
                 && !spec.enum_values.is_empty()
                 && !spec.enum_values.iter().any(|e| e == s)
             {
-                return Err(bad(format!(
-                    "field `{name}` must be one of {:?}",
-                    spec.enum_values
-                )));
+                return Err(bad(format!("field `{name}` must be one of {:?}", spec.enum_values)));
             }
             if let Some(pat) = spec.pattern.as_deref() {
                 // The webhook already vets the regex at admission; we still
                 // guard here in case the registry was seeded from outside.
                 let re = Regex::new(pat).map_err(|e| {
-                    ApiError::Internal(format!(
-                        "field `{name}` has invalid regex pattern: {e}"
-                    ))
+                    ApiError::Internal(format!("field `{name}` has invalid regex pattern: {e}"))
                 })?;
                 if !re.is_match(s) {
                     return Err(bad(format!("field `{name}` does not match pattern")));
@@ -231,9 +239,8 @@ fn check_field_value(spec: &FieldSpec, value: &Value) -> Result<(), ApiError> {
             check_range(spec, n as f64, name)?;
         }
         FieldKind::Number => {
-            let n = value
-                .as_f64()
-                .ok_or_else(|| bad(format!("field `{name}` must be a number")))?;
+            let n =
+                value.as_f64().ok_or_else(|| bad(format!("field `{name}` must be a number")))?;
             check_range(spec, n, name)?;
         }
         FieldKind::Boolean => {
@@ -247,7 +254,10 @@ fn check_field_value(spec: &FieldSpec, value: &Value) -> Result<(), ApiError> {
                 .ok_or_else(|| bad(format!("field `{name}` must be a date string")))?;
             // Cheap shape check (YYYY-MM-DD) — Postgres will do the strict
             // parse downstream and surface a 400 via the error mapping.
-            if s.len() != 10 || s.as_bytes().get(4) != Some(&b'-') || s.as_bytes().get(7) != Some(&b'-') {
+            if s.len() != 10
+                || s.as_bytes().get(4) != Some(&b'-')
+                || s.as_bytes().get(7) != Some(&b'-')
+            {
                 return Err(bad(format!("field `{name}` must look like YYYY-MM-DD")));
             }
         }
@@ -258,9 +268,7 @@ fn check_field_value(spec: &FieldSpec, value: &Value) -> Result<(), ApiError> {
             // Require a digit-rich, timezone-bearing form. RFC3339 strictness
             // is enforced by Postgres' timestamptz cast.
             if s.len() < 10 || !s.as_bytes().iter().any(|b| matches!(b, b'T' | b' ')) {
-                return Err(bad(format!(
-                    "field `{name}` must be an ISO-8601 datetime string"
-                )));
+                return Err(bad(format!("field `{name}` must be an ISO-8601 datetime string")));
             }
         }
         FieldKind::Uuid => {
@@ -596,12 +604,9 @@ mod tests {
             max_execution_ms: None,
         }];
         let compiled = Arc::new(compile_rules(&rules));
-        validate_rules(
-            &compiled,
-            &json!({ "start_date": "2025-01-01", "end_date": "2025-02-01" }),
-        )
-        .await
-        .unwrap();
+        validate_rules(&compiled, &json!({ "start_date": "2025-01-01", "end_date": "2025-02-01" }))
+            .await
+            .unwrap();
         let err = validate_rules(
             &compiled,
             &json!({ "start_date": "2025-03-01", "end_date": "2025-02-01" }),

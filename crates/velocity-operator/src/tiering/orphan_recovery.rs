@@ -54,24 +54,18 @@ pub async fn scan(pool: &PgPool, warm_store: Arc<dyn ObjectStore>) -> Result<Orp
     let warm_with_hot: Vec<String> = warm_keys
         .iter()
         .filter_map(|k| {
-            partition_name_from_key(k)
-                .filter(|p| hot_partitions.contains(p))
-                .map(|_| k.clone())
+            partition_name_from_key(k).filter(|p| hot_partitions.contains(p)).map(|_| k.clone())
         })
         .collect();
 
     // For "missing warm coverage" we only flag partitions OLDER than
     // the export horizon — current/next month never need warm objects.
     let cutoff = Utc::now() - chrono::Duration::days(super::exporter::HOT_RETENTION_DAYS);
-    let warm_partition_names: HashSet<String> = warm_keys
-        .iter()
-        .filter_map(|k| partition_name_from_key(k))
-        .collect();
+    let warm_partition_names: HashSet<String> =
+        warm_keys.iter().filter_map(|k| partition_name_from_key(k)).collect();
     let missing: Vec<String> = hot_partitions
         .iter()
-        .filter(|p| {
-            partition_is_older_than(p, cutoff) && !warm_partition_names.contains(*p)
-        })
+        .filter(|p| partition_is_older_than(p, cutoff) && !warm_partition_names.contains(*p))
         .cloned()
         .collect();
 
@@ -174,8 +168,7 @@ mod tests {
     #[test]
     fn extracts_partition_name_from_warm_key() {
         assert_eq!(
-            partition_name_from_key("acme/supply/procurement/event_log_2026_03.parquet")
-                .as_deref(),
+            partition_name_from_key("acme/supply/procurement/event_log_2026_03.parquet").as_deref(),
             Some("event_log_2026_03")
         );
     }
@@ -191,10 +184,8 @@ mod tests {
     #[test]
     fn partition_is_older_than_handles_boundary() {
         // event_log_2026_03 ends at 2026-04-01 00:00:00 UTC.
-        let just_before = Utc
-            .with_ymd_and_hms(2026, 4, 1, 0, 0, 0)
-            .unwrap()
-            - chrono::Duration::seconds(1);
+        let just_before =
+            Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap() - chrono::Duration::seconds(1);
         let after = Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap();
         assert!(!partition_is_older_than("event_log_2026_03", just_before));
         assert!(partition_is_older_than("event_log_2026_03", after));

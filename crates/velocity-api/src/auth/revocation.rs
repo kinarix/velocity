@@ -218,9 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn redis_checker_rejects_malformed_url() {
-        let err = RedisRevocationChecker::connect("not-a-url", "revoked_actors")
-            .await
-            .unwrap_err();
+        let err = RedisRevocationChecker::connect("not-a-url", "revoked_actors").await.unwrap_err();
         assert!(matches!(err, RevocationError::Backend(_)));
     }
 
@@ -230,13 +228,7 @@ mod tests {
         // changing them is a breaking change for dashboards.
         assert_eq!(RevocationDecision::Allowed.as_audit_str(), "allowed");
         assert_eq!(RevocationDecision::RevokedActor.as_audit_str(), "revoked");
-        assert_eq!(
-            RevocationDecision::BackendDownDenied.as_audit_str(),
-            "backend_down_denied"
-        );
-        assert_eq!(
-            RevocationDecision::BackendDownAdmitted.as_audit_str(),
-            "backend_down_admitted"
-        );
+        assert_eq!(RevocationDecision::BackendDownDenied.as_audit_str(), "backend_down_denied");
+        assert_eq!(RevocationDecision::BackendDownAdmitted.as_audit_str(), "backend_down_admitted");
     }
 }

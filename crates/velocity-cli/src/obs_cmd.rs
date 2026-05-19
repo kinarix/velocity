@@ -127,10 +127,8 @@ pub(crate) async fn slo(
         Some(ns) => Api::namespaced(client, ns),
         None => Api::all(client),
     };
-    let list = api
-        .list(&ListParams::default())
-        .await
-        .context("listing SchemaDefinitions for SLO view")?;
+    let list =
+        api.list(&ListParams::default()).await.context("listing SchemaDefinitions for SLO view")?;
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for sd in list.items {
@@ -146,12 +144,8 @@ pub(crate) async fn slo(
                 ns.clone(),
                 name.clone(),
                 slo.operation.clone(),
-                slo.target_p99_ms
-                    .map(|n| format!("{n}ms"))
-                    .unwrap_or_else(|| "—".into()),
-                slo.availability
-                    .map(|f| format!("{f:.4}"))
-                    .unwrap_or_else(|| "—".into()),
+                slo.target_p99_ms.map(|n| format!("{n}ms")).unwrap_or_else(|| "—".into()),
+                slo.availability.map(|f| format!("{f:.4}")).unwrap_or_else(|| "—".into()),
                 slo.window.clone().unwrap_or_else(|| "—".into()),
             ]);
         }
@@ -192,17 +186,14 @@ mod tests {
         // capture stdout from a fn that prints, so just confirm the
         // branch is taken via behaviour parity in a future integration.
         // For now, prove the filter branch picks lines correctly.
-        let body =
-            "# HELP velocity_archive_records_total total archived\n\
+        let body = "# HELP velocity_archive_records_total total archived\n\
              # TYPE velocity_archive_records_total counter\n\
              velocity_archive_records_total 42\n\
              velocity_api_request_duration_ms_bucket{le=\"100\"} 7\n";
 
         // Mirror the source: select lines whose substring contains the needle.
-        let keep: Vec<&str> = body
-            .lines()
-            .filter(|line| line.contains("velocity_archive"))
-            .collect();
+        let keep: Vec<&str> =
+            body.lines().filter(|line| line.contains("velocity_archive")).collect();
         assert_eq!(keep.len(), 3);
         assert!(keep[0].starts_with("# HELP"));
         assert!(keep[2].contains("42"));

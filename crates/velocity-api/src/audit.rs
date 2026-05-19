@@ -78,10 +78,7 @@ pub fn build_fail_modes(decision: Option<&AuthDecision>) -> Value {
 /// never in logs": `financial | pii | confidential` are redacted;
 /// `public` and `internal` pass through verbatim.
 fn is_sensitive(s: &Sensitivity) -> bool {
-    matches!(
-        s,
-        Sensitivity::Financial | Sensitivity::Pii | Sensitivity::Confidential
-    )
+    matches!(s, Sensitivity::Financial | Sensitivity::Pii | Sensitivity::Confidential)
 }
 
 /// Return a copy of `payload` where any top-level key matching a
@@ -208,15 +205,7 @@ pub async fn write_audit_standalone(
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     write_audit(
-        &mut tx,
-        schema,
-        identity,
-        action,
-        outcome,
-        entity_id,
-        payload,
-        decision,
-        request_id,
+        &mut tx, schema, identity, action, outcome, entity_id, payload, decision, request_id,
     )
     .await?;
     tx.commit().await?;
@@ -297,11 +286,8 @@ pub fn submitted_field_names(payload: &Value) -> Vec<String> {
         "deleted_at",
         "deleted_by",
     ];
-    let mut out: Vec<String> = m
-        .keys()
-        .filter(|k| !SERVER_MANAGED.contains(&k.as_str()))
-        .cloned()
-        .collect();
+    let mut out: Vec<String> =
+        m.keys().filter(|k| !SERVER_MANAGED.contains(&k.as_str())).cloned().collect();
     out.sort();
     out
 }

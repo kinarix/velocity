@@ -48,10 +48,7 @@ pub async fn run(pool: PgPool, typesense: TypesenseClient) {
 }
 
 /// One sweep tick. Returns the number of rows successfully reaped.
-pub async fn sweep_once(
-    pool: &PgPool,
-    typesense: &TypesenseClient,
-) -> Result<u64, sqlx::Error> {
+pub async fn sweep_once(pool: &PgPool, typesense: &TypesenseClient) -> Result<u64, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     // Lock + take a batch of due rows. SKIP LOCKED so a sibling

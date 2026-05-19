@@ -76,10 +76,7 @@ pub async fn read_events(p: ReadParams<'_>) -> Result<ReadOutput, WarmReaderErro
     }
 
     if existing_urls.is_empty() {
-        return Ok(ReadOutput {
-            events: Vec::new(),
-            objects_scanned,
-        });
+        return Ok(ReadOutput { events: Vec::new(), objects_scanned });
     }
 
     let df = p
@@ -104,34 +101,27 @@ pub async fn read_events(p: ReadParams<'_>) -> Result<ReadOutput, WarmReaderErro
         .and_then(|d| d.filter(col("entity_id").eq(lit(entity_str.clone()))))
         .and_then(|d| d.filter(col("occurred_at").lt_eq(lit(until_scalar.clone()))))
         .and_then(|d| {
-            d.select(vec![
-                col("occurred_at"),
-                col("operation"),
-                col("diff"),
-                col("payload"),
-            ])
+            d.select(vec![col("occurred_at"), col("operation"), col("diff"), col("payload")])
         })
         .and_then(|d| d.sort(vec![col("occurred_at").sort(false, false)]))
         .and_then(|d| d.limit(0, Some(effective_limit)))
         .map_err(|e| WarmReaderError::Parquet(format!("plan: {e}")))?;
 
-    let batches = df
-        .collect()
-        .await
-        .map_err(|e| WarmReaderError::Parquet(format!("execute: {e}")))?;
+    let batches =
+        df.collect().await.map_err(|e| WarmReaderError::Parquet(format!("execute: {e}")))?;
 
     let mut events: Vec<EventRow> = Vec::new();
     for batch in &batches {
         decode_batch(batch, &mut events)?;
     }
 
-    Ok(ReadOutput {
-        events,
-        objects_scanned,
-    })
+    Ok(ReadOutput { events, objects_scanned })
 }
 
-async fn object_exists(store: &Arc<dyn ObjectStore>, key: &ObjPath) -> Result<bool, WarmReaderError> {
+async fn object_exists(
+    store: &Arc<dyn ObjectStore>,
+    key: &ObjPath,
+) -> Result<bool, WarmReaderError> {
     match store.head(key).await {
         Ok(_) => Ok(true),
         Err(object_store::Error::NotFound { .. }) => Ok(false),
@@ -144,7 +134,10 @@ fn full_url(base: &str, key: &ObjPath) -> String {
     format!("{trimmed}/{key}")
 }
 
-fn decode_batch(batch: &arrow::record_batch::RecordBatch, out: &mut Vec<EventRow>) -> Result<(), WarmReaderError> {
+fn decode_batch(
+    batch: &arrow::record_batch::RecordBatch,
+    out: &mut Vec<EventRow>,
+) -> Result<(), WarmReaderError> {
     // Column ordering follows the projection we asked DataFusion for;
     // do NOT assume the writer's column order, since DataFusion may
     // re-order during planning.
@@ -181,7 +174,10 @@ fn column_as<'a, A: 'static>(
         .ok_or_else(|| WarmReaderError::Parquet(format!("column `{name}` wrong type")))
 }
 
-fn parse_json_col(col: &StringArray, i: usize) -> Result<Option<serde_json::Value>, WarmReaderError> {
+fn parse_json_col(
+    col: &StringArray,
+    i: usize,
+) -> Result<Option<serde_json::Value>, WarmReaderError> {
     if col.is_null(i) {
         return Ok(None);
     }

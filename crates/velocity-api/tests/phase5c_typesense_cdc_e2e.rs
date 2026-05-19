@@ -42,13 +42,11 @@ fn api_url() -> String {
 }
 
 fn ts_url() -> String {
-    std::env::var("VELOCITY_API_TYPESENSE_URL")
-        .unwrap_or_else(|_| "http://localhost:8108".into())
+    std::env::var("VELOCITY_API_TYPESENSE_URL").unwrap_or_else(|_| "http://localhost:8108".into())
 }
 
 fn ts_key() -> String {
-    std::env::var("VELOCITY_API_TYPESENSE_API_KEY")
-        .unwrap_or_else(|_| "dev-typesense-key".into())
+    std::env::var("VELOCITY_API_TYPESENSE_API_KEY").unwrap_or_else(|_| "dev-typesense-key".into())
 }
 
 fn field(name: &str, searchable: bool, required: bool) -> FieldSpec {
@@ -76,11 +74,7 @@ fn tier3_spec(fields: Vec<FieldSpec>, cross_search: bool) -> SchemaDefinitionSpe
         access: AccessSpec::default(),
         fields,
         validations: Vec::new(),
-        search: SearchSpec {
-            tier: SearchTier::Tier3,
-            cross_search,
-            ..Default::default()
-        },
+        search: SearchSpec { tier: SearchTier::Tier3, cross_search, ..Default::default() },
         time_machine: None,
         audit: None,
         archive: None,
@@ -90,9 +84,7 @@ fn tier3_spec(fields: Vec<FieldSpec>, cross_search: bool) -> SchemaDefinitionSpe
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
 }
 
 async fn typesense_or_skip() -> Option<TypesenseClient> {
@@ -206,10 +198,7 @@ async fn cdc_publishes_outbox_to_typesense() {
         true, // cross_search opt-in
     );
     let plan = velocity_operator::build_ddl(&s, &path).unwrap();
-    assert!(
-        plan.outbox_table.is_some(),
-        "tier-3 schema must provision outbox"
-    );
+    assert!(plan.outbox_table.is_some(), "tier-3 schema must provision outbox");
     prov.sync_schema_tables(&plan, false).await.unwrap();
 
     let schema = ResolvedSchema::from_spec(path.clone(), s);
@@ -369,13 +358,7 @@ async fn cdc_replays_dropped_publish_on_restart() {
 
     // Write N rows. Worker is NOT running.
     for i in 0..30 {
-        insert(
-            &api_pool,
-            &schema,
-            &identity,
-            json!({ "po_number": format!("PO-{i:03}") }),
-        )
-        .await;
+        insert(&api_pool, &schema, &identity, json!({ "po_number": format!("PO-{i:03}") })).await;
     }
     let pending_before: i64 = sqlx::query_scalar(&format!(
         "SELECT count(*) FROM {}.{}_outbox WHERE published_at IS NULL",

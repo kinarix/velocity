@@ -85,15 +85,9 @@ async fn cleanup(pool: &sqlx::PgPool, schema: &str) {
     // eventually pushes pg_authid rows past the 8 KB limit.
     for suffix in ["_reader", "_writer", "_admin"] {
         let role = format!("{schema}{suffix}");
-        let _ = sqlx::query(&format!("REASSIGN OWNED BY {role} TO postgres"))
-            .execute(pool)
-            .await;
-        let _ = sqlx::query(&format!("DROP OWNED BY {role} CASCADE"))
-            .execute(pool)
-            .await;
-        let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}"))
-            .execute(pool)
-            .await;
+        let _ = sqlx::query(&format!("REASSIGN OWNED BY {role} TO postgres")).execute(pool).await;
+        let _ = sqlx::query(&format!("DROP OWNED BY {role} CASCADE")).execute(pool).await;
+        let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(pool).await;
     }
 }
 

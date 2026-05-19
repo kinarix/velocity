@@ -57,9 +57,7 @@ fn valid_b64_tail_char(c: char) -> bool {
 ///
 /// Returns `Ok(())` if the format matches `vel_{env}_{43-char tail}`.
 pub fn validate_plaintext(plaintext: &str) -> Result<(), ApiKeyError> {
-    let rest = plaintext
-        .strip_prefix("vel_")
-        .ok_or(ApiKeyError::InvalidFormat)?;
+    let rest = plaintext.strip_prefix("vel_").ok_or(ApiKeyError::InvalidFormat)?;
     let Some((env, tail)) = rest.split_once('_') else {
         return Err(ApiKeyError::InvalidFormat);
     };
@@ -169,7 +167,9 @@ impl ApiKeyError {
             }
             ApiKeyError::Revoked => ApiError::Revoked,
             ApiKeyError::Expired => ApiError::Unauthenticated("api key expired".into()),
-            ApiKeyError::IpDenied => ApiError::Unauthenticated("api key denied for client ip".into()),
+            ApiKeyError::IpDenied => {
+                ApiError::Unauthenticated("api key denied for client ip".into())
+            }
             ApiKeyError::Backend(_) => ApiError::IssuerUnavailable("api key backend".into()),
             ApiKeyError::RowMalformed(detail) => ApiError::Internal(detail),
         }
@@ -237,10 +237,7 @@ impl ApiKeyChecker for PgApiKeyChecker {
             // if the operator turns up trace verbosity. Eight hex chars
             // give enough signal to grep `platform.api_keys` without
             // revealing the full credential.
-            tracing::warn!(
-                key_hash_prefix = &hash[..8],
-                "api key lookup miss",
-            );
+            tracing::warn!(key_hash_prefix = &hash[..8], "api key lookup miss",);
             return Err(ApiKeyError::NotFound);
         };
 
@@ -279,9 +276,8 @@ struct RawApiKeyRow {
 /// Parse `[{schema, version?, operations: [...]}]` out of the JSONB column.
 /// Drift in the row shape is loud, not silent.
 fn parse_scopes(raw: &serde_json::Value) -> Result<Vec<ApiKeyScope>, ApiKeyError> {
-    let arr = raw
-        .as_array()
-        .ok_or_else(|| ApiKeyError::RowMalformed("scopes is not an array".into()))?;
+    let arr =
+        raw.as_array().ok_or_else(|| ApiKeyError::RowMalformed("scopes is not an array".into()))?;
     let mut out = Vec::with_capacity(arr.len());
     for (i, item) in arr.iter().enumerate() {
         let schema = item
@@ -291,10 +287,7 @@ fn parse_scopes(raw: &serde_json::Value) -> Result<Vec<ApiKeyScope>, ApiKeyError
                 ApiKeyError::RowMalformed(format!("scopes[{i}].schema missing or not string"))
             })?
             .to_string();
-        let version = item
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
+        let version = item.get("version").and_then(serde_json::Value::as_str).map(str::to_string);
         let operations = item
             .get("operations")
             .and_then(serde_json::Value::as_array)
@@ -321,9 +314,10 @@ fn parse_ip_allowlist(raw: &serde_json::Value) -> Result<Vec<IpNet>, ApiKeyError
         let s = item.as_str().ok_or_else(|| {
             ApiKeyError::RowMalformed(format!("ip_allowlist[{i}] is not a string"))
         })?;
-        out.push(parse_one_allowlist_entry(s).map_err(|e| {
-            ApiKeyError::RowMalformed(format!("ip_allowlist[{i}] `{s}`: {e}"))
-        })?);
+        out.push(
+            parse_one_allowlist_entry(s)
+                .map_err(|e| ApiKeyError::RowMalformed(format!("ip_allowlist[{i}] `{s}`: {e}")))?,
+        );
     }
     Ok(out)
 }
@@ -361,8 +355,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const VALID_KEY: &str =
-        "vel_prod_AB12cd34EF56gh78IJ90kl12MN34op56QR78st90UV1";
+    const VALID_KEY: &str = "vel_prod_AB12cd34EF56gh78IJ90kl12MN34op56QR78st90UV1";
 
     #[test]
     fn valid_key_passes_format_check() {

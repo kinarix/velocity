@@ -85,10 +85,8 @@ async fn write_audit_denial_inserts_row_with_null_entity_and_code_payload() {
     let org = format!("denialtest{suffix}");
     let path = SchemaPath::new(&org, "supply-chain", "procurement", "purchase-order", "v1");
     let schema = ResolvedSchema::from_spec(path.clone(), empty_spec());
-    let schema_org = format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    );
+    let schema_org =
+        format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version);
 
     cleanup(&pool, &schema_org).await;
 
@@ -146,10 +144,8 @@ async fn write_audit_denial_with_unwired_auth_is_distinguishable() {
     let org = format!("denialunwired{suffix}");
     let path = SchemaPath::new(&org, "supply-chain", "procurement", "purchase-order", "v1");
     let schema = ResolvedSchema::from_spec(path.clone(), empty_spec());
-    let schema_org = format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    );
+    let schema_org =
+        format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version);
 
     cleanup(&pool, &schema_org).await;
 
@@ -193,10 +189,8 @@ async fn write_audit_denial_chains_with_existing_audit_rows() {
     let org = format!("denialchain{suffix}");
     let path = SchemaPath::new(&org, "supply-chain", "procurement", "purchase-order", "v1");
     let schema = ResolvedSchema::from_spec(path.clone(), empty_spec());
-    let schema_org = format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    );
+    let schema_org =
+        format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version);
 
     cleanup(&pool, &schema_org).await;
     let identity = Identity::anonymous();

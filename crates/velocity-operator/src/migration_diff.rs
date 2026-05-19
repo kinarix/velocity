@@ -230,9 +230,7 @@ pub const FTS_COMMENT_PREFIX: &str = "velocity:fts_hash:";
 /// SQL to stamp the hash onto the column. Run AFTER the ADD COLUMN so
 /// the column actually exists; quoting is fixed (no user input).
 pub fn fts_comment_sql(qualified_table: &str, hash: &str) -> String {
-    format!(
-        "COMMENT ON COLUMN {qualified_table}.__fts IS '{FTS_COMMENT_PREFIX}{hash}';"
-    )
+    format!("COMMENT ON COLUMN {qualified_table}.__fts IS '{FTS_COMMENT_PREFIX}{hash}';")
 }
 
 /// Render the SQL block that rebuilds the `__fts` generated column.
@@ -689,9 +687,6 @@ mod tests {
     #[test]
     fn fts_comment_sql_uses_stable_prefix() {
         let sql = fts_comment_sql("s.t", "abcd");
-        assert_eq!(
-            sql,
-            format!("COMMENT ON COLUMN s.t.__fts IS '{FTS_COMMENT_PREFIX}abcd';")
-        );
+        assert_eq!(sql, format!("COMMENT ON COLUMN s.t.__fts IS '{FTS_COMMENT_PREFIX}abcd';"));
     }
 }

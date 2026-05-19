@@ -68,12 +68,12 @@ struct CompiledTransform {
 impl CompiledTransform {
     fn compile(t: Transform) -> Result<Self, ClaimError> {
         let regex = match &t {
-            Transform::RegexExtract { pattern } => Some(regex::Regex::new(pattern).map_err(|e| {
-                ClaimError::Mapping {
+            Transform::RegexExtract { pattern } => {
+                Some(regex::Regex::new(pattern).map_err(|e| ClaimError::Mapping {
                     field: "transform",
                     reason: format!("regex_extract pattern `{pattern}` invalid: {e}"),
-                }
-            })?),
+                })?)
+            }
             _ => None,
         };
         Ok(Self { inner: t, regex })
@@ -88,10 +88,8 @@ impl CompiledTransform {
             }
             Transform::ScopeToRoles => {
                 let s = expect_string(value, "scope_to_roles")?;
-                let roles: Vec<Value> = s
-                    .split_whitespace()
-                    .map(|p| Value::String(p.to_string()))
-                    .collect();
+                let roles: Vec<Value> =
+                    s.split_whitespace().map(|p| Value::String(p.to_string())).collect();
                 Ok(Value::Array(roles))
             }
             Transform::Lookup { from } => {
@@ -177,11 +175,9 @@ impl Rule {
                 let transform = match map.get("transform") {
                     None | Some(Value::Null) => None,
                     Some(v) => {
-                        let t: Transform =
-                            serde_json::from_value(v.clone()).map_err(|e| ClaimError::Mapping {
-                                field,
-                                reason: format!("invalid transform: {e}"),
-                            })?;
+                        let t: Transform = serde_json::from_value(v.clone()).map_err(|e| {
+                            ClaimError::Mapping { field, reason: format!("invalid transform: {e}") }
+                        })?;
                         Some(CompiledTransform::compile(t)?)
                     }
                 };
@@ -243,7 +239,9 @@ impl CompiledClaimMapping {
     pub fn from_crd(mapping: &ClaimMapping) -> Result<Arc<Self>, ClaimError> {
         let actor_id = match &mapping.actor_id {
             Some(v) => Rule::parse("actor_id", v)?,
-            None => Rule { path: compile_path("$.sub")?, raw_path: "$.sub".into(), transform: None },
+            None => {
+                Rule { path: compile_path("$.sub")?, raw_path: "$.sub".into(), transform: None }
+            }
         };
         let email = match &mapping.email {
             Some(v) => Some(Rule::parse("email", v)?),
@@ -287,10 +285,9 @@ impl CompiledClaimMapping {
 
         let roles = match self.roles.as_ref().and_then(|r| r.resolve(claims).transpose()) {
             None => Vec::new(),
-            Some(Ok(Value::Array(arr))) => arr
-                .into_iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect(),
+            Some(Ok(Value::Array(arr))) => {
+                arr.into_iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+            }
             Some(Ok(Value::String(s))) => vec![s],
             Some(Ok(_)) => Vec::new(),
             Some(Err(e)) => return Err(e),
@@ -416,8 +413,7 @@ mod tests {
             }
         }));
         let c2 = CompiledClaimMapping::from_crd(&m2).unwrap();
-        let id =
-            c2.apply(&json!({ "sub": "alice", "roles": ["admin"] }), "s", "i").unwrap();
+        let id = c2.apply(&json!({ "sub": "alice", "roles": ["admin"] }), "s", "i").unwrap();
         assert_eq!(id.roles, vec!["admin", "default-reader"]);
     }
 
@@ -431,11 +427,7 @@ mod tests {
         }));
         let c = CompiledClaimMapping::from_crd(&m).unwrap();
         let id = c
-            .apply(
-                &json!({ "sub": "alice", "region": "west", "tenant": "acme" }),
-                "s",
-                "i",
-            )
+            .apply(&json!({ "sub": "alice", "region": "west", "tenant": "acme" }), "s", "i")
             .unwrap();
         assert_eq!(id.attributes.get("region").map(String::as_str), Some("west"));
         assert_eq!(id.attributes.get("tenant").map(String::as_str), Some("acme"));

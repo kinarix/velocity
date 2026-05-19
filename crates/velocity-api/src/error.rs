@@ -189,9 +189,9 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             ApiError::SchemaNotFound | ApiError::NotFound => StatusCode::NOT_FOUND,
-            ApiError::VersionConflict
-            | ApiError::IdempotencyConflict
-            | ApiError::RestoreNoOp => StatusCode::CONFLICT,
+            ApiError::VersionConflict | ApiError::IdempotencyConflict | ApiError::RestoreNoOp => {
+                StatusCode::CONFLICT
+            }
             ApiError::UnknownField(_)
             | ApiError::NotFilterable(_)
             | ApiError::NotSortable(_)
@@ -215,9 +215,9 @@ impl ApiError {
             | ApiError::SearchUnconfigured
             | ApiError::SearchUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::RestoreTierUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
-            ApiError::AuthStrategyMissing(_)
-            | ApiError::Database(_)
-            | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::AuthStrategyMissing(_) | ApiError::Database(_) | ApiError::Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 
@@ -322,11 +322,7 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "REVOCATION_UNAVAILABLE",
             ),
-            (
-                ApiError::SessionUnavailable,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "SESSION_UNAVAILABLE",
-            ),
+            (ApiError::SessionUnavailable, StatusCode::SERVICE_UNAVAILABLE, "SESSION_UNAVAILABLE"),
             (ApiError::AccessDenied, StatusCode::FORBIDDEN, "ACCESS_DENIED"),
             (ApiError::PolicyDenied("p".into()), StatusCode::FORBIDDEN, "POLICY_DENIED"),
             (

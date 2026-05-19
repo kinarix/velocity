@@ -123,17 +123,16 @@ pub async fn validate_auth_strategy_ref(
         )
     })?;
 
-    let name = strategy_ref.pointer("/name").and_then(Value::as_str).ok_or_else(|| {
-        ValidationFailure("spec.auth.strategyRef.name is required".into())
-    })?;
+    let name = strategy_ref
+        .pointer("/name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ValidationFailure("spec.auth.strategyRef.name is required".into()))?;
 
     // `namespace` is optional — if omitted, the strategy lives in the same
     // namespace as the SchemaDefinition. Matches the kube convention for
     // cross-namespace refs (and avoids forcing every CRD to repeat itself).
-    let namespace = strategy_ref
-        .pointer("/namespace")
-        .and_then(Value::as_str)
-        .unwrap_or(self_namespace);
+    let namespace =
+        strategy_ref.pointer("/namespace").and_then(Value::as_str).unwrap_or(self_namespace);
 
     match checker.exists(namespace, name).await {
         Ok(true) => Ok(()),
@@ -197,11 +196,9 @@ mod tests {
         // SchemaDefinition's own namespace.
         let obj = sd(json!({ "name": "default" }));
         let mock = MockStrategyChecker::with(vec![("acme-supply-chain-procurement", "default")]);
-        assert!(
-            validate_auth_strategy_ref(&obj, "acme-supply-chain-procurement", &mock)
-                .await
-                .is_ok()
-        );
+        assert!(validate_auth_strategy_ref(&obj, "acme-supply-chain-procurement", &mock)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

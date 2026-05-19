@@ -69,9 +69,8 @@ pub mod label {
 /// Histogram buckets for request latency in seconds — covers the
 /// p50-of-fast-reads (~2ms) through the p99-of-slow-queries (~5s)
 /// without exploding bucket count.
-const DURATION_BUCKETS: &[f64] = &[
-    0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0,
-];
+const DURATION_BUCKETS: &[f64] =
+    &[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5, 5.0, 10.0];
 
 fn registry() -> &'static Registry {
     static REG: OnceLock<Registry> = OnceLock::new();

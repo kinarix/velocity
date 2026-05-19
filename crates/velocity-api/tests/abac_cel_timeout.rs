@@ -60,8 +60,7 @@ async fn nested_all_macro_exhausts_cel_budget_and_denies() {
     // it'd still take ~5ms — but at that speed nothing else in the test
     // suite would finish on time either, so we can rely on this margin.
     let list = list_literal(60);
-    let condition =
-        format!("{l}.all(a, {l}.all(b, {l}.all(c, a + b + c >= 0)))", l = list);
+    let condition = format!("{l}.all(a, {l}.all(b, {l}.all(c, a + b + c >= 0)))", l = list);
 
     let policies = compile_policies(&[AbacPolicy {
         name: "expensive-cel-bound-check".into(),
@@ -75,10 +74,7 @@ async fn nested_all_macro_exhausts_cel_budget_and_denies() {
     // to switch to a different expensive primitive. Asserting compile
     // success makes that failure mode loud.
     assert!(
-        policies.iter().all(|p| matches!(
-            p,
-            velocity_api::policy::CompiledPolicy::Ok { .. }
-        )),
+        policies.iter().all(|p| matches!(p, velocity_api::policy::CompiledPolicy::Ok { .. })),
         "policy did not compile — pick a different expensive CEL primitive",
     );
     let policies = Arc::new(policies);
@@ -95,10 +91,7 @@ async fn nested_all_macro_exhausts_cel_budget_and_denies() {
     // status; the message drives audit/alerting routing.
     match err {
         ApiError::PolicyDenied(msg) => {
-            assert!(
-                msg.contains("timed out"),
-                "expected timeout-flavored denial, got `{msg}`",
-            );
+            assert!(msg.contains("timed out"), "expected timeout-flavored denial, got `{msg}`",);
             assert!(
                 msg.contains(">10ms"),
                 "expected the literal `>10ms` so a budget change ripples to this test, got `{msg}`",

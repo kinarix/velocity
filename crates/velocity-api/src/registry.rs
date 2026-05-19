@@ -160,12 +160,9 @@ impl ResolvedSchema {
         let pg_qualified = path.pg_qualified_table();
         let fields = Arc::new(FieldIndex::from_spec(&spec));
         let access = Arc::new(AccessIndex::from_spec(&spec));
-        let compiled_validations =
-            Arc::new(crate::validate::compile_rules(&spec.validations));
-        let compiled_policies =
-            Arc::new(crate::policy::compile_policies(&spec.access.policies));
-        let row_filter =
-            Arc::new(crate::row_filter::RowFilterIndex::from_spec(&spec, &fields));
+        let compiled_validations = Arc::new(crate::validate::compile_rules(&spec.validations));
+        let compiled_policies = Arc::new(crate::policy::compile_policies(&spec.access.policies));
+        let row_filter = Arc::new(crate::row_filter::RowFilterIndex::from_spec(&spec, &fields));
         let field_filter = Arc::new(crate::field_filter::FieldFilterIndex::from_spec(&spec));
         let masking = Arc::new(crate::masking::MaskingIndex::from_spec(&spec));
         Self {
@@ -403,10 +400,7 @@ mod tests {
     }
 
     fn role(name: &str, ops: &[&str]) -> RoleAccess {
-        RoleAccess {
-            role: name.into(),
-            operations: ops.iter().map(|s| (*s).into()).collect(),
-        }
+        RoleAccess { role: name.into(), operations: ops.iter().map(|s| (*s).into()).collect() }
     }
 
     #[test]

@@ -48,11 +48,7 @@ async fn tick_ensures_current_and_next_month_partitions_exist() {
     // exist after a successful tick.
     let today = Utc::now().date_naive();
     let current = format!("event_log_{:04}_{:02}", today.year(), today.month());
-    let next_date = today
-        .with_day(1)
-        .unwrap()
-        .checked_add_months(Months::new(1))
-        .unwrap();
+    let next_date = today.with_day(1).unwrap().checked_add_months(Months::new(1)).unwrap();
     let next = format!("event_log_{:04}_{:02}", next_date.year(), next_date.month());
 
     assert!(partition_exists(&pool, &current).await, "current-month partition {current} missing");
@@ -73,10 +69,7 @@ async fn tick_is_idempotent() {
     let _ = partition_manager::tick(&pool).await.unwrap();
     let second = partition_manager::tick(&pool).await.unwrap();
 
-    assert!(
-        second.is_empty(),
-        "second tick must not create anything; created: {second:?}"
-    );
+    assert!(second.is_empty(), "second tick must not create anything; created: {second:?}");
 }
 
 #[tokio::test]
@@ -92,11 +85,7 @@ async fn tick_creates_missing_next_month_partition() {
     // bootstrap migration uses the same path so this matches what would
     // happen if an operator hand-deleted one.
     let today = Utc::now().date_naive();
-    let next_date = today
-        .with_day(1)
-        .unwrap()
-        .checked_add_months(Months::new(1))
-        .unwrap();
+    let next_date = today.with_day(1).unwrap().checked_add_months(Months::new(1)).unwrap();
     let next_name = format!("event_log_{:04}_{:02}", next_date.year(), next_date.month());
 
     // First ensure it exists, then drop, then tick.
@@ -105,7 +94,10 @@ async fn tick_creates_missing_next_month_partition() {
         .execute(&pool)
         .await
         .unwrap();
-    assert!(!partition_exists(&pool, &next_name).await, "test precondition: partition must be dropped");
+    assert!(
+        !partition_exists(&pool, &next_name).await,
+        "test precondition: partition must be dropped"
+    );
 
     let created = partition_manager::tick(&pool).await.unwrap();
     assert!(

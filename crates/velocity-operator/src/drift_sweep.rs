@@ -72,7 +72,8 @@ pub async fn sweep_once(pool: &PgPool, client: &Client) -> Result<DriftReport> {
         // counter ticks because "no schemas declared" isn't drift.
         return Ok(DriftReport::default());
     }
-    let schemas: Vec<String> = expected.iter().map(|(s, _)| s.clone()).collect::<HashSet<_>>().into_iter().collect();
+    let schemas: Vec<String> =
+        expected.iter().map(|(s, _)| s.clone()).collect::<HashSet<_>>().into_iter().collect();
     let actual = actual_tables(pool, &schemas).await?;
 
     let mut orphans: Vec<(String, String)> = Vec::new();
@@ -96,11 +97,7 @@ pub async fn sweep_once(pool: &PgPool, client: &Client) -> Result<DriftReport> {
         }
     }
 
-    Ok(DriftReport {
-        expected_count: expected.len(),
-        actual_count: 0,
-        orphans,
-    })
+    Ok(DriftReport { expected_count: expected.len(), actual_count: 0, orphans })
 }
 
 /// Sweep result. The integration test asserts on these counts; ops

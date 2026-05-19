@@ -32,8 +32,8 @@ use velocity_api::{router, AppState};
 use velocity_operator::PostgresProvisioner;
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{
-    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
-    SearchTier,
+    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+    SearchSpec, SearchTier,
 };
 
 fn admin_url() -> Option<String> {
@@ -84,20 +84,20 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
 
 /// `(audit row count, payload of latest row)`.
-async fn read_audits(admin: &PgPool, schema_org: &str, action: &str) -> Vec<(Option<String>, Value)> {
+async fn read_audits(
+    admin: &PgPool,
+    schema_org: &str,
+    action: &str,
+) -> Vec<(Option<String>, Value)> {
     sqlx::query_as::<_, (Option<String>, Value)>(
         "SELECT entity_id::text, payload \
          FROM platform.audit_log \
@@ -112,10 +112,7 @@ async fn read_audits(admin: &PgPool, schema_org: &str, action: &str) -> Vec<(Opt
 }
 
 fn schema_org_of(path: &SchemaPath) -> String {
-    format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    )
+    format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version)
 }
 
 #[tokio::test]
@@ -158,22 +155,16 @@ async fn get_one_and_list_each_emit_a_read_audit_row() {
     let table = schema.pg_qualified.clone();
     let inserted_id: String = {
         let table = table.clone();
-        with_session_context(
-            &api_pool,
-            &schema,
-            RoleClass::Writer,
-            &identity,
-            move |tx| {
-                Box::pin(async move {
-                    let sql = format!(
-                        "INSERT INTO {table} (po_number) VALUES ($1) \
+        with_session_context(&api_pool, &schema, RoleClass::Writer, &identity, move |tx| {
+            Box::pin(async move {
+                let sql = format!(
+                    "INSERT INTO {table} (po_number) VALUES ($1) \
                          RETURNING id::text AS id"
-                    );
-                    let row = sqlx::query(&sql).bind("PO-0001").fetch_one(&mut **tx).await?;
-                    Ok(sqlx::Row::get::<String, _>(&row, "id"))
-                })
-            },
-        )
+                );
+                let row = sqlx::query(&sql).bind("PO-0001").fetch_one(&mut **tx).await?;
+                Ok(sqlx::Row::get::<String, _>(&row, "id"))
+            })
+        })
         .await
         .unwrap()
     };

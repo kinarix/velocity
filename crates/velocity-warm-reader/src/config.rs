@@ -94,7 +94,10 @@ mod tests {
     fn from_env_requires_storage_url_and_token() {
         let map = HashMap::new();
         let err = WarmReaderConfig::from_env_with(lookup(&map)).unwrap_err();
-        assert!(format!("{err:#}").contains("STORAGE_URL"), "missing storage url should be flagged: {err:#}");
+        assert!(
+            format!("{err:#}").contains("STORAGE_URL"),
+            "missing storage url should be flagged: {err:#}"
+        );
     }
 
     #[test]
@@ -103,7 +106,10 @@ mod tests {
         map.insert("VELOCITY_WARM_READER_STORAGE_URL", "file:///tmp/warm");
         map.insert("VELOCITY_WARM_READER_SERVICE_TOKEN", "tooshort");
         let err = WarmReaderConfig::from_env_with(lookup(&map)).unwrap_err();
-        assert!(format!("{err:#}").contains("at least 16"), "short token must be rejected: {err:#}");
+        assert!(
+            format!("{err:#}").contains("at least 16"),
+            "short token must be rejected: {err:#}"
+        );
     }
 
     #[test]

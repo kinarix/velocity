@@ -215,22 +215,12 @@ async fn bring_up_warm() -> WarmHarness {
     let prefixed: Arc<dyn ObjectStore> = if prefix.as_ref().is_empty() {
         raw_store.clone()
     } else {
-        Arc::new(object_store::prefix::PrefixStore::new(
-            raw_store.clone(),
-            prefix.clone(),
-        ))
+        Arc::new(object_store::prefix::PrefixStore::new(raw_store.clone(), prefix.clone()))
     };
 
     let entity = Uuid::new_v4();
-    write_warm_object(
-        prefixed.clone(),
-        &object_key,
-        &schema_org,
-        entity,
-        create_at,
-        update_at,
-    )
-    .await;
+    write_warm_object(prefixed.clone(), &object_key, &schema_org, entity, create_at, update_at)
+        .await;
 
     let runtime = Arc::new(RuntimeEnv::default());
     runtime.register_object_store(&parsed, raw_store.clone());
@@ -254,15 +244,7 @@ async fn bring_up_warm() -> WarmHarness {
         let _ = axum::serve(listener, app).await;
     });
 
-    WarmHarness {
-        _tmp: tmp,
-        addr,
-        bearer,
-        schema_org,
-        entity,
-        create_at,
-        update_at,
-    }
+    WarmHarness { _tmp: tmp, addr, bearer, schema_org, entity, create_at, update_at }
 }
 
 /// Build velocity-api state with the warm reader pointed at the
@@ -270,14 +252,13 @@ async fn bring_up_warm() -> WarmHarness {
 /// warm (`hot_days = 0`) and the fixture timestamps stay inside warm
 /// (`warm_years = 100`) regardless of how long this test takes to run
 /// on a slow CI box.
-fn build_app_state(
-    pool: PgPool,
-    schemas: Arc<SchemaRegistry>,
-    warm: &WarmHarness,
-) -> AppState {
-    let warm_reader =
-        WarmEventReader::new(format!("http://{}", warm.addr), warm.bearer.clone(), std::time::Duration::from_secs(5))
-            .expect("build warm reader client");
+fn build_app_state(pool: PgPool, schemas: Arc<SchemaRegistry>, warm: &WarmHarness) -> AppState {
+    let warm_reader = WarmEventReader::new(
+        format!("http://{}", warm.addr),
+        warm.bearer.clone(),
+        std::time::Duration::from_secs(5),
+    )
+    .expect("build warm reader client");
     let hot: Arc<dyn velocity_api::tiering::EventReader> =
         Arc::new(velocity_api::tiering::PostgresEventReader::new(pool.clone()));
     let tiered = Arc::new(
@@ -315,9 +296,8 @@ async fn body_json(res: Response) -> (StatusCode, Value) {
     let v = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-            json!({ "_raw_body": String::from_utf8_lossy(&bytes).to_string() })
-        })
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| json!({ "_raw_body": String::from_utf8_lossy(&bytes).to_string() }))
     };
     (status, v)
 }
@@ -343,11 +323,7 @@ async fn warm_at_query_returns_reconstructed_state() {
         eprintln!("skipping: Postgres not configured (set VELOCITY_API_TEST_PG_URL)");
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&admin)
-        .await
-        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect(&admin).await.unwrap();
 
     let warm = bring_up_warm().await;
     let (schemas, _ready) = SchemaRegistry::new();
@@ -361,11 +337,7 @@ async fn warm_at_query_returns_reconstructed_state() {
     let at = warm.update_at + Duration::seconds(1);
     let req = Request::builder()
         .method("GET")
-        .uri(history_uri(
-            &warm.schema_org,
-            &warm.entity.hyphenated().to_string(),
-            at,
-        ))
+        .uri(history_uri(&warm.schema_org, &warm.entity.hyphenated().to_string(), at))
         .body(Body::empty())
         .unwrap();
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
@@ -380,11 +352,7 @@ async fn warm_at_between_events_returns_create_state() {
         eprintln!("skipping: Postgres not configured (set VELOCITY_API_TEST_PG_URL)");
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&admin)
-        .await
-        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect(&admin).await.unwrap();
 
     let warm = bring_up_warm().await;
     let (schemas, _ready) = SchemaRegistry::new();
@@ -397,11 +365,7 @@ async fn warm_at_between_events_returns_create_state() {
     let at = warm.create_at + (warm.update_at - warm.create_at) / 2;
     let req = Request::builder()
         .method("GET")
-        .uri(history_uri(
-            &warm.schema_org,
-            &warm.entity.hyphenated().to_string(),
-            at,
-        ))
+        .uri(history_uri(&warm.schema_org, &warm.entity.hyphenated().to_string(), at))
         .body(Body::empty())
         .unwrap();
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
@@ -415,11 +379,7 @@ async fn warm_at_before_any_event_is_not_found() {
         eprintln!("skipping: Postgres not configured (set VELOCITY_API_TEST_PG_URL)");
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&admin)
-        .await
-        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect(&admin).await.unwrap();
 
     let warm = bring_up_warm().await;
     let (schemas, _ready) = SchemaRegistry::new();
@@ -432,11 +392,7 @@ async fn warm_at_before_any_event_is_not_found() {
     let at = warm.create_at - Duration::days(1);
     let req = Request::builder()
         .method("GET")
-        .uri(history_uri(
-            &warm.schema_org,
-            &warm.entity.hyphenated().to_string(),
-            at,
-        ))
+        .uri(history_uri(&warm.schema_org, &warm.entity.hyphenated().to_string(), at))
         .body(Body::empty())
         .unwrap();
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
@@ -449,11 +405,7 @@ async fn cold_at_returns_202_with_job_id() {
         eprintln!("skipping: Postgres not configured (set VELOCITY_API_TEST_PG_URL)");
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&admin)
-        .await
-        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect(&admin).await.unwrap();
 
     let warm = bring_up_warm().await;
     let (schemas, _ready) = SchemaRegistry::new();
@@ -467,9 +419,8 @@ async fn cold_at_returns_202_with_job_id() {
         std::time::Duration::from_secs(5),
     )
     .expect("build warm reader client");
-    let hot: Arc<dyn velocity_api::tiering::EventReader> = Arc::new(
-        velocity_api::tiering::PostgresEventReader::new(pool.clone()),
-    );
+    let hot: Arc<dyn velocity_api::tiering::EventReader> =
+        Arc::new(velocity_api::tiering::PostgresEventReader::new(pool.clone()));
     let tiered = Arc::new(
         TieredEventReader::new(hot, Some(Arc::new(warm_reader)))
             .with_windows(TierWindows { hot_days: 0, warm_years: 0 }),
@@ -482,11 +433,7 @@ async fn cold_at_returns_202_with_job_id() {
     let at = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
     let req = Request::builder()
         .method("GET")
-        .uri(history_uri(
-            &warm.schema_org,
-            &warm.entity.hyphenated().to_string(),
-            at,
-        ))
+        .uri(history_uri(&warm.schema_org, &warm.entity.hyphenated().to_string(), at))
         .body(Body::empty())
         .unwrap();
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
@@ -501,11 +448,7 @@ async fn warm_unreachable_surfaces_as_503() {
         eprintln!("skipping: Postgres not configured (set VELOCITY_API_TEST_PG_URL)");
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&admin)
-        .await
-        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect(&admin).await.unwrap();
 
     // Build a tiered reader pointing at a port that is NOT listening.
     // Asserts the ADR-003 fail-closed default: a warm-tier dependency
@@ -521,9 +464,8 @@ async fn warm_unreachable_surfaces_as_503() {
         std::time::Duration::from_secs(1),
     )
     .unwrap();
-    let hot: Arc<dyn velocity_api::tiering::EventReader> = Arc::new(
-        velocity_api::tiering::PostgresEventReader::new(pool.clone()),
-    );
+    let hot: Arc<dyn velocity_api::tiering::EventReader> =
+        Arc::new(velocity_api::tiering::PostgresEventReader::new(pool.clone()));
     let tiered = Arc::new(
         TieredEventReader::new(hot, Some(Arc::new(warm_reader)))
             .with_windows(TierWindows { hot_days: 0, warm_years: 100 }),
@@ -540,9 +482,5 @@ async fn warm_unreachable_surfaces_as_503() {
         .body(Body::empty())
         .unwrap();
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "body: {body}"
-    );
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
 }

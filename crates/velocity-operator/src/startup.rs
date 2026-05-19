@@ -140,17 +140,19 @@ impl TypesenseStartup {
 /// the partial-config case below is a defensive fallback.
 pub fn build_typesense_client(cfg: &OperatorConfig) -> TypesenseStartup {
     match (cfg.typesense_url.as_ref(), cfg.typesense_api_key.as_ref()) {
-        (Some(url), Some(key)) => match velocity_typesense::TypesenseClient::new(url.clone(), key.clone()) {
-            Ok(c) => {
-                tracing::info!(url = %url, "typesense client initialised");
-                TypesenseStartup::Configured(c)
+        (Some(url), Some(key)) => {
+            match velocity_typesense::TypesenseClient::new(url.clone(), key.clone()) {
+                Ok(c) => {
+                    tracing::info!(url = %url, "typesense client initialised");
+                    TypesenseStartup::Configured(c)
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    tracing::error!(error = %e, "failed to construct typesense client — Tier-3 schemas will not be eagerly provisioned");
+                    TypesenseStartup::ConstructionFailed(msg)
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                tracing::error!(error = %e, "failed to construct typesense client — Tier-3 schemas will not be eagerly provisioned");
-                TypesenseStartup::ConstructionFailed(msg)
-            }
-        },
+        }
         _ => {
             tracing::warn!(
                 "VELOCITY_OPERATOR_TYPESENSE_URL is unset — Tier-3 collections will be created lazily by velocity-api CDC instead"

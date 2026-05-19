@@ -44,15 +44,14 @@ pub fn build(spec: &LogRoutingDestSpec) -> Option<Arc<dyn Destination>> {
         "stdout" => Some(Arc::new(Stdout { name: spec.name.clone() })),
         "http_webhook" => {
             let url = spec.config.get("url")?.as_str()?.to_string();
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .ok()?;
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
             Some(Arc::new(HttpWebhook { name: spec.name.clone(), url, client }))
         }
         // Recognised-but-unimplemented kinds: return a "skip" sink so
         // operators see a clear "configured but no-op" log line.
-        "loki" | "s3" => Some(Arc::new(NotYet { name: spec.name.clone(), kind: spec.kind.clone() })),
+        "loki" | "s3" => {
+            Some(Arc::new(NotYet { name: spec.name.clone(), kind: spec.kind.clone() }))
+        }
         _ => None,
     }
 }
@@ -64,7 +63,9 @@ pub struct Stdout {
 
 #[async_trait::async_trait]
 impl Destination for Stdout {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn send(&self, record: &Value) -> DestinationOutcome {
         // Write directly to stdout — tracing's JSON formatter would wrap
         // us in another envelope, but we want the line itself to be the
@@ -91,7 +92,9 @@ pub struct HttpWebhook {
 
 #[async_trait::async_trait]
 impl Destination for HttpWebhook {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn send(&self, record: &Value) -> DestinationOutcome {
         match self.client.post(&self.url).json(record).send().await {
             Ok(r) if r.status().is_success() => DestinationOutcome::Sent,
@@ -112,7 +115,9 @@ pub struct NotYet {
 
 #[async_trait::async_trait]
 impl Destination for NotYet {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn send(&self, _record: &Value) -> DestinationOutcome {
         DestinationOutcome::Skipped("destination kind not yet implemented")
     }
@@ -166,15 +171,9 @@ mod tests {
     #[tokio::test]
     async fn loki_and_s3_are_skipped() {
         let d = build(&spec("l", "loki")).unwrap();
-        assert!(matches!(
-            d.send(&serde_json::json!({})).await,
-            DestinationOutcome::Skipped(_)
-        ));
+        assert!(matches!(d.send(&serde_json::json!({})).await, DestinationOutcome::Skipped(_)));
         let d = build(&spec("s", "s3")).unwrap();
-        assert!(matches!(
-            d.send(&serde_json::json!({})).await,
-            DestinationOutcome::Skipped(_)
-        ));
+        assert!(matches!(d.send(&serde_json::json!({})).await, DestinationOutcome::Skipped(_)));
     }
 
     #[test]

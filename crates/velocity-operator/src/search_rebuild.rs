@@ -202,8 +202,7 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
             return Err(RebuildError::Cancelled);
         }
         let next_cutoff = Utc::now();
-        let delta_rows =
-            fetch_delta(&args.pool, &total_table, delta_cutoff.to_rfc3339()).await?;
+        let delta_rows = fetch_delta(&args.pool, &total_table, delta_cutoff.to_rfc3339()).await?;
         if delta_rows.is_empty() {
             info!(pass, "delta pass empty; converged");
             break;
@@ -234,8 +233,7 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     // CDC resolves the alias to the new concrete on its own. (a)
     // would be a silent loss without this sweep. Idempotent upserts
     // make this safe even if a row is in both places already.
-    let post_flip_rows =
-        fetch_delta(&args.pool, &total_table, delta_cutoff.to_rfc3339()).await?;
+    let post_flip_rows = fetch_delta(&args.pool, &total_table, delta_cutoff.to_rfc3339()).await?;
     if !post_flip_rows.is_empty() {
         info!(rows = post_flip_rows.len(), "post-flip sweep");
         for (id, payload) in &post_flip_rows {
@@ -392,10 +390,7 @@ pub async fn fetch_delta(
          ORDER BY id ASC \
          LIMIT 5000"
     );
-    sqlx::query_as::<_, (String, Value)>(&sql)
-        .bind(cutoff_rfc3339)
-        .fetch_all(pool)
-        .await
+    sqlx::query_as::<_, (String, Value)>(&sql).bind(cutoff_rfc3339).fetch_all(pool).await
 }
 
 /// Fetch a page of ids that were soft-deleted at or after `cutoff`.
@@ -520,14 +515,7 @@ impl RebuildRegistry {
         cancel: CancellationToken,
         join: tokio::task::JoinHandle<()>,
     ) {
-        self.inner.insert(
-            uid,
-            RebuildHandle {
-                target_concrete,
-                cancel,
-                _join: Arc::new(join),
-            },
-        );
+        self.inner.insert(uid, RebuildHandle { target_concrete, cancel, _join: Arc::new(join) });
     }
 
     /// Remove the registry entry for `uid` **only if** its target
@@ -536,8 +524,7 @@ impl RebuildRegistry {
     /// superseded it, and the next reconcile would happily spawn a
     /// third task racing against the still-running second one.
     pub fn forget_if(&self, uid: &str, expected_target: &str) {
-        self.inner
-            .remove_if(uid, |_, h| h.target_concrete == expected_target);
+        self.inner.remove_if(uid, |_, h| h.target_concrete == expected_target);
     }
 
     pub fn len(&self) -> usize {

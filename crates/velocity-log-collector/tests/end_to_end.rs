@@ -46,9 +46,7 @@ async fn spawn_processor() -> (String, Captured) {
         bodies: Arc::new(Mutex::new(Vec::new())),
         token_ok: Arc::new(Mutex::new(false)),
     };
-    let app = Router::new()
-        .route("/v1/logs", post(handle))
-        .with_state(captured.clone());
+    let app = Router::new().route("/v1/logs", post(handle)).with_state(captured.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -82,11 +80,7 @@ async fn collector_ships_json_line_with_bearer_to_processor() {
 
     // Give the collector one scan cycle, then write the log line.
     tokio::time::sleep(Duration::from_millis(80)).await;
-    let mut f = tokio::fs::OpenOptions::new()
-        .append(true)
-        .open(&log_path)
-        .await
-        .unwrap();
+    let mut f = tokio::fs::OpenOptions::new().append(true).open(&log_path).await.unwrap();
     f.write_all(br#"{"level":"INFO","msg":"hello"}"#).await.unwrap();
     f.write_all(b"\n").await.unwrap();
     drop(f);
@@ -105,8 +99,8 @@ async fn collector_ships_json_line_with_bearer_to_processor() {
     assert!(!bodies.is_empty(), "processor should have received at least one batch");
     assert!(*captured.token_ok.lock().await, "bearer token should match expected");
 
-    let has_hello = bodies.iter().flat_map(|b| b["records"].as_array().cloned().unwrap_or_default())
-        .any(|r| {
+    let has_hello =
+        bodies.iter().flat_map(|b| b["records"].as_array().cloned().unwrap_or_default()).any(|r| {
             r.get("msg") == Some(&serde_json::json!("hello"))
                 && r.get("level") == Some(&serde_json::json!("INFO"))
                 && r["kubernetes"]["pod"] == "api-1"

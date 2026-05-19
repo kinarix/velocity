@@ -137,10 +137,7 @@ pub fn render_bundle(schemas: &[SchemaDefinition]) -> RulesBundle {
             continue;
         }
         rules.sort_by(|a, b| a.alert.cmp(&b.alert));
-        groups.push(RuleGroup {
-            name: format!("velocity.{ns}.{name}"),
-            rules,
-        });
+        groups.push(RuleGroup { name: format!("velocity.{ns}.{name}"), rules });
     }
     groups.sort_by(|a, b| a.name.cmp(&b.name));
     RulesBundle { groups }
@@ -149,12 +146,7 @@ pub fn render_bundle(schemas: &[SchemaDefinition]) -> RulesBundle {
 /// Render the (latency, availability) rule pair for one SLO. Either
 /// half is skipped if the corresponding budget isn't specified, so a
 /// CRD that only sets `target_p99_ms` produces only a latency rule.
-fn render_slo_rules(
-    schema_label: &str,
-    slo: &SloSpec,
-    ns: &str,
-    name: &str,
-) -> Vec<AlertingRule> {
+fn render_slo_rules(schema_label: &str, slo: &SloSpec, ns: &str, name: &str) -> Vec<AlertingRule> {
     let mut out = Vec::new();
 
     // Latency. The histogram has no `schema` label by design (see
@@ -298,26 +290,17 @@ mod tests {
                 version: version.into(),
                 partitioning: None,
                 auth: AuthSpec {
-                    strategy_ref: NamespacedRef {
-                        namespace: "ns".into(),
-                        name: "strategy".into(),
-                    },
+                    strategy_ref: NamespacedRef { namespace: "ns".into(), name: "strategy".into() },
                     overrides: vec![],
                 },
                 access: AccessSpec::default(),
                 fields: vec![],
                 validations: vec![],
-                search: SearchSpec {
-                    tier: SearchTier::Tier1,
-                    ..Default::default()
-                },
+                search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
                 time_machine: None,
                 audit: None,
                 archive: None,
-                observability: ObservabilitySpec {
-                    slos,
-                    extras: Default::default(),
-                },
+                observability: ObservabilitySpec { slos, extras: Default::default() },
                 scaling: None,
             },
             status: None,

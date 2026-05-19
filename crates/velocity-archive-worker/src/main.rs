@@ -52,17 +52,11 @@ async fn main() -> Result<()> {
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn env_u32(key: &str, default: u32) -> u32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 /// Build an `Arc<dyn ObjectStore>` when `ARCHIVE_S3_BUCKET` is set;
@@ -76,8 +70,6 @@ fn build_s3_store() -> Result<Option<std::sync::Arc<dyn object_store::ObjectStor
     if let Ok(region) = std::env::var("AWS_REGION") {
         builder = builder.with_region(region);
     }
-    let store = builder
-        .build()
-        .context("building AmazonS3 object_store")?;
+    let store = builder.build().context("building AmazonS3 object_store")?;
     Ok(Some(std::sync::Arc::new(store)))
 }

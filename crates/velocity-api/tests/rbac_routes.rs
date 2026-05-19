@@ -68,10 +68,7 @@ fn base_spec(access: AccessSpec) -> SchemaDefinitionSpec {
 }
 
 fn role(name: &str, ops: &[&str]) -> RoleAccess {
-    RoleAccess {
-        role: name.into(),
-        operations: ops.iter().map(|s| (*s).into()).collect(),
-    }
+    RoleAccess { role: name.into(), operations: ops.iter().map(|s| (*s).into()).collect() }
 }
 
 /// Pool that never connects. Sufficient for tests whose handler paths
@@ -92,7 +89,9 @@ fn build_state(spec: SchemaDefinitionSpec) -> AppState {
 
 /// Inject a known Identity into the request extension — substitutes for
 /// the real auth middleware so these tests don't drag in JWKS/JWT machinery.
-fn inject_identity(id: Identity) -> impl Clone + Fn(Request<Body>, Next) -> futures::future::BoxFuture<'static, Response> {
+fn inject_identity(
+    id: Identity,
+) -> impl Clone + Fn(Request<Body>, Next) -> futures::future::BoxFuture<'static, Response> {
     move |mut req: Request<Body>, next: Next| {
         let id = id.clone();
         Box::pin(async move {
@@ -130,7 +129,8 @@ fn req(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
 }
 
 const COLLECTION: &str = "/api/acme/supply-chain/procurement/purchase-order/v1";
-const ITEM: &str = "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
+const ITEM: &str =
+    "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
@@ -155,10 +155,8 @@ async fn closed_schema_denies_anonymous_on_get_one() {
 #[tokio::test]
 async fn closed_schema_denies_anonymous_on_create() {
     let app = router::build(build_state(closed_schema_spec(vec![role("writer", &["create"])])));
-    let res = app
-        .oneshot(req("POST", COLLECTION, Some(json!({"po_number": "PO-1"}))))
-        .await
-        .unwrap();
+    let res =
+        app.oneshot(req("POST", COLLECTION, Some(json!({"po_number": "PO-1"})))).await.unwrap();
     let (status, body) = body_json(res).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], "ACCESS_DENIED");
@@ -195,10 +193,8 @@ async fn closed_schema_denies_role_without_op_grant() {
         role("writer", &["create", "update"]),
     ]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &["reader"]))));
-    let res = app
-        .oneshot(req("POST", COLLECTION, Some(json!({"po_number": "PO-1"}))))
-        .await
-        .unwrap();
+    let res =
+        app.oneshot(req("POST", COLLECTION, Some(json!({"po_number": "PO-1"})))).await.unwrap();
     let (status, body) = body_json(res).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], "ACCESS_DENIED");

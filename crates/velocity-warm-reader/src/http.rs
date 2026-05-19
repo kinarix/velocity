@@ -73,9 +73,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub fn health_router() -> Router {
-    Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(|| async { "ok" }))
+    Router::new().route("/healthz", get(|| async { "ok" })).route("/readyz", get(|| async { "ok" }))
 }
 
 /// Constant-time service-token check. Bearer-only — the API client
@@ -124,10 +122,7 @@ async fn events(
 
     Ok((
         StatusCode::OK,
-        Json(EventsResponse {
-            events: out.events,
-            objects_scanned: out.objects_scanned,
-        }),
+        Json(EventsResponse { events: out.events, objects_scanned: out.objects_scanned }),
     ))
 }
 
@@ -160,11 +155,7 @@ mod tests {
     async fn missing_auth_is_401() {
         let app = router(state_with_memory_store());
         let resp = app
-            .oneshot(
-                Request::post("/v1/warm/events")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
+            .oneshot(Request::post("/v1/warm/events").body(Body::from("{}")).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

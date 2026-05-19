@@ -153,10 +153,7 @@ destinations:
         assert_eq!(b.filters[1].action, RuleAction::Redact);
         assert_eq!(b.destinations.len(), 2);
         assert_eq!(b.destinations[1].kind, "http_webhook");
-        assert_eq!(
-            b.destinations[1].config["url"].as_str(),
-            Some("https://example.test/log")
-        );
+        assert_eq!(b.destinations[1].config["url"].as_str(), Some("https://example.test/log"));
     }
 
     #[test]

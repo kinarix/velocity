@@ -27,8 +27,8 @@ pub struct ProcessorConfig {
 
 impl ProcessorConfig {
     pub fn from_env() -> Result<Self> {
-        let bind_addr = std::env::var("VELOCITY_LP_BIND_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:9090".to_string());
+        let bind_addr =
+            std::env::var("VELOCITY_LP_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9090".to_string());
         let policy_path: PathBuf = std::env::var("VELOCITY_LP_POLICY_PATH")
             .unwrap_or_else(|_| "/etc/velocity/log-policies.yaml".to_string())
             .into();

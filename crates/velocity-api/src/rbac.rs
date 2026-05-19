@@ -195,16 +195,12 @@ mod tests {
     }
 
     fn make_schema(roles: Vec<RoleAccess>) -> ResolvedSchema {
-        let path =
-            SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
         ResolvedSchema::from_spec(path, make_spec(roles))
     }
 
     fn role(name: &str, ops: &[&str]) -> RoleAccess {
-        RoleAccess {
-            role: name.into(),
-            operations: ops.iter().map(|s| (*s).into()).collect(),
-        }
+        RoleAccess { role: name.into(), operations: ops.iter().map(|s| (*s).into()).collect() }
     }
 
     fn ident(actor: &str, roles: &[&str]) -> Identity {
@@ -385,10 +381,7 @@ mod tests {
         let schema = make_schema(vec![role("reader", &["read"])]);
         let no_scope = api_key_ident("svc", vec![]);
         assert!(check_access(&schema, &no_scope, op::READ).is_err());
-        let with_scope = api_key_ident(
-            "svc",
-            vec![scope("purchase-order", Some("v1"), &["read"])],
-        );
+        let with_scope = api_key_ident("svc", vec![scope("purchase-order", Some("v1"), &["read"])]);
         assert!(check_access(&schema, &with_scope, op::READ).is_ok());
     }
 

@@ -106,7 +106,8 @@ fn policy(name: &str, action: &str, condition: &str, message: &str) -> AbacPolic
 }
 
 const COLLECTION: &str = "/api/acme/supply-chain/procurement/purchase-order/v1";
-const ITEM: &str = "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
+const ITEM: &str =
+    "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
 
 #[tokio::test]
 async fn create_denied_by_policy() {
@@ -127,7 +128,9 @@ async fn create_denied_by_policy() {
                 .method("POST")
                 .uri(COLLECTION)
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&json!({ "po_number": "PO-EXPENSIVE" })).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({ "po_number": "PO-EXPENSIVE" })).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -164,12 +167,8 @@ async fn create_admitted_when_policy_matches() {
 
 #[tokio::test]
 async fn update_runs_policy() {
-    let p = policy(
-        "no-rejected",
-        "update",
-        "self.po_number != 'POISON'",
-        "that PO number is reserved",
-    );
+    let p =
+        policy("no-rejected", "update", "self.po_number != 'POISON'", "that PO number is reserved");
     let state = build_state(spec_with_policies(vec![p]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &[]))));
     let res = app
@@ -204,13 +203,7 @@ async fn delete_runs_policy_with_null_self() {
     let state = build_state(spec_with_policies(vec![p]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &[]))));
     let res = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(ITEM)
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().method("DELETE").uri(ITEM).body(Body::empty()).unwrap())
         .await
         .unwrap();
     let (status, body) = body_json(res).await;

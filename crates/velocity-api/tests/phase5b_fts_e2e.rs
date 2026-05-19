@@ -81,9 +81,7 @@ fn tier2_spec(fields: Vec<FieldSpec>) -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
 }
 
 async fn insert(pool: &PgPool, schema: &ResolvedSchema, id: &Identity, payload: Value) {
@@ -99,11 +97,7 @@ async fn insert(pool: &PgPool, schema: &ResolvedSchema, id: &Identity, payload: 
         }
     }
     let table = schema.pg_qualified.clone();
-    let sql = format!(
-        "INSERT INTO {table} ({}) VALUES ({})",
-        cols.join(", "),
-        casts.join(", "),
-    );
+    let sql = format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), casts.join(", "),);
     with_session_context(pool, schema, RoleClass::Writer, id, move |tx| {
         Box::pin(async move {
             let mut q = sqlx::query(&sql);
@@ -134,10 +128,7 @@ async fn query_q(
                 q = row_filter::bind_json_param(q, v);
             }
             let rows = q.fetch_all(&mut **tx).await?;
-            Ok(rows
-                .into_iter()
-                .map(|r| r.get::<Value, _>("__row"))
-                .collect::<Vec<_>>())
+            Ok(rows.into_iter().map(|r| r.get::<Value, _>("__row")).collect::<Vec<_>>())
         })
     })
     .await
@@ -173,10 +164,7 @@ async fn fts_matches_searchable_fields() {
         searchable_field("supplier_notes"),
     ]);
     let plan = velocity_operator::build_ddl(&s, &path).unwrap();
-    assert!(
-        plan.main_table.contains("__fts tsvector"),
-        "tier-2 schema must provision __fts"
-    );
+    assert!(plan.main_table.contains("__fts tsvector"), "tier-2 schema must provision __fts");
     prov.sync_schema_tables(&plan, false).await.unwrap();
 
     let schema = ResolvedSchema::from_spec(path.clone(), s);
@@ -221,8 +209,7 @@ async fn fts_matches_searchable_fields() {
     // but websearch is implicit-AND for unquoted terms — PO-2 is missing
     // "steel").
     let rows = query_q(&api_pool, &schema, &identity, &registry, "steel widget").await;
-    let pos: Vec<String> =
-        rows.iter().map(|r| r["po_number"].as_str().unwrap().into()).collect();
+    let pos: Vec<String> = rows.iter().map(|r| r["po_number"].as_str().unwrap().into()).collect();
     assert_eq!(pos, vec!["PO-1"], "steel widget should match only PO-1");
 
     // FTS for "widget" alone matches PO-1 and PO-2.
@@ -235,17 +222,13 @@ async fn fts_matches_searchable_fields() {
 
     // FTS matches against `supplier_notes` too (cross-field search).
     let rows = query_q(&api_pool, &schema, &identity, &registry, "Tata").await;
-    let pos: Vec<String> =
-        rows.iter().map(|r| r["po_number"].as_str().unwrap().into()).collect();
+    let pos: Vec<String> = rows.iter().map(|r| r["po_number"].as_str().unwrap().into()).collect();
     assert_eq!(pos, vec!["PO-1"]);
 
     // The response row must NOT contain the __fts column (raw tsvector).
     let rows = query_q(&api_pool, &schema, &identity, &registry, "widget").await;
     for r in &rows {
-        assert!(
-            !r.as_object().unwrap().contains_key("__fts"),
-            "__fts must not leak to clients"
-        );
+        assert!(!r.as_object().unwrap().contains_key("__fts"), "__fts must not leak to clients");
     }
 
     cleanup(&admin_pool, &pg_schema).await;

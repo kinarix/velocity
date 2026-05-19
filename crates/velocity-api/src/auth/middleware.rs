@@ -109,7 +109,11 @@ pub struct AuthDecision {
 }
 
 impl AuthState {
-    pub fn new(schemas: Arc<SchemaRegistry>, strategies: Arc<AuthRegistry>, jwks: JwksCache) -> Self {
+    pub fn new(
+        schemas: Arc<SchemaRegistry>,
+        strategies: Arc<AuthRegistry>,
+        jwks: JwksCache,
+    ) -> Self {
         Self {
             schemas,
             strategies,
@@ -194,19 +198,12 @@ async fn try_authenticate(state: &AuthState, req: &mut Request<Body>) -> Result<
     let Some(path) = schema_path_from_uri(req.uri().path()) else {
         return Ok(());
     };
-    let schema = state
-        .schemas
-        .resolve(&path)
-        .ok_or_else(|| ApiError::SchemaNotFound)?;
+    let schema = state.schemas.resolve(&path).ok_or_else(|| ApiError::SchemaNotFound)?;
 
     let strategy_ref = &schema.spec.auth.strategy_ref;
-    let strategy = state
-        .strategies
-        .resolve(strategy_ref)
-        .ok_or_else(|| ApiError::AuthStrategyMissing(format!(
-            "{}/{}",
-            strategy_ref.namespace, strategy_ref.name
-        )))?;
+    let strategy = state.strategies.resolve(strategy_ref).ok_or_else(|| {
+        ApiError::AuthStrategyMissing(format!("{}/{}", strategy_ref.namespace, strategy_ref.name))
+    })?;
 
     // Resolve composite indirection iteratively. Iterative rather than
     // recursive so the future stays `Send` (a `&Request<Body>` capture
@@ -282,10 +279,8 @@ async fn try_authenticate(state: &AuthState, req: &mut Request<Body>) -> Result<
                 if let Some(pool) = state.audit_pool.as_ref() {
                     let code = err.code();
                     let action = action_from_method(req.method());
-                    let request_id = req
-                        .headers()
-                        .get("x-request-id")
-                        .and_then(|v| v.to_str().ok());
+                    let request_id =
+                        req.headers().get("x-request-id").and_then(|v| v.to_str().ok());
                     let provisional = AuthDecision {
                         revocation: match &err {
                             ApiError::Revoked => RevocationDecision::RevokedActor,
@@ -366,10 +361,7 @@ fn resolve_leaf_strategy(
         let mut next: Option<Arc<ResolvedAuthStrategy>> = None;
         for child_ref in &current.composite_children {
             let child = state.strategies.resolve(child_ref).ok_or_else(|| {
-                ApiError::AuthStrategyMissing(format!(
-                    "{}/{}",
-                    child_ref.namespace, child_ref.name
-                ))
+                ApiError::AuthStrategyMissing(format!("{}/{}", child_ref.namespace, child_ref.name))
             })?;
             if scheme_matches(child.kind, scheme.as_deref()) {
                 next = Some(child);
@@ -392,11 +384,7 @@ fn resolve_leaf_strategy(
                 accepts.dedup();
                 return Err(ApiError::Unauthenticated(format!(
                     "missing or unrecognised Authorization scheme; composite accepts: {}",
-                    if accepts.is_empty() {
-                        "<none>".to_string()
-                    } else {
-                        accepts.join(", ")
-                    }
+                    if accepts.is_empty() { "<none>".to_string() } else { accepts.join(", ") }
                 )));
             }
         }
@@ -460,10 +448,7 @@ async fn authenticate_api_key(
         .as_ref()
         .ok_or_else(|| ApiError::AuthStrategyMissing("api-key backend not configured".into()))?;
 
-    let record = checker
-        .lookup(&plaintext)
-        .await
-        .map_err(|e| e.into_api_error())?;
+    let record = checker.lookup(&plaintext).await.map_err(|e| e.into_api_error())?;
 
     // IP allowlist — non-empty list means the request's source IP must be
     // in one entry. We only honour `ConnectInfo` (direct peer). XFF /
@@ -490,10 +475,7 @@ async fn authenticate_api_key(
     Ok(identity_from_api_key(strategy, &record))
 }
 
-fn identity_from_api_key(
-    strategy: &ResolvedAuthStrategy,
-    record: &ApiKeyRecord,
-) -> Identity {
+fn identity_from_api_key(strategy: &ResolvedAuthStrategy, record: &ApiKeyRecord) -> Identity {
     let mut attributes = std::collections::HashMap::new();
     attributes.insert("actor_type".to_string(), record.actor_type.clone());
     Identity {
@@ -533,9 +515,10 @@ async fn authenticate_oidc(
     strategy: &Arc<ResolvedAuthStrategy>,
     session_id: uuid::Uuid,
 ) -> Result<Identity, ApiError> {
-    let store = state.sessions.as_ref().ok_or_else(|| {
-        ApiError::AuthStrategyMissing("session store not configured".into())
-    })?;
+    let store = state
+        .sessions
+        .as_ref()
+        .ok_or_else(|| ApiError::AuthStrategyMissing("session store not configured".into()))?;
     let record = store.lookup(session_id).await.map_err(|e| match e {
         SessionError::Expired => ApiError::Unauthenticated("session expired or missing".into()),
         SessionError::Backend(detail) => {
@@ -595,9 +578,7 @@ fn authorization_header(req: &Request<Body>) -> Result<&str, ApiError> {
 }
 
 fn client_ip_from_request(req: &Request<Body>) -> Option<IpAddr> {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip())
+    req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip())
 }
 
 /// Run the revocation check and translate it into a `RevocationDecision`
@@ -667,11 +648,10 @@ async fn verify_and_map(
     strategy: &Arc<ResolvedAuthStrategy>,
     token: &str,
 ) -> Result<Identity, ApiError> {
-    let header = decode_header(token)
-        .map_err(|e| ApiError::InvalidToken(format!("header parse: {e}")))?;
-    let kid = header
-        .kid
-        .ok_or_else(|| ApiError::InvalidToken("JWT header missing `kid`".into()))?;
+    let header =
+        decode_header(token).map_err(|e| ApiError::InvalidToken(format!("header parse: {e}")))?;
+    let kid =
+        header.kid.ok_or_else(|| ApiError::InvalidToken("JWT header missing `kid`".into()))?;
 
     // Unverified peek at `iss`, used only for picking the IssuerConfig and
     // the JWKS lookup key. The signature check below proves the value.
@@ -685,11 +665,7 @@ async fn verify_and_map(
             ApiError::InvalidToken("issuer not configured on strategy".into())
         })?;
 
-    let jwk = state
-        .jwks
-        .lookup(&unverified_iss, &kid)
-        .await
-        .map_err(map_jwks_err)?;
+    let jwk = state.jwks.lookup(&unverified_iss, &kid).await.map_err(map_jwks_err)?;
     let alg = jwk
         .common
         .key_algorithm
@@ -710,14 +686,9 @@ async fn verify_and_map(
     let data = decode::<Value>(token, &decoding_key, &validation)
         .map_err(|e| ApiError::InvalidToken(format!("verify: {e}")))?;
 
-    let mapping = state
-        .claim_mappings
-        .get(&strategy.key)
-        .map(|m| m.clone())
-        .ok_or_else(|| ApiError::Internal(format!(
-            "strategy `{}` has no compiled claim mapping",
-            strategy.key
-        )))?;
+    let mapping = state.claim_mappings.get(&strategy.key).map(|m| m.clone()).ok_or_else(|| {
+        ApiError::Internal(format!("strategy `{}` has no compiled claim mapping", strategy.key))
+    })?;
     let identity = mapping
         .apply(&data.claims, &strategy.key, &unverified_iss)
         .map_err(|e| ApiError::InvalidToken(format!("claim mapping: {e}")))?;
@@ -758,11 +729,9 @@ fn algorithm_from_key_algorithm(a: jsonwebtoken::jwk::KeyAlgorithm) -> Option<Al
 /// hint for choosing keys, never as proof of identity.
 fn unverified_issuer(token: &str) -> Option<String> {
     let payload_b64 = token.split('.').nth(1)?;
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        payload_b64,
-    )
-    .ok()?;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload_b64)
+            .ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
     v.get("iss").and_then(Value::as_str).map(str::to_string)
 }
@@ -774,8 +743,8 @@ fn unverified_issuer(token: &str) -> Option<String> {
 /// `/.../query` is folded into `"query"` (close enough for SOC dashboards
 /// — the URL is captured via `request_id` -> trace anyway).
 fn action_from_method(method: &axum::http::Method) -> &'static str {
-    use axum::http::Method;
     use crate::audit::action;
+    use axum::http::Method;
     match *method {
         Method::GET => action::READ,
         Method::POST => action::CREATE,
@@ -801,8 +770,8 @@ mod tests {
 
     #[test]
     fn schema_path_from_uri_extracts_six_segments() {
-        let p = schema_path_from_uri("/api/acme/supply-chain/procurement/purchase-order/v1")
-            .unwrap();
+        let p =
+            schema_path_from_uri("/api/acme/supply-chain/procurement/purchase-order/v1").unwrap();
         assert_eq!(p.org, "acme");
         assert_eq!(p.app, "supply-chain");
         assert_eq!(p.object, "purchase-order");
@@ -811,9 +780,8 @@ mod tests {
 
     #[test]
     fn schema_path_from_uri_includes_id_suffix_routes() {
-        let p =
-            schema_path_from_uri("/api/acme/supply-chain/procurement/purchase-order/v1/abc-id")
-                .unwrap();
+        let p = schema_path_from_uri("/api/acme/supply-chain/procurement/purchase-order/v1/abc-id")
+            .unwrap();
         assert_eq!(p.object, "purchase-order");
     }
 
@@ -851,25 +819,17 @@ mod tests {
 
     use crate::auth::api_key::ApiKeyRecord;
     use velocity_types::common::NamespacedRef;
-    use velocity_types::crds::auth::{
-        AuthStrategyConfig, AuthStrategySpec, AuthStrategyType,
-    };
+    use velocity_types::crds::auth::{AuthStrategyConfig, AuthStrategySpec, AuthStrategyType};
 
     fn make_strategy(kind: AuthStrategyType) -> ResolvedAuthStrategy {
-        let spec = AuthStrategySpec {
-            kind,
-            config: AuthStrategyConfig::default(),
-        };
+        let spec = AuthStrategySpec { kind, config: AuthStrategyConfig::default() };
         let r = NamespacedRef { namespace: "acme-platform".into(), name: "default".into() };
         ResolvedAuthStrategy::from_spec(&r, spec)
     }
 
     fn req_with_header(value: &str) -> Request<Body> {
         let mut req = Request::new(Body::empty());
-        req.headers_mut().insert(
-            axum::http::header::AUTHORIZATION,
-            value.parse().unwrap(),
-        );
+        req.headers_mut().insert(axum::http::header::AUTHORIZATION, value.parse().unwrap());
         req
     }
 
@@ -961,10 +921,7 @@ mod tests {
     fn make_composite(children: Vec<NamespacedRef>) -> ResolvedAuthStrategy {
         let spec = AuthStrategySpec {
             kind: AuthStrategyType::Composite,
-            config: AuthStrategyConfig {
-                children,
-                ..AuthStrategyConfig::default()
-            },
+            config: AuthStrategyConfig { children, ..AuthStrategyConfig::default() },
         };
         let r = NamespacedRef { namespace: "acme-platform".into(), name: "both".into() };
         ResolvedAuthStrategy::from_spec(&r, spec)
@@ -975,17 +932,12 @@ mod tests {
     }
 
     fn child_strategy(name: &str, kind: AuthStrategyType) -> ResolvedAuthStrategy {
-        let spec = AuthStrategySpec {
-            kind,
-            config: AuthStrategyConfig::default(),
-        };
+        let spec = AuthStrategySpec { kind, config: AuthStrategyConfig::default() };
         let r = NamespacedRef { namespace: "acme-platform".into(), name: name.into() };
         ResolvedAuthStrategy::from_spec(&r, spec)
     }
 
-    fn state_with_strategies(
-        children: Vec<ResolvedAuthStrategy>,
-    ) -> AuthState {
+    fn state_with_strategies(children: Vec<ResolvedAuthStrategy>) -> AuthState {
         use crate::auth::jwks::JwksCache;
         use crate::auth::registry::AuthRegistry;
         use crate::registry::SchemaRegistry;
@@ -999,10 +951,8 @@ mod tests {
 
     #[test]
     fn composite_picks_bearer_child_when_bearer_present() {
-        let composite = Arc::new(make_composite(vec![
-            child_ref("jwt-primary"),
-            child_ref("api-key-fallback"),
-        ]));
+        let composite =
+            Arc::new(make_composite(vec![child_ref("jwt-primary"), child_ref("api-key-fallback")]));
         let state = state_with_strategies(vec![
             child_strategy("jwt-primary", AuthStrategyType::Jwt),
             child_strategy("api-key-fallback", AuthStrategyType::ApiKey),
@@ -1019,10 +969,8 @@ mod tests {
         // first* when a credential is present — it must NOT override
         // which scheme is actually presented. ApiKey header → ApiKey
         // child, regardless of position.
-        let composite = Arc::new(make_composite(vec![
-            child_ref("jwt-primary"),
-            child_ref("api-key-fallback"),
-        ]));
+        let composite =
+            Arc::new(make_composite(vec![child_ref("jwt-primary"), child_ref("api-key-fallback")]));
         let state = state_with_strategies(vec![
             child_strategy("jwt-primary", AuthStrategyType::Jwt),
             child_strategy("api-key-fallback", AuthStrategyType::ApiKey),
@@ -1035,10 +983,8 @@ mod tests {
     #[test]
     fn composite_rejects_when_no_child_accepts_scheme() {
         let composite = Arc::new(make_composite(vec![child_ref("jwt-primary")]));
-        let state = state_with_strategies(vec![child_strategy(
-            "jwt-primary",
-            AuthStrategyType::Jwt,
-        )]);
+        let state =
+            state_with_strategies(vec![child_strategy("jwt-primary", AuthStrategyType::Jwt)]);
         // ApiKey scheme present but the composite only declares JWT — the
         // 401 message must list "Bearer" as the accepted scheme.
         let req = req_with_header("ApiKey vel_prod_AB12cd34EF56gh78IJ90kl12MN34op56QR78st90UV1");
@@ -1074,10 +1020,8 @@ mod tests {
 
     #[test]
     fn composite_with_no_authorization_header_lists_accepted_schemes() {
-        let composite = Arc::new(make_composite(vec![
-            child_ref("jwt-primary"),
-            child_ref("api-key-fallback"),
-        ]));
+        let composite =
+            Arc::new(make_composite(vec![child_ref("jwt-primary"), child_ref("api-key-fallback")]));
         let state = state_with_strategies(vec![
             child_strategy("jwt-primary", AuthStrategyType::Jwt),
             child_strategy("api-key-fallback", AuthStrategyType::ApiKey),
@@ -1179,10 +1123,7 @@ mod tests {
                 .unwrap(),
         ));
         let dbg = format!("{state:?}");
-        assert!(
-            dbg.contains("audit_pool_configured: true"),
-            "audit pool flag should flip: {dbg}"
-        );
+        assert!(dbg.contains("audit_pool_configured: true"), "audit pool flag should flip: {dbg}");
     }
 
     #[test]

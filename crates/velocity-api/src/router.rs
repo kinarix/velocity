@@ -53,14 +53,8 @@ pub fn build(state: AppState) -> Router {
         // (which requires 5 path segments after /api) naturally skips
         // them — these routes authenticate via the platform service
         // token, not the per-schema strategy.
-        .route(
-            "/api/platform/audit",
-            get(platform_handlers::audit_list),
-        )
-        .route(
-            "/api/platform/audit/verify",
-            get(platform_handlers::audit_verify),
-        )
+        .route("/api/platform/audit", get(platform_handlers::audit_list))
+        .route("/api/platform/audit/verify", get(platform_handlers::audit_verify))
         .route(
             "/api/{org}/{app}/{domain}/{object}/{version}",
             get(handlers::list).post(handlers::create),
@@ -73,10 +67,7 @@ pub fn build(state: AppState) -> Router {
             "/api/{org}/{app}/{domain}/{object}/{version}/search",
             axum::routing::post(handlers::search),
         )
-        .route(
-            "/api/{org}/search",
-            axum::routing::post(handlers::cross_search),
-        )
+        .route("/api/{org}/search", axum::routing::post(handlers::cross_search))
         .route(
             "/api/{org}/{app}/{domain}/{object}/{version}/{id}",
             get(handlers::get_one).put(handlers::update).delete(handlers::delete_soft),
@@ -167,10 +158,7 @@ pub fn build(state: AppState) -> Router {
 /// Mounted alongside the API router in `main.rs` via `Router::merge`.
 pub fn build_auth(state: AuthHandlersState) -> Router {
     Router::new()
-        .route(
-            "/auth/login/{namespace}/{name}",
-            get(auth_handlers::login),
-        )
+        .route("/auth/login/{namespace}/{name}", get(auth_handlers::login))
         .route("/auth/callback", get(auth_handlers::callback))
         .route("/auth/logout", axum::routing::post(auth_handlers::logout))
         .with_state(state)

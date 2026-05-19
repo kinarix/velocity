@@ -28,18 +28,12 @@ use http_body_util::BodyExt;
 use ipnet::IpNet;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use velocity_api::auth::api_key::{
-    ApiKeyChecker, ApiKeyError, ApiKeyRecord, ApiKeyScope,
-};
-use velocity_api::auth::{
-    authenticate, AuthRegistry, AuthState, JwksCache, ResolvedAuthStrategy,
-};
+use velocity_api::auth::api_key::{ApiKeyChecker, ApiKeyError, ApiKeyRecord, ApiKeyScope};
+use velocity_api::auth::{authenticate, AuthRegistry, AuthState, JwksCache, ResolvedAuthStrategy};
 use velocity_api::registry::ResolvedSchema;
 use velocity_api::{Identity, SchemaRegistry};
 use velocity_types::common::{NamespacedRef, SchemaPath};
-use velocity_types::crds::auth::{
-    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType,
-};
+use velocity_types::crds::auth::{AuthStrategyConfig, AuthStrategySpec, AuthStrategyType};
 use velocity_types::crds::schema::{
     AccessSpec, AuthSpec, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
     SearchTier,
@@ -108,12 +102,9 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 fn api_key_strategy() -> ResolvedAuthStrategy {
-    let spec = AuthStrategySpec {
-        kind: AuthStrategyType::ApiKey,
-        config: AuthStrategyConfig::default(),
-    };
-    let strategy_ref =
-        NamespacedRef { namespace: STRATEGY_NS.into(), name: STRATEGY_NAME.into() };
+    let spec =
+        AuthStrategySpec { kind: AuthStrategyType::ApiKey, config: AuthStrategyConfig::default() };
+    let strategy_ref = NamespacedRef { namespace: STRATEGY_NS.into(), name: STRATEGY_NAME.into() };
     ResolvedAuthStrategy::from_spec(&strategy_ref, spec)
 }
 
@@ -125,28 +116,29 @@ fn build_router(checker: Arc<dyn ApiKeyChecker>) -> Router {
     let strategies = AuthRegistry::new();
     strategies.upsert(api_key_strategy());
 
-    let auth_state =
-        AuthState::new(schemas, strategies, JwksCache::new()).with_api_keys(checker);
+    let auth_state = AuthState::new(schemas, strategies, JwksCache::new()).with_api_keys(checker);
 
     Router::new()
-        .route(
-            "/api/{org}/{app}/{domain}/{object}/{version}",
-            get(echo_identity),
-        )
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_identity))
         .layer(from_fn_with_state(auth_state, authenticate))
 }
 
 async fn echo_identity(identity: Option<Extension<Identity>>) -> impl IntoResponse {
     match identity {
-        Some(Extension(id)) => (StatusCode::OK, Json(json!({ "actor_id": id.actor_id })))
-            .into_response(),
+        Some(Extension(id)) => {
+            (StatusCode::OK, Json(json!({ "actor_id": id.actor_id }))).into_response()
+        }
         None => (StatusCode::INTERNAL_SERVER_ERROR, "no identity").into_response(),
     }
 }
 
 async fn read_body(body: Body) -> Value {
     let bytes = body.collect().await.unwrap().to_bytes();
-    if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() }
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }
 
 /// `oneshot` requests don't have a backing TCP socket, so the middleware's

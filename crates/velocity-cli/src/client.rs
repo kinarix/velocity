@@ -228,7 +228,10 @@ impl ApiClient {
     /// health server in `velocity-api/src/health.rs`); same-listener
     /// is also valid and is what `cargo run` does by default. The
     /// CLI honours `--metrics-url` to point elsewhere if needed.
-    pub(crate) async fn get_metrics_raw(&self, override_url: Option<&str>) -> Result<String, ApiError> {
+    pub(crate) async fn get_metrics_raw(
+        &self,
+        override_url: Option<&str>,
+    ) -> Result<String, ApiError> {
         let url = match override_url {
             Some(u) => u.to_string(),
             None => format!("{}/metrics", self.base_url),
@@ -257,9 +260,7 @@ impl SchemaPath {
     pub(crate) fn parse(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split('/').collect();
         if parts.len() != 5 {
-            anyhow::bail!(
-                "schema path `{s}` must have 5 segments: org/app/domain/object/version"
-            );
+            anyhow::bail!("schema path `{s}` must have 5 segments: org/app/domain/object/version");
         }
         for (i, p) in parts.iter().enumerate() {
             if p.is_empty() {

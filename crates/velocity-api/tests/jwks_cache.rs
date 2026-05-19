@@ -54,7 +54,8 @@ async fn spawn_jwks_server() -> (String, JwksFixture, JoinHandle<()>) {
     let fixture = JwksFixture::default();
     let app =
         axum::Router::new().route("/jwks.json", get(jwks_handler)).with_state(fixture.clone());
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
+    let listener =
+        tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
     let addr = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -98,10 +99,8 @@ async fn cold_start_success_marks_issuer_ready() {
     fixture.set_body(jwks_with_kid("k1")).await;
 
     let cache = JwksCache::new();
-    let status = cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url,
-    }).await;
+    let status =
+        cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url }).await;
 
     assert_eq!(status, IssuerStatus::Ready);
     assert_eq!(cache.key_count("https://idp.test"), 1);
@@ -115,10 +114,8 @@ async fn cold_start_failure_marks_issuer_pending() {
     fixture.set_fail(true).await;
 
     let cache = JwksCache::new();
-    let status = cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url,
-    }).await;
+    let status =
+        cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url }).await;
     assert_eq!(status, IssuerStatus::Pending);
 
     let err = cache.lookup("https://idp.test", "k1").await.unwrap_err();
@@ -138,17 +135,15 @@ async fn kid_miss_forces_one_refresh_then_succeeds() {
     // Cold-start serves only "k1".
     fixture.set_body(jwks_with_kid("k1")).await;
     let cache = JwksCache::new();
-    cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url,
-    }).await;
+    cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url }).await;
     assert_eq!(cache.key_count("https://idp.test"), 1);
 
     // IdP rotates: now serves both "k1" and "k2".
     fixture.set_body(jwks_with_two("k1", "k2")).await;
 
     // Looking up the new kid forces a refresh; succeeds.
-    let jwk = cache.lookup("https://idp.test", "k2").await.expect("k2 reachable via forced refresh");
+    let jwk =
+        cache.lookup("https://idp.test", "k2").await.expect("k2 reachable via forced refresh");
     assert_eq!(jwk.common.key_id.as_deref(), Some("k2"));
     assert_eq!(cache.key_count("https://idp.test"), 2);
 }
@@ -158,10 +153,7 @@ async fn kid_miss_refresh_is_rate_limited() {
     let (url, fixture, _server) = spawn_jwks_server().await;
     fixture.set_body(jwks_with_kid("k1")).await;
     let cache = JwksCache::new();
-    cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url,
-    }).await;
+    cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url }).await;
 
     // First unknown-kid lookup consumes the refresh budget.
     let err = cache.lookup("https://idp.test", "kX").await.unwrap_err();
@@ -185,10 +177,7 @@ async fn transient_outage_leaves_cached_keys_intact() {
     let (url, fixture, _server) = spawn_jwks_server().await;
     fixture.set_body(jwks_with_kid("k1")).await;
     let cache = JwksCache::new();
-    cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url,
-    }).await;
+    cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url }).await;
     assert!(cache.lookup("https://idp.test", "k1").await.is_ok());
 
     // JWKS endpoint flips to 500. Background refresh runs; key set must not
@@ -207,16 +196,10 @@ async fn add_issuer_replaces_url_for_same_iss() {
     fix_b.set_body(jwks_with_kid("kb")).await;
 
     let cache = JwksCache::new();
-    cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url_a,
-    }).await;
+    cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url_a }).await;
     assert!(cache.lookup("https://idp.test", "ka").await.is_ok());
 
-    cache.add_issuer(IssuerConfig {
-        issuer: "https://idp.test".into(),
-        jwks_url: url_b,
-    }).await;
+    cache.add_issuer(IssuerConfig { issuer: "https://idp.test".into(), jwks_url: url_b }).await;
     // After re-registration, only the new URL's key set should be live.
     assert!(cache.lookup("https://idp.test", "kb").await.is_ok());
     assert!(matches!(

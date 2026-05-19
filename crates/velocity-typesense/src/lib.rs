@@ -166,11 +166,7 @@ impl TypesenseClient {
     /// `PUT /aliases/<alias>` is itself idempotent — re-pointing an
     /// existing alias to a different collection is the supported swap
     /// primitive used by Phase 5d-3b blue-green.
-    pub async fn upsert_alias(
-        &self,
-        alias: &str,
-        target: &str,
-    ) -> Result<(), TypesenseError> {
+    pub async fn upsert_alias(&self, alias: &str, target: &str) -> Result<(), TypesenseError> {
         let r = self
             .http
             .put(self.url(&format!("/aliases/{alias}")))
@@ -205,10 +201,7 @@ impl TypesenseClient {
             let body = r.text().await.unwrap_or_default();
             return Err(TypesenseError::Status { status, body });
         }
-        let v = r
-            .json::<Value>()
-            .await
-            .map_err(|e| TypesenseError::Decode(e.to_string()))?;
+        let v = r.json::<Value>().await.map_err(|e| TypesenseError::Decode(e.to_string()))?;
         Ok(v.get("collection_name").and_then(|v| v.as_str()).map(str::to_string))
     }
 
@@ -271,9 +264,7 @@ impl TypesenseClient {
             let body = r.text().await.unwrap_or_default();
             return Err(TypesenseError::Status { status, body });
         }
-        r.json::<Value>()
-            .await
-            .map_err(|e| TypesenseError::Decode(e.to_string()))
+        r.json::<Value>().await.map_err(|e| TypesenseError::Decode(e.to_string()))
     }
 }
 
@@ -371,10 +362,7 @@ pub fn schema_collection_name(path: &SchemaPath) -> String {
 /// practice, and we leave room for the suffix by clipping the alias
 /// to 51 chars (51 + "__" + 8 = 61). The leading bytes carry org/app
 /// identity so the truncation is unambiguous in dashboards.
-pub fn schema_concrete_collection_name(
-    path: &SchemaPath,
-    spec: &SchemaDefinitionSpec,
-) -> String {
+pub fn schema_concrete_collection_name(path: &SchemaPath, spec: &SchemaDefinitionSpec) -> String {
     let alias = schema_collection_name(path);
     let cs = collection_spec_inner(path, spec, &alias);
     let mut hasher = Sha256::new();
@@ -387,10 +375,7 @@ pub fn schema_concrete_collection_name(
 /// Build a `CollectionSpec` whose `name` is the concrete (hashed)
 /// collection name. Operator + CDC use this for the actual POST to
 /// `/collections`; the alias is created separately and points at it.
-pub fn concrete_collection_spec(
-    path: &SchemaPath,
-    spec: &SchemaDefinitionSpec,
-) -> CollectionSpec {
+pub fn concrete_collection_spec(path: &SchemaPath, spec: &SchemaDefinitionSpec) -> CollectionSpec {
     let concrete = schema_concrete_collection_name(path, spec);
     collection_spec_inner(path, spec, &concrete)
 }
@@ -449,11 +434,7 @@ fn collection_spec_inner(
     for f in &spec.fields {
         fields.push(field_to_tsfield(f));
     }
-    CollectionSpec {
-        name: name.into(),
-        fields,
-        default_sorting_field: None,
-    }
+    CollectionSpec { name: name.into(), fields, default_sorting_field: None }
 }
 
 /// Cross-search collection spec. Carries a flat `__body` text blob plus
@@ -627,7 +608,8 @@ mod tests {
             "access": {},
             "fields": [ { "name": "po_number", "type": "string", "required": true } ],
             "search": { "tier": "Tier3" }
-        })).expect("s1 spec");
+        }))
+        .expect("s1 spec");
         let s2: SchemaDefinitionSpec = serde_json::from_value(json!({
             "version": "v1",
             "auth": { "strategyRef": { "name": "default", "namespace": "p" } },
@@ -637,7 +619,8 @@ mod tests {
                 { "name": "supplier_code", "type": "string", "required": false }
             ],
             "search": { "tier": "Tier3" }
-        })).expect("s2 spec");
+        }))
+        .expect("s2 spec");
 
         let n1a = schema_concrete_collection_name(&path, &s1);
         let n1b = schema_concrete_collection_name(&path, &s1);
@@ -664,7 +647,8 @@ mod tests {
             "access": {},
             "fields": [ { "name": "po_number", "type": "string", "required": true } ],
             "search": { "tier": "Tier3" }
-        })).expect("spec");
+        }))
+        .expect("spec");
         let cs = concrete_collection_spec(&path, &spec);
         assert_eq!(cs.name, schema_concrete_collection_name(&path, &spec));
         assert_ne!(cs.name, schema_collection_name(&path), "concrete name != alias name");
@@ -687,10 +671,7 @@ mod tests {
         assert!(!obj.contains_key("__fts"), "binary tsvector dropped");
         let ts = obj["created_at"].as_i64().expect("created_at is int64");
         assert!(ts > 1_700_000_000, "created_at converted to epoch seconds");
-        assert!(
-            !obj.contains_key("updated_at"),
-            "unparseable timestamp dropped, not coerced to 0"
-        );
+        assert!(!obj.contains_key("updated_at"), "unparseable timestamp dropped, not coerced to 0");
     }
 
     #[test]

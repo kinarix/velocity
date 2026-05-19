@@ -77,11 +77,7 @@ impl IntoResponse for WarmReaderError {
                 tracing::warn!(code = self.code(), error = %self, "warm-reader client error");
             }
         }
-        let body = ErrorEnvelope {
-            code: self.code(),
-            message: self.to_string(),
-            request_id: None,
-        };
+        let body = ErrorEnvelope { code: self.code(), message: self.to_string(), request_id: None };
         (self.status(), Json(body)).into_response()
     }
 }

@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use velocity_types::common::NamespacedRef;
-use velocity_types::crds::auth::{AuthStrategySpec, AuthStrategyType, IssuerConfig as CrdIssuerConfig};
+use velocity_types::crds::auth::{
+    AuthStrategySpec, AuthStrategyType, IssuerConfig as CrdIssuerConfig,
+};
 
 use crate::auth::jwks::{IssuerConfig as JwksIssuerConfig, JwksCache};
 
@@ -155,10 +157,8 @@ mod tests {
 
     fn strat(key_name: &str) -> ResolvedAuthStrategy {
         let r = NamespacedRef { namespace: "acme-platform".into(), name: key_name.into() };
-        let spec = AuthStrategySpec {
-            kind: AuthStrategyType::Jwt,
-            config: AuthStrategyConfig::default(),
-        };
+        let spec =
+            AuthStrategySpec { kind: AuthStrategyType::Jwt, config: AuthStrategyConfig::default() };
         ResolvedAuthStrategy::from_spec(&r, spec)
     }
 

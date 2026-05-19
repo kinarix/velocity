@@ -53,10 +53,7 @@ fn spec_with_row_filter(rules: Vec<RowFilterRule>) -> SchemaDefinitionSpec {
             },
             overrides: Vec::new(),
         },
-        access: AccessSpec {
-            row_filter: rules,
-            ..AccessSpec::default()
-        },
+        access: AccessSpec { row_filter: rules, ..AccessSpec::default() },
         fields: vec![f],
         validations: Vec::new(),
         search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
@@ -111,7 +108,8 @@ fn rule(role: &str, field: &str, op: &str, value: Value) -> RowFilterRule {
 }
 
 const COLLECTION: &str = "/api/acme/supply-chain/procurement/purchase-order/v1";
-const ITEM: &str = "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
+const ITEM: &str =
+    "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
 
 /// A broken row filter (field that doesn't exist) must page an operator
 /// rather than silently admit — every verb that builds a WHERE should
@@ -120,12 +118,8 @@ const ITEM: &str = "/api/acme/supply-chain/procurement/purchase-order/v1/0000000
 
 #[tokio::test]
 async fn list_500s_on_broken_row_filter() {
-    let state = build_state(spec_with_row_filter(vec![rule(
-        "reader",
-        "ghost_field",
-        "eq",
-        json!("x"),
-    )]));
+    let state =
+        build_state(spec_with_row_filter(vec![rule("reader", "ghost_field", "eq", json!("x"))]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &["reader"]))));
     let res = app
         .oneshot(Request::builder().method("GET").uri(COLLECTION).body(Body::empty()).unwrap())
@@ -138,12 +132,8 @@ async fn list_500s_on_broken_row_filter() {
 
 #[tokio::test]
 async fn get_500s_on_broken_row_filter() {
-    let state = build_state(spec_with_row_filter(vec![rule(
-        "reader",
-        "ghost_field",
-        "eq",
-        json!("x"),
-    )]));
+    let state =
+        build_state(spec_with_row_filter(vec![rule("reader", "ghost_field", "eq", json!("x"))]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &["reader"]))));
     let res = app
         .oneshot(Request::builder().method("GET").uri(ITEM).body(Body::empty()).unwrap())
@@ -156,12 +146,8 @@ async fn get_500s_on_broken_row_filter() {
 
 #[tokio::test]
 async fn update_500s_on_broken_row_filter() {
-    let state = build_state(spec_with_row_filter(vec![rule(
-        "reader",
-        "ghost_field",
-        "eq",
-        json!("x"),
-    )]));
+    let state =
+        build_state(spec_with_row_filter(vec![rule("reader", "ghost_field", "eq", json!("x"))]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &["reader"]))));
     let res = app
         .oneshot(
@@ -183,12 +169,8 @@ async fn update_500s_on_broken_row_filter() {
 
 #[tokio::test]
 async fn delete_500s_on_broken_row_filter() {
-    let state = build_state(spec_with_row_filter(vec![rule(
-        "reader",
-        "ghost_field",
-        "eq",
-        json!("x"),
-    )]));
+    let state =
+        build_state(spec_with_row_filter(vec![rule("reader", "ghost_field", "eq", json!("x"))]));
     let app = router::build(state).layer(from_fn(inject_identity(ident("alice", &["reader"]))));
     let res = app
         .oneshot(Request::builder().method("DELETE").uri(ITEM).body(Body::empty()).unwrap())

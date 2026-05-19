@@ -212,15 +212,10 @@ pub async fn list_audit(
     signer: Option<&Arc<CursorSigner>>,
     params: &AuditListParams,
 ) -> Result<AuditPage, ApiError> {
-    let schema_org = params
-        .schema_org
-        .as_deref()
-        .ok_or(ApiError::AuditFilterRequired("schema_org"))?;
+    let schema_org =
+        params.schema_org.as_deref().ok_or(ApiError::AuditFilterRequired("schema_org"))?;
 
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_AUDIT_PAGE_SIZE)
-        .clamp(1, MAX_AUDIT_PAGE_SIZE);
+    let limit = params.limit.unwrap_or(DEFAULT_AUDIT_PAGE_SIZE).clamp(1, MAX_AUDIT_PAGE_SIZE);
 
     // Build the WHERE clause incrementally. Every value is bound; the
     // strings we splice are static SQL fragments.
@@ -274,7 +269,9 @@ pub async fn list_audit(
     // schema_org index + a sort. Good enough for v1.
     if let Some(cursor) = &params.cursor {
         let signer = signer.ok_or_else(|| {
-            ApiError::BadRequest("audit cursor presented but cursor signing key not configured".into())
+            ApiError::BadRequest(
+                "audit cursor presented but cursor signing key not configured".into(),
+            )
         })?;
         let env = open_cursor(signer, params, cursor)?;
         binds.push(Bind::Ts(env.occurred_at));
@@ -307,12 +304,8 @@ pub async fn list_audit(
             Bind::Ts(t) => q.bind(t),
         };
     }
-    let mut rows: Vec<AuditRow> = q
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(AuditRow::from)
-        .collect();
+    let mut rows: Vec<AuditRow> =
+        q.fetch_all(pool).await?.into_iter().map(AuditRow::from).collect();
 
     let has_more = rows.len() as u32 > limit;
     if has_more {

@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use kube::api::{DeleteParams, DynamicObject, ListParams, Patch, PatchParams};
-use kube::discovery::ApiCapabilities;
 use kube::core::ApiResource;
+use kube::discovery::ApiCapabilities;
 use kube::{Api, Discovery};
 use serde_json::Value;
 
@@ -49,10 +49,8 @@ pub(crate) struct ApplyArgs {
 pub(crate) async fn apply(args: ApplyArgs, kubeconfig: &Option<String>) -> Result<()> {
     let manifests = parse_manifests(&args.file)?;
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
 
     let mut pp = PatchParams::apply(FIELD_MANAGER).force();
     if args.dry_run {
@@ -106,12 +104,14 @@ pub(crate) struct GetArgs {
     pub namespace: Option<String>,
 }
 
-pub(crate) async fn get(args: GetArgs, kubeconfig: &Option<String>, output: OutputFormat) -> Result<()> {
+pub(crate) async fn get(
+    args: GetArgs,
+    kubeconfig: &Option<String>,
+    output: OutputFormat,
+) -> Result<()> {
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let (ar, caps) = find_resource(&discovery, &args.kind)?;
     let api = object_api(client, &ar, &caps, args.namespace.as_deref())?;
 
@@ -120,12 +120,12 @@ pub(crate) async fn get(args: GetArgs, kubeconfig: &Option<String>, output: Outp
         let rows = vec![row_for_object(&obj, is_namespaced(&caps))];
         print(headers(is_namespaced(&caps)), &rows, output);
     } else {
-        let list = api.list(&ListParams::default()).await.with_context(|| format!("listing {}", args.kind))?;
-        let rows: Vec<Vec<String>> = list
-            .items
-            .iter()
-            .map(|o| row_for_object(o, is_namespaced(&caps)))
-            .collect();
+        let list = api
+            .list(&ListParams::default())
+            .await
+            .with_context(|| format!("listing {}", args.kind))?;
+        let rows: Vec<Vec<String>> =
+            list.items.iter().map(|o| row_for_object(o, is_namespaced(&caps))).collect();
         print(headers(is_namespaced(&caps)), &rows, output);
     }
     Ok(())
@@ -166,11 +166,7 @@ fn phase_and_ready(obj: &DynamicObject) -> (String, String) {
         _ => return ("—".into(), "—".into()),
     };
 
-    let phase = status
-        .get("phase")
-        .and_then(Value::as_str)
-        .unwrap_or("—")
-        .to_string();
+    let phase = status.get("phase").and_then(Value::as_str).unwrap_or("—").to_string();
 
     let ready = status
         .get("conditions")
@@ -212,10 +208,8 @@ pub(crate) struct DescribeArgs {
 
 pub(crate) async fn describe(args: DescribeArgs, kubeconfig: &Option<String>) -> Result<()> {
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let (ar, caps) = find_resource(&discovery, &args.kind)?;
     let api = object_api(client, &ar, &caps, args.namespace.as_deref())?;
     let obj = api
@@ -229,10 +223,7 @@ pub(crate) async fn describe(args: DescribeArgs, kubeconfig: &Option<String>) ->
 
 fn render_describe(kind: &str, obj: &DynamicObject) {
     println!("Kind:        {kind}");
-    println!(
-        "Name:        {}",
-        obj.metadata.name.as_deref().unwrap_or("<unnamed>")
-    );
+    println!("Name:        {}", obj.metadata.name.as_deref().unwrap_or("<unnamed>"));
     if let Some(ns) = &obj.metadata.namespace {
         println!("Namespace:   {ns}");
     }
@@ -252,9 +243,7 @@ fn render_describe(kind: &str, obj: &DynamicObject) {
 
     if let Some(spec) = obj.data.get("spec") {
         println!("Spec:");
-        for line in serde_yaml::to_string(spec)
-            .unwrap_or_else(|_| "<unrenderable>".into())
-            .lines()
+        for line in serde_yaml::to_string(spec).unwrap_or_else(|_| "<unrenderable>".into()).lines()
         {
             println!("  {line}");
         }
@@ -271,11 +260,8 @@ fn render_describe(kind: &str, obj: &DynamicObject) {
     if let Some(arr) = status.get("conditions").and_then(Value::as_array) {
         println!("Conditions:");
         for c in arr {
-            let kind = c
-                .get("type")
-                .or_else(|| c.get("kind"))
-                .and_then(Value::as_str)
-                .unwrap_or("?");
+            let kind =
+                c.get("type").or_else(|| c.get("kind")).and_then(Value::as_str).unwrap_or("?");
             let status_v = c.get("status").and_then(Value::as_str).unwrap_or("?");
             let msg = c.get("message").and_then(Value::as_str).unwrap_or("");
             if msg.is_empty() {
@@ -307,10 +293,8 @@ pub(crate) async fn delete(args: DeleteArgs, kubeconfig: &Option<String>) -> Res
         bail!("aborted");
     }
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let (ar, caps) = find_resource(&discovery, &args.kind)?;
     let api = object_api(client, &ar, &caps, args.namespace.as_deref())?;
 
@@ -335,10 +319,8 @@ pub(crate) struct DiffArgs {
 pub(crate) async fn diff(args: DiffArgs, kubeconfig: &Option<String>) -> Result<()> {
     let manifests = parse_manifests(&args.file)?;
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let dry_run = PatchParams::apply(FIELD_MANAGER).force().dry_run();
 
     for obj in manifests {
@@ -444,18 +426,12 @@ fn object_api(
 ) -> Result<Api<DynamicObject>> {
     if is_namespaced(caps) {
         let ns = namespace.ok_or_else(|| {
-            anyhow!(
-                "{} is namespaced — supply --namespace <ns> (or set on the manifest)",
-                ar.kind
-            )
+            anyhow!("{} is namespaced — supply --namespace <ns> (or set on the manifest)", ar.kind)
         })?;
         Ok(Api::namespaced_with(client, ns, ar))
     } else {
         if namespace.is_some() {
-            return Err(anyhow!(
-                "{} is cluster-scoped — drop --namespace",
-                ar.kind
-            ));
+            return Err(anyhow!("{} is cluster-scoped — drop --namespace", ar.kind));
         }
         Ok(Api::all_with(client, ar))
     }

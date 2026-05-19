@@ -98,8 +98,7 @@ pub fn build_list(
     identity: &Identity,
 ) -> Result<CompiledList, ApiError> {
     let mut params: Vec<Value> = Vec::new();
-    let mut sql =
-        format!("SELECT * FROM {} t WHERE deleted_at IS NULL", schema.pg_qualified);
+    let mut sql = format!("SELECT * FROM {} t WHERE deleted_at IS NULL", schema.pg_qualified);
 
     for f in &q.filter {
         if !schema.fields.by_name.contains_key(&f.field) {
@@ -182,8 +181,8 @@ mod tests {
     }
 
     fn field(name: &str, filterable: bool, sortable: bool) -> FieldSpec {
-        let mut f: FieldSpec = serde_json::from_value(json!({ "name": name, "type": "string" }))
-            .unwrap();
+        let mut f: FieldSpec =
+            serde_json::from_value(json!({ "name": name, "type": "string" })).unwrap();
         f.kind = FieldKind::String;
         f.filterable = filterable;
         f.sortable = sortable;
@@ -281,11 +280,7 @@ mod tests {
         let s = schema(vec![field("status", true, false), field("supplier_code", true, false)]);
         let q = ListQuery {
             filter: vec![
-                FilterField {
-                    field: "status".into(),
-                    op: FilterOp::Eq,
-                    value: json!("approved"),
-                },
+                FilterField { field: "status".into(), op: FilterOp::Eq, value: json!("approved") },
                 FilterField {
                     field: "supplier_code".into(),
                     op: FilterOp::Neq,

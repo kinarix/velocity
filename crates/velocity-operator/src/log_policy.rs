@@ -126,10 +126,7 @@ pub struct RenderedDestination {
 /// Rule names are namespaced as `{ns}/{policyName}/{ruleName}` to keep
 /// collisions impossible across teams and to make the processor's logs
 /// say which CRD a rule originated from.
-pub fn render_bundle(
-    filters: &[LogFilterPolicy],
-    routings: &[LogRoutingPolicy],
-) -> RenderedBundle {
+pub fn render_bundle(filters: &[LogFilterPolicy], routings: &[LogRoutingPolicy]) -> RenderedBundle {
     let mut filter_rules: Vec<RenderedFilterRule> = Vec::new();
     for policy in filters {
         let ns = policy.metadata.namespace.as_deref().unwrap_or("default");
@@ -202,7 +199,11 @@ mod tests {
 
     fn filter(ns: &str, name: &str, rules: Vec<LogFilterRule>) -> LogFilterPolicy {
         LogFilterPolicy {
-            metadata: KubeMeta { name: Some(name.into()), namespace: Some(ns.into()), ..Default::default() },
+            metadata: KubeMeta {
+                name: Some(name.into()),
+                namespace: Some(ns.into()),
+                ..Default::default()
+            },
             spec: LogFilterPolicySpec { rules },
             status: None,
         }
@@ -210,7 +211,11 @@ mod tests {
 
     fn routing(ns: &str, name: &str, dests: Vec<LogDestination>) -> LogRoutingPolicy {
         LogRoutingPolicy {
-            metadata: KubeMeta { name: Some(name.into()), namespace: Some(ns.into()), ..Default::default() },
+            metadata: KubeMeta {
+                name: Some(name.into()),
+                namespace: Some(ns.into()),
+                ..Default::default()
+            },
             spec: LogRoutingPolicySpec { destinations: dests },
             status: None,
         }
@@ -236,10 +241,11 @@ mod tests {
 
     #[test]
     fn filter_rules_are_namespaced_and_sorted_by_priority_then_name() {
-        let p1 = filter("ns-a", "policy-1", vec![
-            rule("z-third", 30, "drop"),
-            rule("a-first", 10, "drop"),
-        ]);
+        let p1 = filter(
+            "ns-a",
+            "policy-1",
+            vec![rule("z-third", 30, "drop"), rule("a-first", 10, "drop")],
+        );
         let p2 = filter("ns-b", "policy-2", vec![rule("middle", 20, "keep")]);
         let b = render_bundle(&[p1, p2], &[]);
         let names: Vec<_> = b.filters.iter().map(|r| r.name.as_str()).collect();

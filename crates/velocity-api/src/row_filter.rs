@@ -147,10 +147,9 @@ impl RowFilterIndex {
     ) -> Result<bool, BrokenError> {
         match self {
             Self::Empty => Ok(true),
-            Self::Broken { role, reason } => Err(BrokenError {
-                role: role.clone(),
-                reason: reason.clone(),
-            }),
+            Self::Broken { role, reason } => {
+                Err(BrokenError { role: role.clone(), reason: reason.clone() })
+            }
             Self::Compiled(compiled) => Ok(compiled.matches_payload(identity_roles, payload)),
         }
     }
@@ -174,10 +173,9 @@ impl RowFilterIndex {
     ) -> Result<Option<Predicate>, BrokenError> {
         match self {
             Self::Empty => Ok(None),
-            Self::Broken { role, reason } => Err(BrokenError {
-                role: role.clone(),
-                reason: reason.clone(),
-            }),
+            Self::Broken { role, reason } => {
+                Err(BrokenError { role: role.clone(), reason: reason.clone() })
+            }
             Self::Compiled(compiled) => Ok(compiled.predicate(identity_roles, next_param_idx)),
         }
     }
@@ -247,10 +245,7 @@ pub fn predicate_for(
     next_param_idx: usize,
 ) -> Result<Option<Predicate>, ApiError> {
     schema.row_filter.predicate(&identity.roles, next_param_idx).map_err(|e| {
-        ApiError::Internal(format!(
-            "rowFilter broken on role `{}`: {}",
-            e.role, e.reason
-        ))
+        ApiError::Internal(format!("rowFilter broken on role `{}`: {}", e.role, e.reason))
     })
 }
 
@@ -265,10 +260,7 @@ pub fn payload_visible(
     payload: &Value,
 ) -> Result<bool, ApiError> {
     schema.row_filter.matches_payload(&identity.roles, payload).map_err(|e| {
-        ApiError::Internal(format!(
-            "rowFilter broken on role `{}`: {}",
-            e.role, e.reason
-        ))
+        ApiError::Internal(format!("rowFilter broken on role `{}`: {}", e.role, e.reason))
     })
 }
 
@@ -348,10 +340,7 @@ pub fn scoped_roles_for_session(
             Err(BrokenError { role: role.clone(), reason: reason.clone() })
         }
         RowFilterIndex::Compiled(compiled) => {
-            let any_unrestricted = identity
-                .roles
-                .iter()
-                .any(|r| !compiled.by_role.contains_key(r));
+            let any_unrestricted = identity.roles.iter().any(|r| !compiled.by_role.contains_key(r));
             if any_unrestricted {
                 return Ok(SCOPED_ROLES_UNRESTRICTED.into());
             }
@@ -462,8 +451,8 @@ mod tests {
     };
 
     fn field(name: &str) -> FieldSpec {
-        let mut f: FieldSpec = serde_json::from_value(json!({ "name": name, "type": "string" }))
-            .unwrap();
+        let mut f: FieldSpec =
+            serde_json::from_value(json!({ "name": name, "type": "string" })).unwrap();
         f.kind = FieldKind::String;
         f.filterable = true;
         f
@@ -517,10 +506,8 @@ mod tests {
 
     #[test]
     fn unknown_field_in_filter_is_broken() {
-        let i = idx(&spec_with(
-            vec![rule("reader", "ghost", "eq", json!("x"))],
-            vec![field("region")],
-        ));
+        let i =
+            idx(&spec_with(vec![rule("reader", "ghost", "eq", json!("x"))], vec![field("region")]));
         let err = i.predicate(&["reader".into()], 1).unwrap_err();
         assert!(err.reason.contains("unknown field"));
     }
@@ -572,10 +559,7 @@ mod tests {
             ],
             vec![field("region")],
         ));
-        let p = i
-            .predicate(&["west".into(), "east".into()], 1)
-            .unwrap()
-            .unwrap();
+        let p = i.predicate(&["west".into(), "east".into()], 1).unwrap().unwrap();
         assert!(p.sql.contains(" OR "));
         assert_eq!(p.params.len(), 2);
     }
@@ -589,9 +573,7 @@ mod tests {
             vec![rule("regional-reader", "region", "eq", json!("west"))],
             vec![field("region")],
         ));
-        let p = i
-            .predicate(&["regional-reader".into(), "pii-reader".into()], 1)
-            .unwrap();
+        let p = i.predicate(&["regional-reader".into(), "pii-reader".into()], 1).unwrap();
         assert!(p.is_none(), "an unmapped role must short-circuit to TRUE");
     }
 
@@ -795,8 +777,7 @@ mod tests {
             vec![rule("pricer", "amount", "gte", json!(100))],
             vec![{
                 let mut f: FieldSpec =
-                    serde_json::from_value(json!({ "name": "amount", "type": "integer" }))
-                        .unwrap();
+                    serde_json::from_value(json!({ "name": "amount", "type": "integer" })).unwrap();
                 f.kind = FieldKind::Integer;
                 f.filterable = true;
                 f
@@ -812,10 +793,8 @@ mod tests {
     fn matches_payload_propagates_broken_filter() {
         // Same fail-loud posture as scoped_roles_propagates_broken_filter:
         // a misconfigured CRD must NOT silently admit traffic.
-        let i = idx(&spec_with(
-            vec![rule("reader", "ghost", "eq", json!("x"))],
-            vec![field("region")],
-        ));
+        let i =
+            idx(&spec_with(vec![rule("reader", "ghost", "eq", json!("x"))], vec![field("region")]));
         let id = identity_with_roles(&["reader"]);
         let err = i.matches_payload(&id.roles, &json!({ "region": "west" })).unwrap_err();
         assert!(err.reason.contains("unknown field"));

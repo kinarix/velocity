@@ -21,12 +21,12 @@ use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{FieldKind, SearchTier};
 
 use crate::audit::{self, action, outcome};
-use crate::event_log::{self, EventLogRow, EventSource};
 use crate::auth::AuthDecision;
 use crate::error::ApiError;
+use crate::event_log::{self, EventLogRow, EventSource};
 use crate::field_filter::FieldFilterIndex;
-use crate::identity::Identity;
 use crate::idempotency::{self, CachedResponse, Lookup};
+use crate::identity::Identity;
 use crate::policy;
 use crate::query::{build_list, ListQuery};
 use crate::rbac::{check_access, op};
@@ -210,12 +210,8 @@ pub async fn list(
     .await?;
     let compiled = build_list(&schema, &q, &identity)?;
 
-    let items = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Reader,
-        &identity,
-        move |tx| {
+    let items =
+        with_session_context(&state.pool, &schema, RoleClass::Reader, &identity, move |tx| {
             Box::pin(async move {
                 // Wrap each row in `row_to_json` so we can stream arbitrary
                 // user-declared columns back without per-schema struct
@@ -234,9 +230,8 @@ pub async fn list(
                     rows.into_iter().map(|r| r.get::<Value, _>("row")).collect();
                 Ok(items)
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     // Layer-5 read strip — applied row-by-row so an actor without the
     // role for a sensitive column never sees it leave the server. The
@@ -344,10 +339,8 @@ pub async fn create(
     .await?;
 
     // ── Idempotency (#16) — if present, replay or 409 before doing work.
-    let idempotency_key = headers
-        .get(IDEMPOTENCY_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    let idempotency_key =
+        headers.get(IDEMPOTENCY_HEADER).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let request_hash = idempotency_key
         .as_ref()
         .map(|_| idempotency::hash_payload(&Value::Object(payload_obj.clone())));
@@ -355,8 +348,7 @@ pub async fn create(
         idempotency::validate_key(key)?;
         match idempotency::lookup(&state.pool, key, hash).await? {
             Lookup::Replay(cached) => {
-                let status = StatusCode::from_u16(cached.status)
-                    .unwrap_or(StatusCode::CREATED);
+                let status = StatusCode::from_u16(cached.status).unwrap_or(StatusCode::CREATED);
                 let mut body = cached.body;
                 schema.field_filter.strip_for_read(&mut body, &identity.roles);
                 schema.masking.apply_for_read(&mut body, &identity.roles);
@@ -397,15 +389,10 @@ pub async fn create(
     // we write into the audit row can carry `__fields_changed` = the
     // user-submitted top-level field names (id/timestamps/version are
     // server-managed and filtered out by `submitted_field_names`).
-    let submitted_fields =
-        audit::submitted_field_names(&Value::Object(payload_obj.clone()));
+    let submitted_fields = audit::submitted_field_names(&Value::Object(payload_obj.clone()));
 
-    let inserted = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Writer,
-        &identity,
-        move |tx| {
+    let inserted =
+        with_session_context(&state.pool, &schema, RoleClass::Writer, &identity, move |tx| {
             Box::pin(async move {
                 let row = insert_row(tx, &table, &cols, &casts, &vals).await?;
                 // `RETURNING row_to_json(table.*)` must always include `id`
@@ -467,9 +454,8 @@ pub async fn create(
                 .await?;
                 Ok(row)
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     // ── Idempotency record — write after the work commits so replays
     // return the same body the first caller got. A lost race here is
@@ -524,9 +510,8 @@ async fn write_outbox(
     entity_id: &str,
     payload: &Value,
 ) -> Result<(), sqlx::Error> {
-    let sql = format!(
-        "INSERT INTO {outbox_table} (op, entity_id, payload) VALUES ($1, $2::uuid, $3)"
-    );
+    let sql =
+        format!("INSERT INTO {outbox_table} (op, entity_id, payload) VALUES ($1, $2::uuid, $3)");
     sqlx::query(&sql).bind(op).bind(entity_id).bind(payload).execute(&mut **tx).await?;
     Ok(())
 }
@@ -566,15 +551,9 @@ pub async fn get_one(
     let scope = row_filter::predicate_for(&schema, &identity, 2)?;
     let id_for_audit = id.clone();
 
-    let row = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Reader,
-        &identity,
-        move |tx| {
-            Box::pin(async move { fetch_one_json(tx, &table, &id, scope.as_ref()).await })
-        },
-    )
+    let row = with_session_context(&state.pool, &schema, RoleClass::Reader, &identity, move |tx| {
+        Box::pin(async move { fetch_one_json(tx, &table, &id, scope.as_ref()).await })
+    })
     .await?;
 
     let mut row = row.ok_or(ApiError::NotFound)?;
@@ -716,10 +695,7 @@ pub async fn update(
     let table = schema.pg_qualified.clone();
     // Row-filter binds (if any) live after id/version — start at $(vals + 3).
     let scope = row_filter::predicate_for(&schema, &identity, vals.len() + 3)?;
-    let scope_sql = scope
-        .as_ref()
-        .map(|p| format!(" AND {}", p.sql))
-        .unwrap_or_default();
+    let scope_sql = scope.as_ref().map(|p| format!(" AND {}", p.sql)).unwrap_or_default();
     let sql = format!(
         "UPDATE {table} SET {} WHERE id = ${id_idx}::uuid AND version = ${ver_idx} AND deleted_at IS NULL{scope_sql} \
          RETURNING (to_jsonb({table}.*) - '__fts') AS row",
@@ -738,12 +714,8 @@ pub async fn update(
          WHERE id = $1::uuid AND deleted_at IS NULL"
     );
 
-    let updated = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Writer,
-        &identity,
-        move |tx| {
+    let updated =
+        with_session_context(&state.pool, &schema, RoleClass::Writer, &identity, move |tx| {
             Box::pin(async move {
                 // Snapshot the pre-update state inside the same tx so the
                 // event_log `diff` reflects what actually changed under
@@ -781,10 +753,8 @@ pub async fn update(
                         let table = qualified_table_from_sql(&sql);
                         let probe_sql =
                             format!("SELECT id FROM {table} WHERE id = $1::uuid LIMIT 1");
-                        let exists = sqlx::query(&probe_sql)
-                            .bind(&id)
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                        let exists =
+                            sqlx::query(&probe_sql).bind(&id).fetch_optional(&mut **tx).await?;
                         // If we had a scope, "exists" alone isn't enough —
                         // the row may exist but be hidden. Treat as NotFound
                         // unless there's no scope at all.
@@ -841,10 +811,9 @@ pub async fn update(
                 .await?;
                 Ok(row)
             })
-        },
-    )
-    .await
-    .map_err(map_update_err)?;
+        })
+        .await
+        .map_err(map_update_err)?;
 
     let mut body = updated;
     schema.field_filter.strip_for_read(&mut body, &identity.roles);
@@ -915,8 +884,7 @@ pub async fn delete_soft(
         action::DELETE,
         decision.as_ref(),
         request_id.as_deref(),
-        policy::evaluate_for(&schema.compiled_policies, op::DELETE, &Value::Null, &identity)
-            .await,
+        policy::evaluate_for(&schema.compiled_policies, op::DELETE, &Value::Null, &identity).await,
     )
     .await?;
     let table = schema.pg_qualified.clone();
@@ -930,17 +898,11 @@ pub async fn delete_soft(
     let event_schema = schema.clone();
     let event_identity = identity.clone();
 
-    let result = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Admin,
-        &identity,
-        move |tx| {
+    let result =
+        with_session_context(&state.pool, &schema, RoleClass::Admin, &identity, move |tx| {
             Box::pin(async move {
-                let scope_sql = scope
-                    .as_ref()
-                    .map(|p| format!(" AND {}", p.sql))
-                    .unwrap_or_default();
+                let scope_sql =
+                    scope.as_ref().map(|p| format!(" AND {}", p.sql)).unwrap_or_default();
                 let sql = format!(
                     "UPDATE {table} \
                      SET deleted_at = now(), updated_at = now(), \
@@ -958,8 +920,7 @@ pub async fn delete_soft(
                     return Err(sqlx::Error::RowNotFound);
                 }
                 if matches!(tier, SearchTier::Tier3) {
-                    write_outbox(tx, &outbox_table, "delete", &id, &json!({ "id": id }))
-                        .await?;
+                    write_outbox(tx, &outbox_table, "delete", &id, &json!({ "id": id })).await?;
                 }
                 audit::write_audit(
                     tx,
@@ -995,9 +956,8 @@ pub async fn delete_soft(
                 .await?;
                 Ok(())
             })
-        },
-    )
-    .await;
+        })
+        .await;
 
     match result {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
@@ -1063,12 +1023,8 @@ pub async fn query(
     let cursor_sort_fields = compiled.cursor_sort_fields.clone();
     let schema_key = compiled.schema_key.clone();
 
-    let rows: Vec<Value> = with_session_context(
-        &state.pool,
-        &schema,
-        RoleClass::Reader,
-        &identity,
-        move |tx| {
+    let rows: Vec<Value> =
+        with_session_context(&state.pool, &schema, RoleClass::Reader, &identity, move |tx| {
             Box::pin(async move {
                 let mut q = sqlx::query(&compiled.sql);
                 for v in &compiled.params {
@@ -1081,13 +1037,9 @@ pub async fn query(
                     // column. Include columns sit alongside as
                     // `__inc_<name>` — lift them into the main row
                     // under the friendly include name.
-                    let mut obj = r
-                        .try_get::<Value, _>("__row")
-                        .map_err(|_| {
-                            sqlx::Error::Protocol(
-                                "query: SELECT did not produce __row".into(),
-                            )
-                        })?;
+                    let mut obj = r.try_get::<Value, _>("__row").map_err(|_| {
+                        sqlx::Error::Protocol("query: SELECT did not produce __row".into())
+                    })?;
                     for inc in &include_names {
                         let alias = format!("__inc_{inc}");
                         if let Ok(joined) = r.try_get::<Value, _>(alias.as_str()) {
@@ -1100,9 +1052,8 @@ pub async fn query(
                 }
                 Ok(out)
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     // Plus-one fetch: if we got more than `limit`, drop the trailing
     // sentinel row and mint a cursor from it.
@@ -1214,13 +1165,8 @@ pub async fn search(
 
     let query_by = req.query_by.unwrap_or_else(|| {
         // Default to every searchable field, comma-joined.
-        let parts: Vec<String> = schema
-            .fields
-            .ordered
-            .iter()
-            .filter(|f| f.searchable)
-            .map(|f| f.name.clone())
-            .collect();
+        let parts: Vec<String> =
+            schema.fields.ordered.iter().filter(|f| f.searchable).map(|f| f.name.clone()).collect();
         if parts.is_empty() {
             "id".to_string() // last-resort: search by id so the call doesn't 400
         } else {
@@ -1313,11 +1259,7 @@ pub async fn cross_search(
 
     let schema_filter = format!(
         "__schema:=[{}]",
-        allowed_schemas
-            .iter()
-            .map(|s| format!("`{s}`"))
-            .collect::<Vec<_>>()
-            .join(",")
+        allowed_schemas.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(",")
     );
     // Compose with any user-supplied filter_by (AND'd).
     let filter_by = match req.filter_by {

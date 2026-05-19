@@ -312,9 +312,7 @@ pub async fn diff_endpoint(
     Query(q): Query<DiffQuery>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     if q.from > q.to {
-        return Err(ApiError::BadRequest(
-            "`from` must be earlier than or equal to `to`".into(),
-        ));
+        return Err(ApiError::BadRequest("`from` must be earlier than or equal to `to`".into()));
     }
 
     let (schema_parts, entity_id) = split_entity(parts);
@@ -372,9 +370,7 @@ async fn state_at(
     if latest.operation == "delete" {
         return Err(ApiError::NotFound);
     }
-    latest
-        .payload
-        .ok_or_else(|| ApiError::Internal("history reconstruction failed".into()))
+    latest.payload.ok_or_else(|| ApiError::Internal("history reconstruction failed".into()))
 }
 
 /// Translate tiered-reader errors into API errors. Crucially, this is
@@ -519,19 +515,17 @@ pub async fn replay(
     // after it. If the client lies (an id that doesn't exist in this
     // entity's history), we silently fall back to a full replay rather
     // than 400 — the worst case is the client sees old events again.
-    let after_occurred_at: Option<DateTime<Utc>> = if let Some(last_id) = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-    {
-        sqlx::query("SELECT occurred_at FROM platform.event_log WHERE id = $1::uuid")
-            .bind(last_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(map_pg_err)?
-            .map(|r| r.get::<DateTime<Utc>, _>("occurred_at"))
-    } else {
-        None
-    };
+    let after_occurred_at: Option<DateTime<Utc>> =
+        if let Some(last_id) = headers.get("last-event-id").and_then(|v| v.to_str().ok()) {
+            sqlx::query("SELECT occurred_at FROM platform.event_log WHERE id = $1::uuid")
+                .bind(last_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(map_pg_err)?
+                .map(|r| r.get::<DateTime<Utc>, _>("occurred_at"))
+        } else {
+            None
+        };
 
     // Pull all rows up-front. For an entity with a 5-year history this
     // could be tens of thousands of rows; the streaming response holds
@@ -647,10 +641,7 @@ pub async fn restore(
     // pull-warm-event-into-hot step we haven't designed. Surface as
     // 422 RESTORE_TIER_UNSUPPORTED rather than 404 or 500 so clients
     // know the data exists, it just can't be restored from this tier.
-    if !matches!(
-        state.tiered_reader.classify(body.at),
-        crate::tiering::Tier::Hot
-    ) {
+    if !matches!(state.tiered_reader.classify(body.at), crate::tiering::Tier::Hot) {
         return Err(ApiError::RestoreTierUnsupported);
     }
 
@@ -676,12 +667,7 @@ pub async fn restore(
     // so a runaway client can't fill the row with multi-MB free text.
     let reason: Option<String> = body
         .reason
-        .or_else(|| {
-            headers
-                .get("x-reason")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        })
+        .or_else(|| headers.get("x-reason").and_then(|v| v.to_str().ok()).map(str::to_string))
         .map(|s| {
             const MAX_REASON_LEN: usize = 2_000;
             s.chars().take(MAX_REASON_LEN).collect::<String>()
@@ -713,10 +699,8 @@ pub async fn restore(
                     "SELECT (to_jsonb({table}.*) - '__fts') AS row FROM {table} \
                      WHERE id = $1::uuid AND deleted_at IS NULL"
                 );
-                let row: Option<sqlx::postgres::PgRow> = sqlx::query(&sql)
-                    .bind(&entity_id_for_read)
-                    .fetch_optional(&mut **tx)
-                    .await?;
+                let row: Option<sqlx::postgres::PgRow> =
+                    sqlx::query(&sql).bind(&entity_id_for_read).fetch_optional(&mut **tx).await?;
                 Ok(row.map(|r| r.get::<Value, _>("row")))
             })
         },
@@ -752,9 +736,9 @@ pub async fn restore(
     // updated_*) — we must NOT write those into the table; the UPDATE
     // bumps version itself and rewrites updated_at/updated_by from
     // current_setting.
-    let target_obj = target.as_object().ok_or_else(|| {
-        ApiError::Internal("event_log payload is not an object".into())
-    })?;
+    let target_obj = target
+        .as_object()
+        .ok_or_else(|| ApiError::Internal("event_log payload is not an object".into()))?;
 
     let mut cols = Vec::new();
     let mut casts = Vec::new();
@@ -796,10 +780,7 @@ pub async fn restore(
                     q = q.bind(v);
                 }
                 q = q.bind(&entity_id);
-                let row: Value = q
-                    .fetch_one(&mut **tx)
-                    .await?
-                    .get("row");
+                let row: Value = q.fetch_one(&mut **tx).await?.get("row");
                 // event_log entry — source=restore so SSE replay /
                 // /history rendering can distinguish a rollback from a
                 // user-driven edit. payload = new row (post-restore),
@@ -851,7 +832,9 @@ pub async fn restore(
 fn strip_managed(row: &Value) -> Value {
     let mut v = row.clone();
     if let Some(obj) = v.as_object_mut() {
-        for key in ["id", "version", "created_at", "created_by", "updated_at", "updated_by", "deleted_at"] {
+        for key in
+            ["id", "version", "created_at", "created_by", "updated_at", "updated_by", "deleted_at"]
+        {
             obj.remove(key);
         }
     }

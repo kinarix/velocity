@@ -192,7 +192,9 @@ mod tests {
         }
     }
 
-    fn rec(v: Value) -> LogRecord { LogRecord::new(v) }
+    fn rec(v: Value) -> LogRecord {
+        LogRecord::new(v)
+    }
 
     #[test]
     fn empty_rules_keeps_default() {

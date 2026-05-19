@@ -27,8 +27,8 @@ use velocity_api::{router, AppState};
 use velocity_operator::PostgresProvisioner;
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{
-    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
-    SearchTier,
+    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+    SearchSpec, SearchTier,
 };
 
 fn admin_url() -> Option<String> {
@@ -76,14 +76,10 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -93,11 +89,7 @@ async fn body_json(res: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-async fn fetch_audit_payload(
-    admin: &PgPool,
-    schema_org: &str,
-    action: &str,
-) -> Vec<Value> {
+async fn fetch_audit_payload(admin: &PgPool, schema_org: &str, action: &str) -> Vec<Value> {
     sqlx::query_scalar::<_, Value>(
         "SELECT payload FROM platform.audit_log \
          WHERE schema_org = $1 AND action = $2 \
@@ -140,10 +132,8 @@ async fn fields_changed_recorded_for_create_and_update() {
     prov.sync_schema_tables(&plan, false).await.unwrap();
 
     let schema = ResolvedSchema::from_spec(path.clone(), s);
-    let schema_org = format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    );
+    let schema_org =
+        format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version);
 
     let (registry, _ready) = SchemaRegistry::new();
     registry.upsert(schema.clone());

@@ -47,9 +47,9 @@ pub async fn reconcile(
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcileError> {
     let name = obj.name_any();
-    let namespace = obj.namespace().ok_or_else(|| {
-        ReconcileError::Invalid(format!("ArchivePolicy {name} has no namespace"))
-    })?;
+    let namespace = obj
+        .namespace()
+        .ok_or_else(|| ReconcileError::Invalid(format!("ArchivePolicy {name} has no namespace")))?;
 
     tracing::info!(
         %name, %namespace, trigger = %obj.spec.trigger.kind,
@@ -131,8 +131,7 @@ pub async fn reconcile(
         status["mirroredTables"] = json!(mirrored_tables);
     }
     let status_patch = json!({ "status": status });
-    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch))
-        .await?;
+    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch)).await?;
 
     Ok(Action::requeue(std::time::Duration::from_secs(300)))
 }
@@ -258,9 +257,7 @@ fn validate_schedule(s: &str) -> Result<(), String> {
     }
     let n = trimmed.split_whitespace().count();
     if !(5..=6).contains(&n) {
-        return Err(format!(
-            "schedule must have 5 or 6 whitespace-separated fields, got {n}"
-        ));
+        return Err(format!("schedule must have 5 or 6 whitespace-separated fields, got {n}"));
     }
     Ok(())
 }
@@ -279,22 +276,14 @@ fn validate_trigger(spec: &ArchivePolicySpec) -> Result<(), String> {
             validate_duration(s)
         }
         "field" => {
-            let field = t
-                .field
-                .as_ref()
-                .ok_or_else(|| "field trigger requires field".to_string())?;
+            let field =
+                t.field.as_ref().ok_or_else(|| "field trigger requires field".to_string())?;
             if field.trim().is_empty() {
                 return Err("field trigger field is empty".into());
             }
-            let op = t
-                .op
-                .as_ref()
-                .ok_or_else(|| "field trigger requires op".to_string())?;
+            let op = t.op.as_ref().ok_or_else(|| "field trigger requires op".to_string())?;
             if !FIELD_OPS.contains(&op.as_str()) {
-                return Err(format!(
-                    "field trigger op {op:?} not in {{{}}}",
-                    FIELD_OPS.join(",")
-                ));
+                return Err(format!("field trigger op {op:?} not in {{{}}}", FIELD_OPS.join(",")));
             }
             if t.value.is_none() {
                 return Err("field trigger requires value".into());
@@ -316,24 +305,16 @@ fn validate_trigger(spec: &ArchivePolicySpec) -> Result<(), String> {
             Err("tableSize value must be an integer or a size string like \"10GiB\"".into())
         }
         "cel" => {
-            let rule = t
-                .rule
-                .as_ref()
-                .ok_or_else(|| "cel trigger requires rule".to_string())?;
+            let rule = t.rule.as_ref().ok_or_else(|| "cel trigger requires rule".to_string())?;
             if rule.trim().is_empty() {
                 return Err("cel trigger rule is empty".into());
             }
             if rule.len() > 10_000 {
-                return Err(format!(
-                    "cel rule is {} bytes; CLAUDE.md caps at 10KB",
-                    rule.len()
-                ));
+                return Err(format!("cel rule is {} bytes; CLAUDE.md caps at 10KB", rule.len()));
             }
             Ok(())
         }
-        other => Err(format!(
-            "trigger.type {other:?} not in {{age, field, tableSize, cel}}"
-        )),
+        other => Err(format!("trigger.type {other:?} not in {{age, field, tableSize, cel}}")),
     }
 }
 
@@ -347,10 +328,8 @@ fn validate_destination(spec: &ArchivePolicySpec) -> Result<(), String> {
         ));
     }
     if d.backend == "s3" {
-        let bucket = d
-            .bucket
-            .as_ref()
-            .ok_or_else(|| "s3 destination requires bucket".to_string())?;
+        let bucket =
+            d.bucket.as_ref().ok_or_else(|| "s3 destination requires bucket".to_string())?;
         if bucket.trim().is_empty() {
             return Err("s3 destination bucket is empty".into());
         }
@@ -378,16 +357,13 @@ fn validate_duration(s: &str) -> Result<(), String> {
             .find(|c: char| !c.is_ascii_digit())
             .ok_or_else(|| format!("duration {trimmed:?} missing unit (expected s|m|h|d)"))?,
     );
-    let n: u64 = num
-        .parse()
-        .map_err(|_| format!("duration {trimmed:?} has non-numeric magnitude"))?;
+    let n: u64 =
+        num.parse().map_err(|_| format!("duration {trimmed:?} has non-numeric magnitude"))?;
     if n == 0 {
         return Err(format!("duration {trimmed:?} must be > 0"));
     }
     if !matches!(unit, "s" | "m" | "h" | "d") {
-        return Err(format!(
-            "duration {trimmed:?} unit {unit:?} not in {{s,m,h,d}}"
-        ));
+        return Err(format!("duration {trimmed:?} unit {unit:?} not in {{s,m,h,d}}"));
     }
     Ok(())
 }
@@ -402,16 +378,12 @@ fn validate_byte_size(s: &str) -> Result<(), String> {
         .find(|c: char| !c.is_ascii_digit())
         .ok_or_else(|| format!("size {trimmed:?} missing unit (expected B|KiB|MiB|GiB|TiB)"))?;
     let (num, unit) = trimmed.split_at(split);
-    let n: u64 = num
-        .parse()
-        .map_err(|_| format!("size {trimmed:?} has non-numeric magnitude"))?;
+    let n: u64 = num.parse().map_err(|_| format!("size {trimmed:?} has non-numeric magnitude"))?;
     if n == 0 {
         return Err(format!("size {trimmed:?} must be > 0"));
     }
     if !matches!(unit, "B" | "KiB" | "MiB" | "GiB" | "TiB") {
-        return Err(format!(
-            "size {trimmed:?} unit {unit:?} not in {{B,KiB,MiB,GiB,TiB}}"
-        ));
+        return Err(format!("size {trimmed:?} unit {unit:?} not in {{B,KiB,MiB,GiB,TiB}}"));
     }
     Ok(())
 }
@@ -524,10 +496,7 @@ mod tests {
         assert!(all_true(&validate_spec(&spec)));
 
         spec.trigger.op = Some("regex".into());
-        let t = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "TriggerValid")
-            .unwrap();
+        let t = validate_spec(&spec).into_iter().find(|c| c.kind == "TriggerValid").unwrap();
         assert_eq!(t.status, "False");
     }
 
@@ -548,10 +517,7 @@ mod tests {
         assert!(all_true(&validate_spec(&spec)));
 
         spec.trigger.value = Some(json!("10GB"));
-        let t = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "TriggerValid")
-            .unwrap();
+        let t = validate_spec(&spec).into_iter().find(|c| c.kind == "TriggerValid").unwrap();
         assert_eq!(t.status, "False");
     }
 
@@ -569,10 +535,7 @@ mod tests {
         assert!(all_true(&validate_spec(&spec)));
 
         spec.trigger.rule = Some("x".repeat(10_001));
-        let t = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "TriggerValid")
-            .unwrap();
+        let t = validate_spec(&spec).into_iter().find(|c| c.kind == "TriggerValid").unwrap();
         assert_eq!(t.status, "False");
     }
 
@@ -580,10 +543,7 @@ mod tests {
     fn unknown_trigger_kind_rejected() {
         let mut spec = base();
         spec.trigger.kind = "manual".into();
-        let t = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "TriggerValid")
-            .unwrap();
+        let t = validate_spec(&spec).into_iter().find(|c| c.kind == "TriggerValid").unwrap();
         assert_eq!(t.status, "False");
     }
 
@@ -591,10 +551,7 @@ mod tests {
     fn destination_backend_validated() {
         let mut spec = base();
         spec.destination.backend = "azure-blob".into();
-        let d = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "DestinationValid")
-            .unwrap();
+        let d = validate_spec(&spec).into_iter().find(|c| c.kind == "DestinationValid").unwrap();
         assert_eq!(d.status, "False");
     }
 
@@ -606,10 +563,7 @@ mod tests {
             bucket: None,
             format: Some("parquet".into()),
         };
-        let d = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "DestinationValid")
-            .unwrap();
+        let d = validate_spec(&spec).into_iter().find(|c| c.kind == "DestinationValid").unwrap();
         assert_eq!(d.status, "False");
 
         spec.destination.bucket = Some("velocity-archive".into());
@@ -624,10 +578,7 @@ mod tests {
             bucket: Some("velocity-archive".into()),
             format: Some("avro".into()),
         };
-        let d = validate_spec(&spec)
-            .into_iter()
-            .find(|c| c.kind == "DestinationValid")
-            .unwrap();
+        let d = validate_spec(&spec).into_iter().find(|c| c.kind == "DestinationValid").unwrap();
         assert_eq!(d.status, "False");
     }
 

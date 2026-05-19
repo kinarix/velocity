@@ -167,11 +167,7 @@ pub enum ArchivePredicate<'a> {
     /// Rows whose `created_at < now() - min_age` are eligible.
     Age { min_age: Duration },
     /// Rows where `{field} {op} $value` are eligible.
-    Field {
-        field: &'a str,
-        op: FieldOp,
-        value: &'a str,
-    },
+    Field { field: &'a str, op: FieldOp, value: &'a str },
     /// No predicate beyond the existing soft filters — caller has
     /// already checked `pg_total_relation_size` against the threshold
     /// and decided to drain oldest rows.
@@ -184,14 +180,7 @@ pub async fn archive_batch(
     pool: &PgPool,
     args: &ArchiveBatchArgs<'_>,
 ) -> Result<ArchiveBatchResult, ArchiveError> {
-    archive_batch_with_predicate(
-        pool,
-        args,
-        &ArchivePredicate::Age {
-            min_age: args.min_age,
-        },
-    )
-    .await
+    archive_batch_with_predicate(pool, args, &ArchivePredicate::Age { min_age: args.min_age }).await
 }
 
 /// Pick → insert → mark, in one transaction. Returns the number of rows
@@ -209,18 +198,10 @@ pub async fn archive_batch_with_predicate(
     let count: i64 = match predicate {
         ArchivePredicate::Age { min_age } => {
             let age_secs = min_age.as_secs() as i64;
-            sqlx::query_scalar(&sql)
-                .bind(age_secs)
-                .bind(limit)
-                .fetch_one(&mut *tx)
-                .await?
+            sqlx::query_scalar(&sql).bind(age_secs).bind(limit).fetch_one(&mut *tx).await?
         }
         ArchivePredicate::Field { value, .. } => {
-            sqlx::query_scalar(&sql)
-                .bind(*value)
-                .bind(limit)
-                .fetch_one(&mut *tx)
-                .await?
+            sqlx::query_scalar(&sql).bind(*value).bind(limit).fetch_one(&mut *tx).await?
         }
         ArchivePredicate::Oldest => {
             sqlx::query_scalar(&sql).bind(limit).fetch_one(&mut *tx).await?
@@ -230,10 +211,7 @@ pub async fn archive_batch_with_predicate(
     tx.commit().await?;
 
     let n = count as usize;
-    Ok(ArchiveBatchResult {
-        rows_archived: n,
-        more_pending: n >= args.batch_size,
-    })
+    Ok(ArchiveBatchResult { rows_archived: n, more_pending: n >= args.batch_size })
 }
 
 /// Returns `pg_total_relation_size(schema.table)` in bytes. Used by the
@@ -284,19 +262,13 @@ pub async fn purge_batch(
     let age_secs = args.min_age_since_archive.as_secs() as i64;
     let limit = args.batch_size as i64;
 
-    let count: i64 = sqlx::query_scalar(&sql)
-        .bind(age_secs)
-        .bind(limit)
-        .fetch_one(&mut *tx)
-        .await?;
+    let count: i64 =
+        sqlx::query_scalar(&sql).bind(age_secs).bind(limit).fetch_one(&mut *tx).await?;
 
     tx.commit().await?;
 
     let n = count as usize;
-    Ok(ArchiveBatchResult {
-        rows_archived: n,
-        more_pending: n >= args.batch_size,
-    })
+    Ok(ArchiveBatchResult { rows_archived: n, more_pending: n >= args.batch_size })
 }
 
 /// Render the CTE that picks + deletes archived rows from the hot table.
@@ -330,12 +302,7 @@ SELECT count(*)::bigint FROM deleted;"
 
 /// Back-compat shim: render the age-trigger SQL.
 pub fn build_archive_batch_sql(args: &ArchiveBatchArgs<'_>) -> Result<String, ArchiveError> {
-    build_archive_batch_sql_for(
-        args,
-        &ArchivePredicate::Age {
-            min_age: args.min_age,
-        },
-    )
+    build_archive_batch_sql_for(args, &ArchivePredicate::Age { min_age: args.min_age })
 }
 
 /// Render the single-statement CTE for any supported predicate.
@@ -370,10 +337,7 @@ pub fn build_archive_batch_sql_for(
             if min_age.as_secs() == 0 {
                 return Err(ArchiveError::InvalidAge);
             }
-            (
-                "AND created_at < now() - make_interval(secs => $1)".to_string(),
-                "$2",
-            )
+            ("AND created_at < now() - make_interval(secs => $1)".to_string(), "$2")
         }
         ArchivePredicate::Field { field, op, .. } => {
             validate_ident(field).map_err(|_| {
@@ -423,9 +387,7 @@ SELECT count(*)::bigint FROM marked;"
 fn validate_ident(s: &str) -> Result<(), ArchiveError> {
     if s.is_empty()
         || s.len() > 63
-        || !s
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         || s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
     {
         return Err(ArchiveError::InvalidIdent(s.into()));
@@ -557,10 +519,7 @@ mod tests {
             min_age: Duration::from_secs(0),
             batch_size: 1,
         };
-        assert!(matches!(
-            build_archive_batch_sql(&a).unwrap_err(),
-            ArchiveError::InvalidAge
-        ));
+        assert!(matches!(build_archive_batch_sql(&a).unwrap_err(), ArchiveError::InvalidAge));
     }
 
     #[test]
@@ -610,11 +569,7 @@ mod tests {
             min_age: Duration::from_secs(1),
             batch_size: 200,
         };
-        let p = ArchivePredicate::Field {
-            field: "status",
-            op: FieldOp::Eq,
-            value: "closed",
-        };
+        let p = ArchivePredicate::Field { field: "status", op: FieldOp::Eq, value: "closed" };
         let sql = build_archive_batch_sql_for(&a, &p).unwrap();
         assert!(sql.contains("AND status = $1"));
         assert!(sql.contains("LIMIT $2"));
@@ -633,11 +588,7 @@ mod tests {
             min_age: Duration::from_secs(1),
             batch_size: 1,
         };
-        let p = ArchivePredicate::Field {
-            field: "bad name",
-            op: FieldOp::Eq,
-            value: "x",
-        };
+        let p = ArchivePredicate::Field { field: "bad name", op: FieldOp::Eq, value: "x" };
         let err = build_archive_batch_sql_for(&a, &p).unwrap_err();
         assert!(matches!(err, ArchiveError::InvalidColumns(_)));
     }
@@ -708,10 +659,7 @@ mod tests {
             min_age_since_archive: Duration::from_secs(0),
             batch_size: 100,
         };
-        assert!(matches!(
-            build_purge_batch_sql(&a).unwrap_err(),
-            ArchiveError::InvalidAge
-        ));
+        assert!(matches!(build_purge_batch_sql(&a).unwrap_err(), ArchiveError::InvalidAge));
         a.min_age_since_archive = Duration::from_secs(60);
         a.batch_size = 0;
         assert!(matches!(
@@ -720,23 +668,14 @@ mod tests {
         ));
         a.batch_size = 100;
         a.hot_schema = "bad name";
-        assert!(matches!(
-            build_purge_batch_sql(&a).unwrap_err(),
-            ArchiveError::InvalidIdent(_)
-        ));
+        assert!(matches!(build_purge_batch_sql(&a).unwrap_err(), ArchiveError::InvalidIdent(_)));
     }
 
     #[test]
     fn batch_result_more_pending_flag() {
-        let r = ArchiveBatchResult {
-            rows_archived: 500,
-            more_pending: true,
-        };
+        let r = ArchiveBatchResult { rows_archived: 500, more_pending: true };
         assert!(r.more_pending);
-        let r = ArchiveBatchResult {
-            rows_archived: 0,
-            more_pending: false,
-        };
+        let r = ArchiveBatchResult { rows_archived: 0, more_pending: false };
         assert_eq!(r.rows_archived, 0);
     }
 }

@@ -44,10 +44,7 @@ pub const FINALIZER: &str = "velocity.sh/rolebinding-revoke";
 
 const MANAGER: &str = "velocity-operator";
 
-pub async fn reconcile(
-    obj: Arc<RoleBinding>,
-    ctx: Arc<Context>,
-) -> Result<Action, ReconcileError> {
+pub async fn reconcile(obj: Arc<RoleBinding>, ctx: Arc<Context>) -> Result<Action, ReconcileError> {
     let name = obj.name_any();
     let namespace = obj
         .namespace()
@@ -79,9 +76,7 @@ pub async fn reconcile(
     }
 
     let now = chrono::Utc::now();
-    let expired = parse_expiry(obj.spec.expires_at.as_deref())
-        .map(|t| t <= now)
-        .unwrap_or(false);
+    let expired = parse_expiry(obj.spec.expires_at.as_deref()).map(|t| t <= now).unwrap_or(false);
 
     upsert_db_row(&ctx, &namespace, &name, &obj, expired).await?;
 
@@ -98,8 +93,7 @@ pub async fn reconcile(
             "revoked": expired,
         }
     });
-    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch))
-        .await?;
+    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch)).await?;
 
     // If we set an expiry, wake up at the boundary so the revoke fires on
     // time without an extra poke from the user.
@@ -231,11 +225,7 @@ fn should_clear_revoke(_obj: &RoleBinding) -> bool {
 // ─── Finalizer plumbing ────────────────────────────────────────────────────
 
 fn has_finalizer(obj: &RoleBinding) -> bool {
-    obj.meta()
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|s| s == FINALIZER))
-        .unwrap_or(false)
+    obj.meta().finalizers.as_ref().map(|fs| fs.iter().any(|s| s == FINALIZER)).unwrap_or(false)
 }
 
 async fn add_finalizer(api: &Api<RoleBinding>, name: &str) -> Result<(), ReconcileError> {
@@ -249,8 +239,7 @@ async fn add_finalizer(api: &Api<RoleBinding>, name: &str) -> Result<(), Reconci
         finalizers.push(FINALIZER.into());
     }
     let patch = json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(name, &PatchParams::apply(MANAGER).force(), &Patch::Apply(&patch))
-        .await?;
+    api.patch(name, &PatchParams::apply(MANAGER).force(), &Patch::Apply(&patch)).await?;
     Ok(())
 }
 
@@ -265,8 +254,7 @@ async fn remove_finalizer(api: &Api<RoleBinding>, name: &str) -> Result<(), Reco
         .filter(|s| s != FINALIZER)
         .collect();
     let patch = json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(name, &PatchParams::apply(MANAGER).force(), &Patch::Apply(&patch))
-        .await?;
+    api.patch(name, &PatchParams::apply(MANAGER).force(), &Patch::Apply(&patch)).await?;
     Ok(())
 }
 

@@ -221,7 +221,9 @@ fn parse_partition_date(s: &str) -> Option<DateTime<Utc>> {
         return Some(d.with_timezone(&Utc));
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d.and_hms_opt(0, 0, 0).and_then(|n| chrono::TimeZone::from_utc_datetime(&Utc, &n).into());
+        return d
+            .and_hms_opt(0, 0, 0)
+            .and_then(|n| chrono::TimeZone::from_utc_datetime(&Utc, &n).into());
     }
     None
 }
@@ -235,10 +237,7 @@ async fn distinct_schema_orgs(
     // bound the format with the `platform.` schema prefix so we can't
     // accidentally point at a non-platform table even if the name
     // looked weird.
-    let sql = format!(
-        "SELECT DISTINCT schema_org::text FROM platform.{} ORDER BY 1",
-        part.name
-    );
+    let sql = format!("SELECT DISTINCT schema_org::text FROM platform.{} ORDER BY 1", part.name);
     let rows: Vec<(String,)> = sqlx::query_as(&sql)
         .fetch_all(&mut **tx)
         .await
@@ -259,9 +258,8 @@ async fn export_one_schema(
     tracing::info!(partition = %part.name, schema_org = %schema_org, key = %key, "starting export");
 
     let arrow_schema = tier_schema::arrow_schema();
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(Default::default()))
-        .build();
+    let props =
+        WriterProperties::builder().set_compression(Compression::ZSTD(Default::default())).build();
 
     // `BufWriter` wraps an `ObjectStore` and converts the Parquet
     // writer's small flushes into a single multipart-upload. Without
@@ -283,9 +281,7 @@ async fn export_one_schema(
         part.name
     );
 
-    let mut rows_stream = sqlx::query_as::<_, EventLogRow>(&sql)
-        .bind(schema_org)
-        .fetch(&mut **tx);
+    let mut rows_stream = sqlx::query_as::<_, EventLogRow>(&sql).bind(schema_org).fetch(&mut **tx);
 
     use futures::StreamExt;
     let mut buf: Vec<EventLogRow> = Vec::with_capacity(STREAM_BATCH_ROWS);
@@ -340,28 +336,21 @@ struct EventLogRow {
     payload: Option<serde_json::Value>,
 }
 
-fn rows_to_batch(schema: &arrow::datatypes::SchemaRef, rows: &[EventLogRow]) -> Result<RecordBatch> {
-    let occurred: TimestampMicrosecondArray = rows
-        .iter()
-        .map(|r| Some(r.occurred_at.timestamp_micros()))
-        .collect::<Vec<_>>()
-        .into();
+fn rows_to_batch(
+    schema: &arrow::datatypes::SchemaRef,
+    rows: &[EventLogRow],
+) -> Result<RecordBatch> {
+    let occurred: TimestampMicrosecondArray =
+        rows.iter().map(|r| Some(r.occurred_at.timestamp_micros())).collect::<Vec<_>>().into();
     let occurred = occurred.with_timezone("UTC");
 
     let schema_org: StringArray = rows.iter().map(|r| Some(r.schema_org.as_str())).collect();
-    let entity_id: StringArray = rows
-        .iter()
-        .map(|r| r.entity_id.as_ref().map(|u| u.hyphenated().to_string()))
-        .collect();
+    let entity_id: StringArray =
+        rows.iter().map(|r| r.entity_id.as_ref().map(|u| u.hyphenated().to_string())).collect();
     let operation: StringArray = rows.iter().map(|r| Some(r.operation.as_str())).collect();
-    let diff: StringArray = rows
-        .iter()
-        .map(|r| r.diff.as_ref().map(|j| j.to_string()))
-        .collect();
-    let payload: StringArray = rows
-        .iter()
-        .map(|r| r.payload.as_ref().map(|j| j.to_string()))
-        .collect();
+    let diff: StringArray = rows.iter().map(|r| r.diff.as_ref().map(|j| j.to_string())).collect();
+    let payload: StringArray =
+        rows.iter().map(|r| r.payload.as_ref().map(|j| j.to_string())).collect();
 
     let cols: Vec<ArrayRef> = vec![
         Arc::new(occurred),
@@ -384,10 +373,7 @@ async fn verify_object_readable(warm_store: Arc<dyn ObjectStore>, key: &str) -> 
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
     let path = object_store::path::Path::from(key.to_string());
-    let meta = warm_store
-        .head(&path)
-        .await
-        .with_context(|| format!("HEAD verify for {key}"))?;
+    let meta = warm_store.head(&path).await.with_context(|| format!("HEAD verify for {key}"))?;
     let reader = ParquetObjectReader::new(warm_store, path).with_file_size(meta.size);
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
@@ -411,10 +397,16 @@ async fn detach_and_drop_partition(
     // CONCURRENTLY is needed when writes can't be briefly paused, and
     // an event_log partition at >=90d old has no live writers.
     let detach = format!("ALTER TABLE platform.event_log DETACH PARTITION platform.{}", part.name);
-    sqlx::query(&detach).execute(&mut **tx).await.with_context(|| format!("detach {}", part.name))?;
+    sqlx::query(&detach)
+        .execute(&mut **tx)
+        .await
+        .with_context(|| format!("detach {}", part.name))?;
 
     let drop_sql = format!("DROP TABLE platform.{}", part.name);
-    sqlx::query(&drop_sql).execute(&mut **tx).await.with_context(|| format!("drop {}", part.name))?;
+    sqlx::query(&drop_sql)
+        .execute(&mut **tx)
+        .await
+        .with_context(|| format!("drop {}", part.name))?;
     Ok(())
 }
 

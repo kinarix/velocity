@@ -76,21 +76,18 @@ impl ApiConfig {
                 .context("VELOCITY_API_PG_URL/DATABASE_URL not set and PG_HOST/PORT/USER/DB/PASSWORD env vars are incomplete")?,
         };
 
-        let bind_addr =
-            get("VELOCITY_API_BIND_ADDR").unwrap_or_else(|| "0.0.0.0:8080".to_string());
+        let bind_addr = get("VELOCITY_API_BIND_ADDR").unwrap_or_else(|| "0.0.0.0:8080".to_string());
         let health_addr =
             get("VELOCITY_API_HEALTH_ADDR").unwrap_or_else(|| "0.0.0.0:8081".to_string());
         let watch_namespace = get("VELOCITY_API_NAMESPACE");
-        let pg_pool_max = get("VELOCITY_API_PG_POOL_MAX")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(16);
+        let pg_pool_max =
+            get("VELOCITY_API_PG_POOL_MAX").and_then(|v| v.parse().ok()).unwrap_or(16);
         let pretty_logs = get("VELOCITY_API_PRETTY_LOGS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         let redis_url = get("VELOCITY_API_REDIS_URL").filter(|v| !v.trim().is_empty());
 
-        let warm_reader_url =
-            get("VELOCITY_API_WARM_READER_URL").filter(|v| !v.trim().is_empty());
+        let warm_reader_url = get("VELOCITY_API_WARM_READER_URL").filter(|v| !v.trim().is_empty());
         let warm_reader_service_token =
             get("VELOCITY_API_WARM_READER_SERVICE_TOKEN").filter(|v| !v.trim().is_empty());
         // Pair them: if a URL is set, demand a token. Allowing
@@ -116,8 +113,7 @@ impl ApiConfig {
             _ => None,
         };
 
-        let typesense_url =
-            get("VELOCITY_API_TYPESENSE_URL").filter(|v| !v.trim().is_empty());
+        let typesense_url = get("VELOCITY_API_TYPESENSE_URL").filter(|v| !v.trim().is_empty());
         let typesense_api_key =
             get("VELOCITY_API_TYPESENSE_API_KEY").filter(|v| !v.trim().is_empty());
         if typesense_url.is_some() && typesense_api_key.is_none() {
@@ -236,7 +232,10 @@ mod tests {
         env.insert("VELOCITY_API_PG_PASSWORD", "s3cret/with:specials");
         let cfg = ApiConfig::from_env_with(lookup(&env)).unwrap();
         // Password chars `/` and `:` must be percent-encoded.
-        assert_eq!(cfg.pg_url, "postgres://velocity_api:s3cret%2Fwith%3Aspecials@pg.svc:5432/velocity");
+        assert_eq!(
+            cfg.pg_url,
+            "postgres://velocity_api:s3cret%2Fwith%3Aspecials@pg.svc:5432/velocity"
+        );
     }
 
     #[test]
@@ -359,15 +358,9 @@ mod tests {
     fn from_env_platform_audit_token_accepted() {
         let mut env = HashMap::new();
         env.insert("VELOCITY_API_PG_URL", "postgres://x/y");
-        env.insert(
-            "VELOCITY_API_PLATFORM_AUDIT_TOKEN",
-            "a-secure-audit-token-1234567890",
-        );
+        env.insert("VELOCITY_API_PLATFORM_AUDIT_TOKEN", "a-secure-audit-token-1234567890");
         let cfg = ApiConfig::from_env_with(lookup(&env)).unwrap();
-        assert_eq!(
-            cfg.platform_audit_token.as_deref(),
-            Some("a-secure-audit-token-1234567890")
-        );
+        assert_eq!(cfg.platform_audit_token.as_deref(), Some("a-secure-audit-token-1234567890"));
     }
 
     #[test]

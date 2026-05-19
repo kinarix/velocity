@@ -78,11 +78,8 @@ impl TailState {
             if *b == b'\n' {
                 let line = &combined[start..i];
                 // Trim a trailing \r so CRLF files behave.
-                let trimmed = if line.last() == Some(&b'\r') {
-                    &line[..line.len() - 1]
-                } else {
-                    line
-                };
+                let trimmed =
+                    if line.last() == Some(&b'\r') { &line[..line.len() - 1] } else { line };
                 lines.push(String::from_utf8_lossy(trimmed).into_owned());
                 start = i + 1;
             }
@@ -101,12 +98,8 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     async fn write(path: &std::path::Path, content: &str) {
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await
-            .unwrap();
+        let mut f =
+            tokio::fs::OpenOptions::new().create(true).append(true).open(path).await.unwrap();
         f.write_all(content.as_bytes()).await.unwrap();
         // tokio's File::drop is async-finalised — without an explicit
         // flush+sync the kernel hasn't necessarily persisted the bytes

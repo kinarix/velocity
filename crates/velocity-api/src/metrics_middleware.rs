@@ -93,10 +93,7 @@ fn schema_label_from_uri(uri_path: &str) -> String {
     if segments[1] == "platform" {
         return label::SCHEMA_UNKNOWN.to_string();
     }
-    format!(
-        "{}/{}/{}/{}/{}",
-        segments[1], segments[2], segments[3], segments[4], segments[5]
-    )
+    format!("{}/{}/{}/{}/{}", segments[1], segments[2], segments[3], segments[4], segments[5])
 }
 
 /// Derive a stable `operation` label from method + URL suffix without
@@ -216,30 +213,18 @@ mod tests {
         assert_eq!(schema_label_from_uri("/metrics"), label::SCHEMA_UNKNOWN);
         assert_eq!(schema_label_from_uri("/"), label::SCHEMA_UNKNOWN);
         assert_eq!(schema_label_from_uri("/api"), label::SCHEMA_UNKNOWN);
-        assert_eq!(
-            schema_label_from_uri("/api/acme/supply-chain"),
-            label::SCHEMA_UNKNOWN
-        );
+        assert_eq!(schema_label_from_uri("/api/acme/supply-chain"), label::SCHEMA_UNKNOWN);
     }
 
     #[test]
     fn schema_label_unknown_for_platform_routes() {
-        assert_eq!(
-            schema_label_from_uri("/api/platform/audit"),
-            label::SCHEMA_UNKNOWN
-        );
-        assert_eq!(
-            schema_label_from_uri("/api/platform/audit/verify"),
-            label::SCHEMA_UNKNOWN
-        );
+        assert_eq!(schema_label_from_uri("/api/platform/audit"), label::SCHEMA_UNKNOWN);
+        assert_eq!(schema_label_from_uri("/api/platform/audit/verify"), label::SCHEMA_UNKNOWN);
     }
 
     #[test]
     fn operation_maps_list_create() {
-        assert_eq!(
-            operation_for(&Method::GET, "/api/acme/sc/proc/po/v1"),
-            label::operation::LIST
-        );
+        assert_eq!(operation_for(&Method::GET, "/api/acme/sc/proc/po/v1"), label::operation::LIST);
         assert_eq!(
             operation_for(&Method::POST, "/api/acme/sc/proc/po/v1"),
             label::operation::CREATE
@@ -305,10 +290,7 @@ mod tests {
     #[test]
     fn operation_other_for_unknown_paths() {
         assert_eq!(operation_for(&Method::GET, "/healthz"), label::operation::OTHER);
-        assert_eq!(
-            operation_for(&Method::GET, "/api/platform/audit"),
-            label::operation::OTHER
-        );
+        assert_eq!(operation_for(&Method::GET, "/api/platform/audit"), label::operation::OTHER);
     }
 
     #[test]
@@ -318,18 +300,9 @@ mod tests {
         assert_eq!(outcome_for(StatusCode::NOT_FOUND), label::outcome::NOT_FOUND);
         assert_eq!(outcome_for(StatusCode::UNAUTHORIZED), label::outcome::DENIED);
         assert_eq!(outcome_for(StatusCode::FORBIDDEN), label::outcome::DENIED);
-        assert_eq!(
-            outcome_for(StatusCode::UNPROCESSABLE_ENTITY),
-            label::outcome::VALIDATION_ERROR
-        );
-        assert_eq!(
-            outcome_for(StatusCode::BAD_REQUEST),
-            label::outcome::VALIDATION_ERROR
-        );
-        assert_eq!(
-            outcome_for(StatusCode::INTERNAL_SERVER_ERROR),
-            label::outcome::ERROR
-        );
+        assert_eq!(outcome_for(StatusCode::UNPROCESSABLE_ENTITY), label::outcome::VALIDATION_ERROR);
+        assert_eq!(outcome_for(StatusCode::BAD_REQUEST), label::outcome::VALIDATION_ERROR);
+        assert_eq!(outcome_for(StatusCode::INTERNAL_SERVER_ERROR), label::outcome::ERROR);
     }
 
     /// End-to-end: the middleware actually wraps a handler and
@@ -353,10 +326,7 @@ mod tests {
         let before = counter.get();
 
         let app: Router = Router::new()
-            .route(
-                "/api/{org}/{app}/{domain}/{object}/{version}",
-                get(|| async { "ok" }),
-            )
+            .route("/api/{org}/{app}/{domain}/{object}/{version}", get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(record));
 
         let req = axum::http::Request::builder()

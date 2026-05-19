@@ -137,9 +137,7 @@ mod tests {
         checker: Arc<dyn crate::strategy_check::AuthStrategyExists>,
     ) -> axum::Router {
         let state = AppState::new(cfg, checker);
-        axum::Router::new()
-            .route("/validate", axum::routing::post(validate))
-            .with_state(state)
+        axum::Router::new().route("/validate", axum::routing::post(validate)).with_state(state)
     }
 
     fn review(kind: &str, namespace: &str, obj: Value) -> Value {

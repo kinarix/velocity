@@ -199,9 +199,10 @@ pub async fn login(
     Query(q): Query<LoginQuery>,
 ) -> Result<Response, ApiError> {
     let strategy_ref = NamespacedRef { namespace: namespace.clone(), name: name.clone() };
-    let strategy = state.auth_registry.resolve(&strategy_ref).ok_or_else(|| {
-        ApiError::AuthStrategyMissing(format!("{namespace}/{name}"))
-    })?;
+    let strategy = state
+        .auth_registry
+        .resolve(&strategy_ref)
+        .ok_or_else(|| ApiError::AuthStrategyMissing(format!("{namespace}/{name}")))?;
     if strategy.kind != AuthStrategyType::Oidc {
         return Err(ApiError::AuthStrategyMissing(format!(
             "strategy `{namespace}/{name}` is not kind: oidc"
@@ -287,33 +288,31 @@ pub async fn callback(
     if let Some(err) = q.error.as_deref() {
         return Err(ApiError::Unauthenticated(format!("idp returned error: {err}")));
     }
-    let code = q
-        .code
-        .ok_or_else(|| ApiError::Unauthenticated("missing `code` query parameter".into()))?;
+    let code =
+        q.code.ok_or_else(|| ApiError::Unauthenticated("missing `code` query parameter".into()))?;
     let returned_state = q
         .state
         .ok_or_else(|| ApiError::Unauthenticated("missing `state` query parameter".into()))?;
 
     // 1-2. Flow cookie — find, verify, decode.
-    let flow_cookie = flow_cookie_from_headers(&headers).ok_or_else(|| {
-        ApiError::Unauthenticated("missing or malformed oidc flow cookie".into())
-    })?;
-    let flow = decode_flow_cookie(
-        &flow_cookie,
-        &returned_state,
-        &state.flow_cookie_key,
-        unix_now(),
-    )
-    .map_err(|e| ApiError::Unauthenticated(format!("flow cookie: {e}")))?;
+    let flow_cookie = flow_cookie_from_headers(&headers)
+        .ok_or_else(|| ApiError::Unauthenticated("missing or malformed oidc flow cookie".into()))?;
+    let flow =
+        decode_flow_cookie(&flow_cookie, &returned_state, &state.flow_cookie_key, unix_now())
+            .map_err(|e| ApiError::Unauthenticated(format!("flow cookie: {e}")))?;
 
     // 3. Resolve strategy from the flow's pinned key.
     let (ns, name) = flow.strategy_key.split_once('/').ok_or_else(|| {
-        ApiError::Internal(format!("flow cookie has malformed strategy_key `{}`", flow.strategy_key))
+        ApiError::Internal(format!(
+            "flow cookie has malformed strategy_key `{}`",
+            flow.strategy_key
+        ))
     })?;
     let strategy_ref = NamespacedRef { namespace: ns.into(), name: name.into() };
-    let strategy = state.auth_registry.resolve(&strategy_ref).ok_or_else(|| {
-        ApiError::AuthStrategyMissing(flow.strategy_key.clone())
-    })?;
+    let strategy = state
+        .auth_registry
+        .resolve(&strategy_ref)
+        .ok_or_else(|| ApiError::AuthStrategyMissing(flow.strategy_key.clone()))?;
     if strategy.kind != AuthStrategyType::Oidc {
         return Err(ApiError::AuthStrategyMissing(format!(
             "strategy `{}` is not kind: oidc",
@@ -341,8 +340,8 @@ pub async fn callback(
         })?;
 
     // 5. Token exchange.
-    let tokens = exchange_code(&state.http, oidc, &code, &flow.code_verifier, &client_secret)
-        .await?;
+    let tokens =
+        exchange_code(&state.http, oidc, &code, &flow.code_verifier, &client_secret).await?;
 
     // 6. Verify ID token.
     let claims = verify_id_token(&state.jwks, &strategy, oidc, &tokens.id_token).await?;
@@ -491,9 +490,9 @@ async fn verify_id_token(
 ) -> Result<Value, ApiError> {
     let header = decode_header(id_token)
         .map_err(|e| ApiError::Unauthenticated(format!("id_token header: {e}")))?;
-    let kid = header.kid.ok_or_else(|| {
-        ApiError::Unauthenticated("id_token header missing `kid`".into())
-    })?;
+    let kid = header
+        .kid
+        .ok_or_else(|| ApiError::Unauthenticated("id_token header missing `kid`".into()))?;
 
     let jwk = jwks
         .lookup(&oidc.issuer, &kid)
@@ -698,8 +697,7 @@ mod tests {
         };
         let reference = NamespacedRef { namespace: "acme".into(), name: "default".into() };
         let strategy = ResolvedAuthStrategy::from_spec(&reference, spec);
-        let url =
-            build_authorization_url(&strategy, &oidc, "state-x", "nonce-y", "challenge-z");
+        let url = build_authorization_url(&strategy, &oidc, "state-x", "nonce-y", "challenge-z");
         assert!(url.starts_with("https://idp.test/authorize?"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=vel-client"));

@@ -131,9 +131,15 @@ pub struct QueryDsl {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WhereNode {
-    And { children: Vec<WhereNode> },
-    Or { children: Vec<WhereNode> },
-    Not { child: Box<WhereNode> },
+    And {
+        children: Vec<WhereNode>,
+    },
+    Or {
+        children: Vec<WhereNode>,
+    },
+    Not {
+        child: Box<WhereNode>,
+    },
     Cmp {
         field: String,
         op: DslOp,
@@ -300,9 +306,7 @@ pub fn build(
 ) -> Result<CompiledQuery, ApiError> {
     // ── Validate select ──
     if dsl.select.len() > MAX_SELECT_FIELDS {
-        return Err(ApiError::BadRequest(format!(
-            "select: at most {MAX_SELECT_FIELDS} fields"
-        )));
+        return Err(ApiError::BadRequest(format!("select: at most {MAX_SELECT_FIELDS} fields")));
     }
     for f in &dsl.select {
         if !schema.fields.by_name.contains_key(f) && !is_system_read_column(f) {
@@ -312,9 +316,7 @@ pub fn build(
 
     // ── Validate sort ──
     if dsl.sort.len() > MAX_SORT_FIELDS {
-        return Err(ApiError::BadRequest(format!(
-            "sort: at most {MAX_SORT_FIELDS} fields"
-        )));
+        return Err(ApiError::BadRequest(format!("sort: at most {MAX_SORT_FIELDS} fields")));
     }
     for s in &dsl.sort {
         if !schema.fields.by_name.contains_key(&s.field) && !is_system_read_column(&s.field) {
@@ -340,9 +342,7 @@ pub fn build(
 
     // ── Validate include ──
     if dsl.include.len() > MAX_INCLUDES {
-        return Err(ApiError::BadRequest(format!(
-            "include: at most {MAX_INCLUDES} entries"
-        )));
+        return Err(ApiError::BadRequest(format!("include: at most {MAX_INCLUDES} entries")));
     }
     let mut includes: Vec<IncludeJoin> = Vec::with_capacity(dsl.include.len());
     for inc in &dsl.include {
@@ -372,8 +372,7 @@ pub fn build(
         if !cols.iter().any(|f| f == "id") {
             cols.insert(0, "id".to_string());
         }
-        let pairs: Vec<String> =
-            cols.iter().map(|f| format!("'{f}', t.{f}")).collect();
+        let pairs: Vec<String> = cols.iter().map(|f| format!("'{f}', t.{f}")).collect();
         format!("jsonb_build_object({}) AS __row", pairs.join(", "))
     };
 
@@ -434,10 +433,8 @@ pub fn build(
                 ));
             }
             params.push(Value::String(q.to_string()));
-            where_parts.push(format!(
-                "t.__fts @@ websearch_to_tsquery('english', ${})",
-                params.len()
-            ));
+            where_parts
+                .push(format!("t.__fts @@ websearch_to_tsquery('english', ${})", params.len()));
         }
     }
 
@@ -471,28 +468,24 @@ pub fn build(
         })?;
         let env = signer.decode(cursor)?;
         if env.schema != schema_key {
-            return Err(ApiError::BadRequest(
-                "cursor: schema mismatch".into(),
-            ));
+            return Err(ApiError::BadRequest("cursor: schema mismatch".into()));
         }
         if env.sort_sig != cursor_sort_sig {
             return Err(ApiError::BadRequest(
                 "cursor: sort mismatch — re-issue from page 1".into(),
             ));
         }
-        if env.sort_values.len() != cursor_sort_fields.len().saturating_sub(
-            // `id` is appended below as tiebreaker if not in sort
-            usize::from(!dsl.sort.iter().any(|s| s.field == "id")),
-        ) && env.sort_values.len() != cursor_sort_fields.len()
+        if env.sort_values.len()
+            != cursor_sort_fields.len().saturating_sub(
+                // `id` is appended below as tiebreaker if not in sort
+                usize::from(!dsl.sort.iter().any(|s| s.field == "id")),
+            )
+            && env.sort_values.len() != cursor_sort_fields.len()
         {
             return Err(ApiError::BadRequest("cursor: shape mismatch".into()));
         }
 
-        let cmp = if dsl.sort.first().is_some_and(|s| s.desc) {
-            "<"
-        } else {
-            ">"
-        };
+        let cmp = if dsl.sort.first().is_some_and(|s| s.desc) { "<" } else { ">" };
         // (a, b, id) > ($1::T, $2::T, $3::uuid)  — uniform direction
         // enforced earlier. Each placeholder is cast to the target
         // column's pg type so Postgres can resolve the tuple compare.
@@ -520,12 +513,7 @@ pub fn build(
         params.push(Value::String(env.last_id));
         rhs_vals.push(format!("${}::uuid", params.len()));
 
-        where_parts.push(format!(
-            "({}) {} ({})",
-            lhs_cols.join(", "),
-            cmp,
-            rhs_vals.join(", ")
-        ));
+        where_parts.push(format!("({}) {} ({})", lhs_cols.join(", "), cmp, rhs_vals.join(", ")));
     }
 
     // ── Build ORDER BY ──
@@ -538,11 +526,7 @@ pub fn build(
             .map(|s| format!("t.{} {}", s.field, if s.desc { "DESC" } else { "ASC" }))
             .collect();
         // Append id tiebreaker matching the dominant direction.
-        let dir = if dsl.sort.first().is_some_and(|s| s.desc) {
-            "DESC"
-        } else {
-            "ASC"
-        };
+        let dir = if dsl.sort.first().is_some_and(|s| s.desc) { "DESC" } else { "ASC" };
         if !dsl.sort.iter().any(|s| s.field == "id") {
             parts.push(format!("t.id {dir}"));
         }
@@ -595,9 +579,8 @@ pub fn mint_cursor(
     if last_id.is_none() {
         last_id = obj.get("id").and_then(|v| v.as_str()).map(str::to_string);
     }
-    let last_id = last_id.ok_or_else(|| {
-        ApiError::Internal("cursor: row missing string id for tiebreaker".into())
-    })?;
+    let last_id = last_id
+        .ok_or_else(|| ApiError::Internal("cursor: row missing string id for tiebreaker".into()))?;
     let env = CursorEnvelope {
         schema: schema_key.to_string(),
         sort_sig: sort_sig.to_string(),
@@ -628,15 +611,11 @@ fn compile_where(
 ) -> Result<String, ApiError> {
     *node_count += 1;
     if *node_count > MAX_WHERE_NODES {
-        return Err(ApiError::BadRequest(format!(
-            "where: at most {MAX_WHERE_NODES} nodes"
-        )));
+        return Err(ApiError::BadRequest(format!("where: at most {MAX_WHERE_NODES} nodes")));
     }
     *depth += 1;
     if *depth > MAX_WHERE_DEPTH {
-        return Err(ApiError::BadRequest(format!(
-            "where: nesting deeper than {MAX_WHERE_DEPTH}"
-        )));
+        return Err(ApiError::BadRequest(format!("where: nesting deeper than {MAX_WHERE_DEPTH}")));
     }
 
     let out = match node {
@@ -731,10 +710,7 @@ fn compile_cmp(
             params.push(value.clone());
             // position() returns 0 when not found — safe regardless of
             // characters in the user value; no LIKE-escape needed.
-            format!(
-                "position(lower(${}) in lower(t.{field}::text)) > 0",
-                params.len()
-            )
+            format!("position(lower(${}) in lower(t.{field}::text)) > 0", params.len())
         }
         DslOp::Like => {
             let _ = value
@@ -848,9 +824,7 @@ fn resolve_include(
 fn sanitize_alias(s: &str) -> String {
     // Field names are already CRD-validated (alphanumeric + `_`), but
     // an extra belt-and-braces strip costs nothing.
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-        .collect()
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
 
 // ─── Field-kind helper (exposed for FTS in 5b) ──────────────────────────────
@@ -1175,11 +1149,7 @@ mod tests {
     fn nesting_depth_capped() {
         let s = schema(vec![field("x", FieldKind::String, true, false)]);
         // Build MAX_WHERE_DEPTH + 1 levels of AND.
-        let mut node = WhereNode::Cmp {
-            field: "x".into(),
-            op: DslOp::Eq,
-            value: json!("v"),
-        };
+        let mut node = WhereNode::Cmp { field: "x".into(), op: DslOp::Eq, value: json!("v") };
         for _ in 0..(MAX_WHERE_DEPTH + 1) {
             node = WhereNode::And { children: vec![node] };
         }
@@ -1262,8 +1232,7 @@ mod tests {
         let s = schema(vec![ref_field("supplier_code", "supplier")]);
 
         // Target: a `supplier` schema in the same org/app/domain.
-        let target_path =
-            SchemaPath::new("acme", "supply-chain", "procurement", "supplier", "v1");
+        let target_path = SchemaPath::new("acme", "supply-chain", "procurement", "supplier", "v1");
         let target_spec = SchemaDefinitionSpec {
             version: "v1".into(),
             partitioning: None,
@@ -1299,10 +1268,7 @@ mod tests {
     #[test]
     fn select_appends_id_for_cursor() {
         let s = schema(vec![field("po_number", FieldKind::String, true, true)]);
-        let dsl = QueryDsl {
-            select: vec!["po_number".into()],
-            ..Default::default()
-        };
+        let dsl = QueryDsl { select: vec!["po_number".into()], ..Default::default() };
         let c = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap();
         // Projection wraps into jsonb_build_object; `id` is prepended
         // so cursor minting always has a tiebreaker.
@@ -1312,10 +1278,7 @@ mod tests {
     #[test]
     fn cursor_required_when_set_but_signer_absent() {
         let s = schema(vec![]);
-        let dsl = QueryDsl {
-            cursor: Some("any.thing".into()),
-            ..Default::default()
-        };
+        let dsl = QueryDsl { cursor: Some("any.thing".into()), ..Default::default() };
         let err = build(&s, &dsl, &id(), &fresh_registry(), None).unwrap_err();
         assert!(matches!(err, ApiError::BadRequest(_)));
     }
@@ -1421,14 +1384,9 @@ mod tests {
             "id": "01HF...",
             "created_at": "2026-01-01T00:00:00Z",
         });
-        let tok = mint_cursor(
-            &signer,
-            &c.schema_key,
-            &c.cursor_sort_sig,
-            &c.cursor_sort_fields,
-            &row,
-        )
-        .unwrap();
+        let tok =
+            mint_cursor(&signer, &c.schema_key, &c.cursor_sort_sig, &c.cursor_sort_fields, &row)
+                .unwrap();
 
         // Round-trip: now use the cursor on the next request.
         let dsl2 = QueryDsl {
@@ -1444,5 +1402,4 @@ mod tests {
         assert!(c2.sql.contains("::timestamptz"));
         assert!(c2.sql.contains("::uuid"));
     }
-
 }

@@ -28,8 +28,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 use velocity_api::auth::{authenticate, AuthRegistry, AuthState, JwksCache, ResolvedAuthStrategy};
-use velocity_api::{Identity, SchemaRegistry};
 use velocity_api::registry::ResolvedSchema;
+use velocity_api::{Identity, SchemaRegistry};
 use velocity_types::common::{NamespacedRef, SchemaPath};
 use velocity_types::crds::auth::{
     AuthStrategySpec, AuthStrategyType, ClaimMapping, IssuerConfig as CrdIssuer,
@@ -192,11 +192,7 @@ fn strategy_spec(iss: &str, jwks_url: &str, aud: Option<&str>) -> AuthStrategySp
     }
 }
 
-async fn build_authenticated_router(
-    iss: &str,
-    aud: Option<&str>,
-    jwks_url: String,
-) -> Router {
+async fn build_authenticated_router(iss: &str, aud: Option<&str>, jwks_url: String) -> Router {
     // Schema registry with one schema.
     let (schemas, _ready) = SchemaRegistry::new();
     let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
@@ -205,9 +201,9 @@ async fn build_authenticated_router(
 
     // Auth registry with one strategy.
     let strategies = AuthRegistry::new();
-    let strategy_ref =
-        NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };
-    let resolved = ResolvedAuthStrategy::from_spec(&strategy_ref, strategy_spec(iss, &jwks_url, aud));
+    let strategy_ref = NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };
+    let resolved =
+        ResolvedAuthStrategy::from_spec(&strategy_ref, strategy_spec(iss, &jwks_url, aud));
 
     let jwks = JwksCache::new();
     resolved.prime_jwks(&jwks).await;
@@ -217,29 +213,34 @@ async fn build_authenticated_router(
     auth_state.prime_strategy(&resolved).unwrap();
 
     Router::new()
-        .route(
-            "/api/{org}/{app}/{domain}/{object}/{version}",
-            get(echo_identity),
-        )
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_identity))
         .route("/healthz", get(|| async { "ok" }))
         .layer(from_fn_with_state(auth_state, authenticate))
 }
 
 async fn echo_identity(identity: Option<Extension<Identity>>) -> impl IntoResponse {
     match identity {
-        Some(Extension(id)) => (StatusCode::OK, Json(json!({
-            "actor_id": id.actor_id,
-            "roles": id.roles,
-            "strategy": id.strategy,
-            "issuer": id.issuer,
-        }))).into_response(),
+        Some(Extension(id)) => (
+            StatusCode::OK,
+            Json(json!({
+                "actor_id": id.actor_id,
+                "roles": id.roles,
+                "strategy": id.strategy,
+                "issuer": id.issuer,
+            })),
+        )
+            .into_response(),
         None => (StatusCode::INTERNAL_SERVER_ERROR, "no identity").into_response(),
     }
 }
 
 async fn read_body(body: Body) -> Value {
     let bytes = body.collect().await.unwrap().to_bytes();
-    if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() }
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }
 
 #[tokio::test]
@@ -250,10 +251,8 @@ async fn valid_token_is_admitted_and_identity_is_attached() {
     let (jwks_url, _fix, _srv) = spawn_jwks(jwk).await;
     let app = build_authenticated_router(iss, Some(aud), jwks_url).await;
 
-    let claims = ClaimsBuilder::new(iss, "alice")
-        .aud(aud)
-        .with("scope", json!("read:po write:po"))
-        .build();
+    let claims =
+        ClaimsBuilder::new(iss, "alice").aud(aud).with("scope", json!("read:po write:po")).build();
     let token = mint(claims, "k1", &enc);
 
     let req = Request::builder()

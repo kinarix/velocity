@@ -13,9 +13,10 @@ use anyhow::{Context, Result};
 use object_store::ObjectStore;
 
 pub fn build(url_str: &str) -> Result<Arc<dyn ObjectStore>> {
-    let url = url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
-    let (store, prefix) =
-        object_store::parse_url(&url).with_context(|| format!("unsupported storage URL: {url_str}"))?;
+    let url =
+        url::Url::parse(url_str).with_context(|| format!("invalid storage URL: {url_str}"))?;
+    let (store, prefix) = object_store::parse_url(&url)
+        .with_context(|| format!("unsupported storage URL: {url_str}"))?;
     let store: Arc<dyn ObjectStore> = if prefix.as_ref().is_empty() {
         Arc::from(store)
     } else {

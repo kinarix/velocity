@@ -29,8 +29,8 @@ use velocity_api::registry::ResolvedSchema;
 use velocity_api::{Identity, SchemaRegistry};
 use velocity_types::common::{NamespacedRef, SchemaPath};
 use velocity_types::crds::auth::{
-    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType, ClaimMapping, IssuerConfig as CrdIssuer,
-    OidcConfig, SecretRef,
+    AuthStrategyConfig, AuthStrategySpec, AuthStrategyType, ClaimMapping,
+    IssuerConfig as CrdIssuer, OidcConfig, SecretRef,
 };
 use velocity_types::crds::schema::{
     AccessSpec, AuthSpec, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
@@ -117,8 +117,7 @@ fn build_router(store: Arc<MockSessionStore>) -> Router {
     schemas.upsert(ResolvedSchema::from_spec(path, schema_spec()));
 
     let strategies = AuthRegistry::new();
-    let strategy_ref =
-        NamespacedRef { name: STRATEGY_NAME.into(), namespace: STRATEGY_NS.into() };
+    let strategy_ref = NamespacedRef { name: STRATEGY_NAME.into(), namespace: STRATEGY_NS.into() };
     let resolved = ResolvedAuthStrategy::from_spec(&strategy_ref, strategy_spec());
     strategies.upsert(resolved.clone());
 
@@ -127,10 +126,7 @@ fn build_router(store: Arc<MockSessionStore>) -> Router {
     auth_state.prime_strategy(&resolved).unwrap();
 
     Router::new()
-        .route(
-            "/api/{org}/{app}/{domain}/{object}/{version}",
-            get(echo_identity),
-        )
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_identity))
         .layer(from_fn_with_state(auth_state, authenticate))
 }
 
@@ -152,7 +148,11 @@ async fn echo_identity(identity: Option<Extension<Identity>>) -> impl IntoRespon
 
 async fn read_body(body: Body) -> Value {
     let bytes = body.collect().await.unwrap().to_bytes();
-    if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() }
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }
 
 fn seed_session(store: &MockSessionStore, claims: Value) -> uuid::Uuid {
@@ -172,10 +172,7 @@ fn seed_session(store: &MockSessionStore, claims: Value) -> uuid::Uuid {
 #[tokio::test]
 async fn valid_session_cookie_attaches_identity() {
     let store = Arc::new(MockSessionStore::new());
-    let id = seed_session(
-        &store,
-        json!({ "sub": "ravi", "scope": "read:po write:po" }),
-    );
+    let id = seed_session(&store, json!({ "sub": "ravi", "scope": "read:po write:po" }));
     let app = build_router(store);
 
     let req = Request::builder()
@@ -232,10 +229,7 @@ async fn unknown_session_returns_unauthenticated() {
     let req = Request::builder()
         .method("GET")
         .uri("/api/acme/supply-chain/procurement/purchase-order/v1")
-        .header(
-            "cookie",
-            format!("{SESSION_COOKIE_NAME}={}", uuid::Uuid::new_v4()),
-        )
+        .header("cookie", format!("{SESSION_COOKIE_NAME}={}", uuid::Uuid::new_v4()))
         .body(Body::empty())
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
@@ -273,10 +267,7 @@ async fn session_cookie_alongside_other_cookies_is_extracted() {
     let req = Request::builder()
         .method("GET")
         .uri("/api/acme/supply-chain/procurement/purchase-order/v1")
-        .header(
-            "cookie",
-            format!("other_cookie=foo; {SESSION_COOKIE_NAME}={id}; trailing=bar"),
-        )
+        .header("cookie", format!("other_cookie=foo; {SESSION_COOKIE_NAME}={id}; trailing=bar"))
         .body(Body::empty())
         .unwrap();
     let res = app.oneshot(req).await.unwrap();

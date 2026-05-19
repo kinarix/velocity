@@ -334,14 +334,10 @@ mod tests {
 
     #[test]
     fn check_writes_flags_forbidden_fields() {
-        let s = spec(vec![
-            field("price", &[], &["pricing-admin"]),
-            open_field("po_number"),
-        ]);
+        let s = spec(vec![field("price", &[], &["pricing-admin"]), open_field("po_number")]);
         let idx = FieldFilterIndex::from_spec(&s);
         let payload: Map<String, Value> =
-            serde_json::from_value(json!({ "po_number": "PO-1", "price": 42 }))
-                .unwrap();
+            serde_json::from_value(json!({ "po_number": "PO-1", "price": 42 })).unwrap();
         let denied = idx.check_writes(&payload, &["pricing-reader".into()]);
         assert_eq!(denied, vec!["price".to_string()]);
     }
@@ -437,8 +433,7 @@ mod tests {
     fn check_writes_passes_when_role_matches() {
         let s = spec(vec![field("price", &[], &["pricing-admin"])]);
         let idx = FieldFilterIndex::from_spec(&s);
-        let payload: Map<String, Value> =
-            serde_json::from_value(json!({ "price": 42 })).unwrap();
+        let payload: Map<String, Value> = serde_json::from_value(json!({ "price": 42 })).unwrap();
         let denied = idx.check_writes(&payload, &["pricing-admin".into()]);
         assert!(denied.is_empty());
     }

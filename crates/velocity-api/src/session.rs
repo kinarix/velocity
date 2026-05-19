@@ -120,10 +120,7 @@ where
     // transaction rolls back rather than committing a wide-open read.
     let scoped_roles =
         crate::row_filter::scoped_roles_for_session(schema, identity).map_err(|e| {
-            sqlx::Error::Protocol(format!(
-                "rowFilter broken on role `{}`: {}",
-                e.role, e.reason
-            ))
+            sqlx::Error::Protocol(format!("rowFilter broken on role `{}`: {}", e.role, e.reason))
         })?;
     sqlx::query("SELECT set_config('app.scoped_roles', $1, true)")
         .bind(&scoped_roles)

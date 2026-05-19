@@ -20,8 +20,8 @@ use velocity_api::identity::Identity;
 use velocity_api::registry::ResolvedSchema;
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{
-    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
-    SearchTier, Sensitivity,
+    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+    SearchSpec, SearchTier, Sensitivity,
 };
 
 fn pg_url() -> Option<String> {
@@ -76,10 +76,8 @@ fn schema_with_sensitive_fields() -> (SchemaPath, ResolvedSchema, String) {
         scaling: None,
     };
     let schema = ResolvedSchema::from_spec(path.clone(), spec);
-    let schema_org = format!(
-        "{}/{}/{}/{}/{}",
-        path.org, path.app, path.domain, path.object, path.version
-    );
+    let schema_org =
+        format!("{}/{}/{}/{}/{}", path.org, path.app, path.domain, path.object, path.version);
     (path, schema, schema_org)
 }
 

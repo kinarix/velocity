@@ -31,8 +31,8 @@ use velocity_api::registry::{ResolvedSchema, SchemaRegistry};
 use velocity_api::{router, AppState, Identity};
 use velocity_types::common::SchemaPath;
 use velocity_types::crds::schema::{
-    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
-    SearchTier,
+    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+    SearchSpec, SearchTier,
 };
 
 const TOKEN: &str = "test-audit-token-1234567890";
@@ -186,8 +186,7 @@ async fn audit_endpoint_denies_when_token_unset() {
     let schema_org = format!("auditest{}/sc/proc/po/v1", uuid::Uuid::new_v4().simple());
     cleanup(&pool, &schema_org).await;
 
-    let before =
-        count_self_audits(&pool, audit::action::READ, audit::outcome::DENIED).await;
+    let before = count_self_audits(&pool, audit::action::READ, audit::outcome::DENIED).await;
     let app = build_app(pool.clone(), /* with_token = */ false);
     let res = app
         .oneshot(audit_request(
@@ -242,10 +241,7 @@ async fn audit_endpoint_requires_schema_org_filter() {
         return;
     };
     let app = build_app(pool.clone(), true);
-    let res = app
-        .oneshot(audit_request("/api/platform/audit", Some(TOKEN)))
-        .await
-        .unwrap();
+    let res = app.oneshot(audit_request("/api/platform/audit", Some(TOKEN))).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     let body = body_json(res).await;
     assert_eq!(body["error"], "AUDIT_FILTER_REQUIRED");
@@ -289,10 +285,7 @@ async fn audit_endpoint_returns_rows_for_seeded_schema() {
     // race-free against other concurrent /audit tests sharing the
     // same AUDIT_SELF_SCHEMA_ORG.
     let after = count_self_audits(&pool, audit::action::READ, audit::outcome::SUCCESS).await;
-    assert!(
-        after > 0,
-        "expected at least one self-audit success row after the call; got {after}"
-    );
+    assert!(after > 0, "expected at least one self-audit success row after the call; got {after}");
     cleanup(&pool, &schema_org).await;
 }
 
@@ -339,11 +332,7 @@ async fn audit_endpoint_paginates_with_cursor() {
         "/api/platform/audit?schema_org={schema_org}&limit=2&cursor={}",
         url_encode(&cursor)
     );
-    let res = app
-        .clone()
-        .oneshot(audit_request(&url, Some(TOKEN)))
-        .await
-        .unwrap();
+    let res = app.clone().oneshot(audit_request(&url, Some(TOKEN))).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     let page2_ids: Vec<String> = body["rows"]
@@ -366,10 +355,7 @@ async fn audit_endpoint_paginates_with_cursor() {
         "/api/platform/audit?schema_org={schema_org}&limit=2&cursor={}",
         url_encode(&cursor2)
     );
-    let res = app
-        .oneshot(audit_request(&url, Some(TOKEN)))
-        .await
-        .unwrap();
+    let res = app.oneshot(audit_request(&url, Some(TOKEN))).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["count"], 1, "final page should hold the single remaining row");
@@ -393,10 +379,7 @@ async fn audit_verify_endpoint_reports_intact_chain_on_clean_window() {
 
     let app = build_app(pool.clone(), true);
     // Default 1h window — covers the rows we just inserted.
-    let res = app
-        .oneshot(audit_request("/api/platform/audit/verify", Some(TOKEN)))
-        .await
-        .unwrap();
+    let res = app.oneshot(audit_request("/api/platform/audit/verify", Some(TOKEN))).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["chain_intact"], true, "clean chain must verify; got {body}");

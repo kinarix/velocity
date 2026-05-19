@@ -67,12 +67,10 @@ async fn create_collection_201_sends_collection_spec_body() {
     let app = Router::new()
         .route(
             "/collections",
-            post(
-                |State(c): State<CapturedBody>, body: Bytes| async move {
-                    *c.0.lock().unwrap() = Some(body);
-                    (StatusCode::CREATED, "{}")
-                },
-            ),
+            post(|State(c): State<CapturedBody>, body: Bytes| async move {
+                *c.0.lock().unwrap() = Some(body);
+                (StatusCode::CREATED, "{}")
+            }),
         )
         .with_state(captured.clone());
     let addr = spawn(app).await;
@@ -99,10 +97,7 @@ async fn create_collection_409_is_idempotent_ok() {
     let app = Router::new().route(
         "/collections",
         post(|| async {
-            (
-                StatusCode::CONFLICT,
-                r#"{"message":"A collection with name `x` already exists."}"#,
-            )
+            (StatusCode::CONFLICT, r#"{"message":"A collection with name `x` already exists."}"#)
         }),
     );
     let addr = spawn(app).await;
@@ -122,12 +117,10 @@ async fn upsert_alias_puts_collection_name_body() {
     let app = Router::new()
         .route(
             "/aliases/{alias}",
-            put(
-                |State(c): State<CapturedBody>, body: Bytes| async move {
-                    *c.0.lock().unwrap() = Some(body);
-                    (StatusCode::OK, r#"{"name":"a","collection_name":"a__deadbeef"}"#)
-                },
-            ),
+            put(|State(c): State<CapturedBody>, body: Bytes| async move {
+                *c.0.lock().unwrap() = Some(body);
+                (StatusCode::OK, r#"{"name":"a","collection_name":"a__deadbeef"}"#)
+            }),
         )
         .with_state(captured.clone());
     let addr = spawn(app).await;
@@ -142,22 +135,20 @@ async fn upsert_alias_puts_collection_name_body() {
 
 #[tokio::test]
 async fn get_alias_200_returns_target_404_returns_none() {
-    let app = Router::new()
-        .route(
-            "/aliases/{alias}",
-            get(|Path(alias): Path<String>| async move {
-                if alias == "present" {
-                    (
-                        StatusCode::OK,
-                        Json(json!({ "name": "present", "collection_name": "present__deadbeef" })),
-                    )
-                        .into_response()
-                } else {
-                    (StatusCode::NOT_FOUND, Json(json!({ "message": "Not Found" })))
-                        .into_response()
-                }
-            }),
-        );
+    let app = Router::new().route(
+        "/aliases/{alias}",
+        get(|Path(alias): Path<String>| async move {
+            if alias == "present" {
+                (
+                    StatusCode::OK,
+                    Json(json!({ "name": "present", "collection_name": "present__deadbeef" })),
+                )
+                    .into_response()
+            } else {
+                (StatusCode::NOT_FOUND, Json(json!({ "message": "Not Found" }))).into_response()
+            }
+        }),
+    );
     let addr = spawn(app).await;
 
     let client = TypesenseClient::new(format!("http://{addr}"), "xyz").unwrap();
@@ -169,17 +160,12 @@ async fn get_alias_200_returns_target_404_returns_none() {
 
 #[tokio::test]
 async fn delete_alias_404_is_idempotent_ok() {
-    let app = Router::new().route(
-        "/aliases/{alias}",
-        delete(|| async { (StatusCode::NOT_FOUND, "{}") }),
-    );
+    let app =
+        Router::new().route("/aliases/{alias}", delete(|| async { (StatusCode::NOT_FOUND, "{}") }));
     let addr = spawn(app).await;
 
     let client = TypesenseClient::new(format!("http://{addr}"), "xyz").unwrap();
-    client
-        .delete_alias("gone")
-        .await
-        .expect("404 on delete is idempotent ok");
+    client.delete_alias("gone").await.expect("404 on delete is idempotent ok");
 }
 
 #[tokio::test]

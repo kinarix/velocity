@@ -124,30 +124,23 @@ fn schema_spec() -> SchemaDefinitionSpec {
             // Layer-1 RBAC: every test role gets `read` + writes the actor
             // needs. Without these the handler 403s before Layer-4/5 runs.
             roles: vec![
-                RoleAccess {
-                    role: GENERAL_READER.into(),
-                    operations: vec!["read".into()],
-                },
-                RoleAccess {
-                    role: FINANCE_ROLE.into(),
-                    operations: vec!["read".into()],
-                },
+                RoleAccess { role: GENERAL_READER.into(), operations: vec!["read".into()] },
+                RoleAccess { role: FINANCE_ROLE.into(), operations: vec!["read".into()] },
                 RoleAccess {
                     role: GENERAL_WRITER.into(),
-                    operations: vec!["read".into(), "create".into(), "update".into(), "delete".into()],
+                    operations: vec![
+                        "read".into(),
+                        "create".into(),
+                        "update".into(),
+                        "delete".into(),
+                    ],
                 },
                 RoleAccess {
                     role: RESTORER.into(),
                     operations: vec!["read".into(), "restore".into()],
                 },
-                RoleAccess {
-                    role: WEST_ROLE.into(),
-                    operations: vec!["read".into()],
-                },
-                RoleAccess {
-                    role: EAST_ROLE.into(),
-                    operations: vec!["read".into()],
-                },
+                RoleAccess { role: WEST_ROLE.into(), operations: vec!["read".into()] },
+                RoleAccess { role: EAST_ROLE.into(), operations: vec!["read".into()] },
             ],
             row_filter,
             policies: Vec::new(),
@@ -176,14 +169,10 @@ async fn cleanup(admin: &PgPool, pg_schema: &str, schema_org: &str) {
         .bind(schema_org)
         .execute(admin)
         .await;
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -381,14 +370,11 @@ async fn history_strips_sensitive_op_from_diff() {
     assert_eq!(status, StatusCode::OK);
     let items = body["items"].as_array().unwrap();
     // Find the update event (history is newest-first).
-    let update_ev = items
-        .iter()
-        .find(|e| e["operation"] == "update")
-        .expect("update event present");
+    let update_ev =
+        items.iter().find(|e| e["operation"] == "update").expect("update event present");
     let diff = update_ev["diff"].as_array().expect("diff array");
-    let mentions_unit_cost = diff
-        .iter()
-        .any(|op| op["path"].as_str().map(|s| s.contains("unit_cost")).unwrap_or(false));
+    let mentions_unit_cost =
+        diff.iter().any(|op| op["path"].as_str().map(|s| s.contains("unit_cost")).unwrap_or(false));
     assert!(
         !mentions_unit_cost,
         "diff for general reader must not reference /unit_cost; got {diff:?}"
@@ -426,10 +412,7 @@ async fn point_in_time_strips_sensitive_field() {
     let (status, body) = body_json(app.oneshot(req).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK, "point-in-time call failed: {body}");
     assert_eq!(body["po_number"], "PO-001");
-    assert!(
-        body.get(SENSITIVE_FIELD).is_none(),
-        "/at must strip {SENSITIVE_FIELD}; got {body}"
-    );
+    assert!(body.get(SENSITIVE_FIELD).is_none(), "/at must strip {SENSITIVE_FIELD}; got {body}");
 
     cleanup(&h.admin_pool, &h.pg_schema, &h.schema_org).await;
 }

@@ -34,20 +34,15 @@ struct WireBatch<'a> {
 
 impl Shipper {
     pub fn handle(self) -> Result<ShipperHandle> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()?;
-        Ok(ShipperHandle {
-            cfg: self,
-            client,
-            buf: Vec::new(),
-            first_at: None,
-        })
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?;
+        Ok(ShipperHandle { cfg: self, client, buf: Vec::new(), first_at: None })
     }
 }
 
 impl ShipperHandle {
-    pub fn buffered(&self) -> usize { self.buf.len() }
+    pub fn buffered(&self) -> usize {
+        self.buf.len()
+    }
 
     pub fn enqueue(&mut self, record: Value) {
         if self.buf.is_empty() {

@@ -125,7 +125,8 @@ async fn main() -> Result<()> {
     // midnight on the 1st. Detached because controllers and the
     // partition loop have no shared state.
     let partition_pool = ctx.pg.clone();
-    let _partition_handle = tokio::spawn(async move { partition_manager::run(partition_pool).await });
+    let _partition_handle =
+        tokio::spawn(async move { partition_manager::run(partition_pool).await });
 
     // Phase 5d-3c persistent reap. Polls
     // `platform.pending_typesense_reaps` on a fixed interval and
@@ -178,18 +179,16 @@ async fn main() -> Result<()> {
     // The processor polls the file every 30s; aligning the sweep to
     // the same cadence keeps observed-policy lag bounded by one tick.
     let log_policy_kube = ctx.kube.clone();
-    let _log_policy_handle = tokio::spawn(async move {
-        velocity_operator::log_policy::run(log_policy_kube).await
-    });
+    let _log_policy_handle =
+        tokio::spawn(async move { velocity_operator::log_policy::run(log_policy_kube).await });
 
     // Phase 7 slice 2 — sweep all SchemaDefinitions for
     // observability.slos and render PrometheusRule-shaped YAML into
     // velocity-system/velocity-slo-rules. Failure-tolerant: a sweep
     // tick that can't reach the API server logs and retries.
     let slo_rules_kube = ctx.kube.clone();
-    let _slo_rules_handle = tokio::spawn(async move {
-        velocity_operator::slo_rules::run(slo_rules_kube).await
-    });
+    let _slo_rules_handle =
+        tokio::spawn(async move { velocity_operator::slo_rules::run(slo_rules_kube).await });
 
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments

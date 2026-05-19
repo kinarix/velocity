@@ -124,10 +124,8 @@ fn schema_spec(strategy_ns: &str, strategy_name: &str) -> SchemaDefinitionSpec {
 }
 
 fn strategy_spec(iss: &str, jwks_url: &str, fail_open: bool) -> AuthStrategySpec {
-    let claims = ClaimMapping {
-        actor_id: Some(Value::String("$.sub".into())),
-        ..Default::default()
-    };
+    let claims =
+        ClaimMapping { actor_id: Some(Value::String("$.sub".into())), ..Default::default() };
     AuthStrategySpec {
         kind: AuthStrategyType::Jwt,
         config: velocity_types::crds::auth::AuthStrategyConfig {
@@ -176,10 +174,8 @@ async fn build_router(
 ) -> Router {
     let (schemas, _ready) = SchemaRegistry::new();
     let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
-    schemas.upsert(ResolvedSchema::from_spec(
-        path.clone(),
-        schema_spec("acme-platform", "default"),
-    ));
+    schemas
+        .upsert(ResolvedSchema::from_spec(path.clone(), schema_spec("acme-platform", "default")));
 
     let strategies = AuthRegistry::new();
     let strategy_ref = NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };
@@ -189,8 +185,7 @@ async fn build_router(
     resolved.prime_jwks(&jwks).await;
     strategies.upsert(resolved.clone());
 
-    let auth_state = AuthState::new(schemas, strategies, jwks)
-        .with_revocation(Arc::new(checker));
+    let auth_state = AuthState::new(schemas, strategies, jwks).with_revocation(Arc::new(checker));
     auth_state.prime_strategy(&resolved).unwrap();
 
     Router::new()
@@ -343,10 +338,8 @@ async fn no_checker_configured_admits_and_records_allowed() {
 
     let (schemas, _ready) = SchemaRegistry::new();
     let path = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
-    schemas.upsert(ResolvedSchema::from_spec(
-        path.clone(),
-        schema_spec("acme-platform", "default"),
-    ));
+    schemas
+        .upsert(ResolvedSchema::from_spec(path.clone(), schema_spec("acme-platform", "default")));
     let strategies = AuthRegistry::new();
     let strategy_ref = NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };
     let resolved =
@@ -386,13 +379,7 @@ fn pg_url() -> Option<String> {
 
 async fn connect_pg() -> Option<sqlx::PgPool> {
     let url = pg_url()?;
-    Some(
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .unwrap(),
-    )
+    Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap())
 }
 
 async fn cleanup_audit(pool: &sqlx::PgPool, schema_org: &str) {
@@ -412,10 +399,8 @@ async fn build_router_with_audit(
 ) -> Router {
     let (schemas, _ready) = SchemaRegistry::new();
     let path = SchemaPath::new(org, "supply-chain", "procurement", "purchase-order", "v1");
-    schemas.upsert(ResolvedSchema::from_spec(
-        path.clone(),
-        schema_spec("acme-platform", "default"),
-    ));
+    schemas
+        .upsert(ResolvedSchema::from_spec(path.clone(), schema_spec("acme-platform", "default")));
 
     let strategies = AuthRegistry::new();
     let strategy_ref = NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };

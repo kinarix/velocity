@@ -6,12 +6,10 @@ use tracing_subscriber::EnvFilter;
 use velocity_api::auth::{
     authenticate, AuthState, PgApiKeyChecker, PgSessionStore, RedisRevocationChecker,
 };
-use velocity_api::auth_handlers::{
-    AuthHandlersState, EnvClientSecretResolver,
-};
+use velocity_api::auth_handlers::{AuthHandlersState, EnvClientSecretResolver};
 use velocity_api::{
-    auth_informer, health, informer, router, startup, ApiConfig, AppState, AuthRegistry,
-    JwksCache, SchemaRegistry,
+    auth_informer, health, informer, router, startup, ApiConfig, AppState, AuthRegistry, JwksCache,
+    SchemaRegistry,
 };
 
 #[tokio::main(flavor = "multi_thread")]
@@ -73,11 +71,9 @@ async fn main() -> Result<()> {
     // when Redis is unreachable.
     match cfg.redis_url.as_deref() {
         Some(url) => {
-            let checker = RedisRevocationChecker::connect(
-                url,
-                velocity_api::auth::DEFAULT_REVOKED_SET_KEY,
-            )
-            .await?;
+            let checker =
+                RedisRevocationChecker::connect(url, velocity_api::auth::DEFAULT_REVOKED_SET_KEY)
+                    .await?;
             auth_state = auth_state.with_revocation(Arc::new(checker));
             tracing::info!("revocation backend connected");
         }
@@ -182,7 +178,9 @@ async fn main() -> Result<()> {
             match ts.health().await {
                 Ok(true) => tracing::info!(url, "typesense reachable"),
                 Ok(false) => tracing::warn!(url, "typesense health endpoint returned non-200"),
-                Err(e) => tracing::warn!(url, error = %e, "typesense health check failed — CDC will retry"),
+                Err(e) => {
+                    tracing::warn!(url, error = %e, "typesense health check failed — CDC will retry")
+                }
             }
             state = state.with_typesense(ts.clone());
             let cdc_pool = state.pool.clone();
@@ -210,10 +208,7 @@ async fn main() -> Result<()> {
     // API-key IP allowlist can read `ConnectInfo<SocketAddr>` off the
     // request extensions. Without it the middleware would deny every
     // request that has an `ipAllowlist` set on its ApiKey CRD.
-    let serve = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    );
+    let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
 
     tokio::select! {
         r = serve => match r {

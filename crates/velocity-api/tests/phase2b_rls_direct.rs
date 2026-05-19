@@ -101,14 +101,10 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -140,12 +136,7 @@ async fn setup_db(org: &str) -> Option<Harness> {
              (po_number, region, created_by, updated_by) \
              VALUES ($1, $2, 'seed', 'seed')",
         );
-        sqlx::query(&sql)
-            .bind(po)
-            .bind(region)
-            .execute(&admin_pool)
-            .await
-            .expect("seed insert");
+        sqlx::query(&sql).bind(po).bind(region).execute(&admin_pool).await.expect("seed insert");
     }
 
     let table = format!("{pg_schema}.purchase_order_v1");
@@ -164,10 +155,7 @@ async fn assert_api_role_does_not_bypass_rls(api_pool: &PgPool) {
             .fetch_one(api_pool)
             .await
             .expect("query current_user rolbypassrls");
-    assert!(
-        !bypass,
-        "velocity_api role has BYPASSRLS=true — Layer-7 cannot be enforced",
-    );
+    assert!(!bypass, "velocity_api role has BYPASSRLS=true — Layer-7 cannot be enforced",);
 }
 
 /// Read every row visible under the supplied `app.scoped_roles` setting.

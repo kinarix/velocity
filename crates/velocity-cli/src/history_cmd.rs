@@ -43,18 +43,9 @@ pub(crate) async fn history(
     let api = build_client(config_path, context_override)?;
     let path = SchemaPath::parse(&args.path)?;
     let v = api
-        .get_history(
-            &path,
-            &args.id,
-            args.limit,
-            args.before.as_deref(),
-            args.at.as_deref(),
-        )
+        .get_history(&path, &args.id, args.limit, args.before.as_deref(), args.at.as_deref())
         .await?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&v).context("serialising history response")?
-    );
+    println!("{}", serde_json::to_string_pretty(&v).context("serialising history response")?);
     Ok(())
 }
 
@@ -93,13 +84,8 @@ pub(crate) async fn restore(
 
     let api = build_client(config_path, context_override)?;
     let path = SchemaPath::parse(&args.path)?;
-    let v = api
-        .post_restore(&path, &args.id, &args.at, args.reason.as_deref())
-        .await?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&v).context("serialising restore response")?
-    );
+    let v = api.post_restore(&path, &args.id, &args.at, args.reason.as_deref()).await?;
+    println!("{}", serde_json::to_string_pretty(&v).context("serialising restore response")?);
     Ok(())
 }
 

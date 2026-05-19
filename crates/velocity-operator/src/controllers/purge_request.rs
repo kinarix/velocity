@@ -42,9 +42,9 @@ pub async fn reconcile(
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcileError> {
     let name = obj.name_any();
-    let namespace = obj.namespace().ok_or_else(|| {
-        ReconcileError::Invalid(format!("PurgeRequest {name} has no namespace"))
-    })?;
+    let namespace = obj
+        .namespace()
+        .ok_or_else(|| ReconcileError::Invalid(format!("PurgeRequest {name} has no namespace")))?;
 
     tracing::info!(
         %name, %namespace,
@@ -62,21 +62,13 @@ pub async fn reconcile(
         if approved {
             Ok(())
         } else {
-            Err(format!(
-                "set annotation {APPROVED_BY_ANNOTATION} to a human identifier to approve"
-            ))
+            Err(format!("set annotation {APPROVED_BY_ANNOTATION} to a human identifier to approve"))
         },
     ));
 
-    let spec_valid = conditions
-        .iter()
-        .filter(|c| c.kind != "Approved")
-        .all(|c| c.status == "True");
+    let spec_valid = conditions.iter().filter(|c| c.kind != "Approved").all(|c| c.status == "True");
 
-    let mut purged_records: Option<u64> = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.purged_records);
+    let mut purged_records: Option<u64> = obj.status.as_ref().and_then(|s| s.purged_records);
     let mut purged_at: Option<String> = obj.status.as_ref().and_then(|s| s.purged_at.clone());
 
     if spec_valid && approved {
@@ -84,11 +76,8 @@ pub async fn reconcile(
             Ok((org, app, domain)) => {
                 let pg_schema =
                     format!("{}_{}_{}_archive", sanitize(&org), sanitize(&app), sanitize(&domain));
-                let table = format!(
-                    "{}_{}",
-                    sanitize(&obj.spec.schema),
-                    sanitize(&obj.spec.version)
-                );
+                let table =
+                    format!("{}_{}", sanitize(&obj.spec.schema), sanitize(&obj.spec.version));
                 match purge_archived(&ctx, &pg_schema, &table, &obj.spec.older_than).await {
                     Ok(n) => {
                         purged_records = Some(n);
@@ -130,8 +119,7 @@ pub async fn reconcile(
         status["purgedAt"] = json!(ts);
     }
     let patch = json!({ "status": status });
-    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&patch))
-        .await?;
+    api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&patch)).await?;
 
     Ok(Action::requeue(std::time::Duration::from_secs(300)))
 }
@@ -160,13 +148,8 @@ fn validate_ident_str(s: &str, label: &str) -> Result<(), String> {
     if s.is_empty() {
         return Err(format!("{label} is empty"));
     }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
-        return Err(format!(
-            "{label} {s:?} contains characters other than [a-zA-Z0-9_.-]"
-        ));
+    if !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+        return Err(format!("{label} {s:?} contains characters other than [a-zA-Z0-9_.-]"));
     }
     Ok(())
 }
@@ -214,9 +197,7 @@ async fn purge_archived(
     older_than: &str,
 ) -> Result<u64, String> {
     if !is_safe_ident(pg_schema) || !is_safe_ident(table) {
-        return Err(format!(
-            "refusing unsafe identifier: schema={pg_schema:?} table={table:?}"
-        ));
+        return Err(format!("refusing unsafe identifier: schema={pg_schema:?} table={table:?}"));
     }
     let sql = format!(
         "WITH deleted AS (
@@ -275,10 +256,7 @@ mod tests {
             },
         );
         let conds = validate_spec(&req);
-        assert_eq!(
-            conds.iter().find(|c| c.kind == "OlderThanValid").unwrap().status,
-            "False"
-        );
+        assert_eq!(conds.iter().find(|c| c.kind == "OlderThanValid").unwrap().status, "False");
     }
 
     #[test]

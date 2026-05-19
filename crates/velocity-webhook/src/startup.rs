@@ -117,11 +117,7 @@ mod tests {
         let app = build_health_router();
         let resp = app
             .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/validate")
-                    .body(Body::empty())
-                    .unwrap(),
+                Request::builder().method("POST").uri("/validate").body(Body::empty()).unwrap(),
             )
             .await
             .unwrap();

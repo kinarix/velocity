@@ -16,8 +16,9 @@ fn admin_url() -> Option<String> {
 }
 
 fn api_url() -> String {
-    std::env::var("VELOCITY_API_TEST_API_URL")
-        .unwrap_or_else(|_| "postgres://velocity_api:velocity_api_dev@localhost:5434/velocity".into())
+    std::env::var("VELOCITY_API_TEST_API_URL").unwrap_or_else(|_| {
+        "postgres://velocity_api:velocity_api_dev@localhost:5434/velocity".into()
+    })
 }
 
 /// Connecting as the superuser must trip the gate. `postgres` has SUPERUSER

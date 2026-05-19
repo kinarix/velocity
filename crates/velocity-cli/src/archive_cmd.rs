@@ -32,10 +32,7 @@ const FIELD_MANAGER: &str = "velocity-cli";
 #[derive(Debug, Subcommand)]
 pub(crate) enum ArchiveCmd {
     /// Fetch a single archived record.
-    Get {
-        path: String,
-        id: String,
-    },
+    Get { path: String, id: String },
     /// POST a query DSL body to `/{path}/archive/query`. Body shape:
     /// `{ limit, cursor, archivedAfter }`. CLI forwards bytes.
     Query {
@@ -46,10 +43,7 @@ pub(crate) enum ArchiveCmd {
     /// Move an archived row back to the hot table.
     /// 410 ARCHIVE_HOT_ROW_PURGED means the hot row was already purged
     /// (purgeAfter elapsed); the archive copy is read-only at that point.
-    Restore {
-        path: String,
-        id: String,
-    },
+    Restore { path: String, id: String },
 }
 
 pub(crate) async fn run(
@@ -151,10 +145,8 @@ pub(crate) async fn approve(args: ApproveArgs, kubeconfig: &Option<String>) -> R
     }
 
     let client = build_client(kubeconfig.as_deref()).await?;
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering cluster APIs")?;
+    let discovery =
+        Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
     let (ar, caps) = find_resource(&discovery, "PurgeRequest")?;
     if !is_namespaced(&caps) {
         bail!("PurgeRequest is unexpectedly cluster-scoped — check operator version");
@@ -166,13 +158,9 @@ pub(crate) async fn approve(args: ApproveArgs, kubeconfig: &Option<String>) -> R
             "annotations": { APPROVED_BY_ANNOTATION: approver }
         }
     });
-    api.patch(
-        &args.name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Merge(&patch),
-    )
-    .await
-    .with_context(|| format!("annotating PurgeRequest {}/{}", args.namespace, args.name))?;
+    api.patch(&args.name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Merge(&patch))
+        .await
+        .with_context(|| format!("annotating PurgeRequest {}/{}", args.namespace, args.name))?;
 
     eprintln!(
         "approved: PurgeRequest {}/{} -> {APPROVED_BY_ANNOTATION}={approver}",

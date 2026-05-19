@@ -161,8 +161,8 @@ pub fn encode_flow_cookie(state: &FlowState, secret: &[u8]) -> Result<String, Fl
     }
     let payload_b64 = URL_SAFE_NO_PAD.encode(&payload);
 
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .map_err(|_| FlowCookieError::Malformed("hmac key"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| FlowCookieError::Malformed("hmac key"))?;
     mac.update(payload_b64.as_bytes());
     let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
 
@@ -190,15 +190,16 @@ pub fn decode_flow_cookie(
         return Err(FlowCookieError::Malformed("empty segment"));
     }
 
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .map_err(|_| FlowCookieError::Malformed("hmac key"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| FlowCookieError::Malformed("hmac key"))?;
     mac.update(payload_b64.as_bytes());
     let provided_sig =
         URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| FlowCookieError::Malformed("sig b64"))?;
     mac.verify_slice(&provided_sig).map_err(|_| FlowCookieError::BadSignature)?;
 
-    let payload =
-        URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| FlowCookieError::Malformed("payload b64"))?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|_| FlowCookieError::Malformed("payload b64"))?;
     let state: FlowState =
         serde_json::from_slice(&payload).map_err(|_| FlowCookieError::Malformed("json"))?;
 
@@ -308,8 +309,8 @@ mod tests {
         let (_, sig) = cookie.split_once('.').unwrap();
         // Swap the payload while keeping the signature.
         let other = fresh_flow();
-        let other_payload =
-            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&FlowState { state: "elsewhere".into(), ..other }).unwrap());
+        let other_payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&FlowState { state: "elsewhere".into(), ..other }).unwrap());
         let bad = format!("{other_payload}.{sig}");
         let err = decode_flow_cookie(&bad, "state-xyz", &key(), state.issued_at + 1).unwrap_err();
         assert!(matches!(err, FlowCookieError::BadSignature));
@@ -319,7 +320,8 @@ mod tests {
     fn cookie_rejects_state_mismatch() {
         let state = fresh_flow();
         let cookie = encode_flow_cookie(&state, &key()).unwrap();
-        let err = decode_flow_cookie(&cookie, "different", &key(), state.issued_at + 1).unwrap_err();
+        let err =
+            decode_flow_cookie(&cookie, "different", &key(), state.issued_at + 1).unwrap_err();
         assert!(matches!(err, FlowCookieError::StateMismatch));
     }
 
@@ -337,7 +339,8 @@ mod tests {
         let state = fresh_flow();
         let cookie = encode_flow_cookie(&state, &key()).unwrap();
         let bad_key = b"different-key-of-the-right-length-32";
-        let err = decode_flow_cookie(&cookie, "state-xyz", bad_key, state.issued_at + 1).unwrap_err();
+        let err =
+            decode_flow_cookie(&cookie, "state-xyz", bad_key, state.issued_at + 1).unwrap_err();
         assert!(matches!(err, FlowCookieError::BadSignature));
     }
 
@@ -366,13 +369,7 @@ mod tests {
         // check would regress to silently accepting cookie-bloating
         // `return_to` URLs.
         let huge_return_to = "/r".to_string() + &"x".repeat(MAX_COOKIE_PAYLOAD_LEN);
-        let s = FlowState::new(
-            "s".into(),
-            "v".into(),
-            "n".into(),
-            huge_return_to,
-            "k/v".into(),
-        );
+        let s = FlowState::new("s".into(), "v".into(), "n".into(), huge_return_to, "k/v".into());
         let err = encode_flow_cookie(&s, &key()).unwrap_err();
         assert!(matches!(err, FlowCookieError::TooLarge));
     }

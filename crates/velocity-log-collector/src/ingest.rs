@@ -32,19 +32,16 @@ pub struct CollectorConfig {
 
 impl CollectorConfig {
     pub fn from_env() -> Result<Self> {
-        let log_root: PathBuf = std::env::var("VELOCITY_LC_LOG_ROOT")
-            .unwrap_or_else(|_| "/var/log/pods".into())
-            .into();
+        let log_root: PathBuf =
+            std::env::var("VELOCITY_LC_LOG_ROOT").unwrap_or_else(|_| "/var/log/pods".into()).into();
         let processor_endpoint = std::env::var("VELOCITY_LC_PROCESSOR_ENDPOINT")
             .context("VELOCITY_LC_PROCESSOR_ENDPOINT required (e.g. http://velocity-log-processor:9090/v1/logs)")?;
         let ingest_token = std::env::var("VELOCITY_LC_INGEST_TOKEN")
             .context("VELOCITY_LC_INGEST_TOKEN required")?;
         let scan_interval = secs_env("VELOCITY_LC_SCAN_SECS", 5);
         let flush_interval = secs_env("VELOCITY_LC_FLUSH_SECS", 1);
-        let max_batch_records = std::env::var("VELOCITY_LC_MAX_BATCH")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(500);
+        let max_batch_records =
+            std::env::var("VELOCITY_LC_MAX_BATCH").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
         let max_batch_age = secs_env("VELOCITY_LC_MAX_BATCH_AGE_SECS", 2);
         Ok(Self {
             log_root,
@@ -59,12 +56,7 @@ impl CollectorConfig {
 }
 
 fn secs_env(key: &str, default: u64) -> Duration {
-    Duration::from_secs(
-        std::env::var(key)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(default),
-    )
+    Duration::from_secs(std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default))
 }
 
 /// Coordinator: owns the file table + shipper.
@@ -166,12 +158,8 @@ impl Collector {
         }
 
         // Drop watches for files that no longer exist (pod deleted).
-        let to_drop: Vec<PathBuf> = self
-            .files
-            .keys()
-            .filter(|p| !seen.contains(*p))
-            .cloned()
-            .collect();
+        let to_drop: Vec<PathBuf> =
+            self.files.keys().filter(|p| !seen.contains(*p)).cloned().collect();
         for p in to_drop {
             tracing::info!(path = %p.display(), "pod gone; dropping tail");
             self.files.remove(&p);
@@ -199,7 +187,9 @@ impl Collector {
 
     /// Test accessor — returns the current shipper buffer count.
     #[cfg(test)]
-    pub fn buffered(&self) -> usize { self.shipper.buffered() }
+    pub fn buffered(&self) -> usize {
+        self.shipper.buffered()
+    }
 }
 
 #[cfg(test)]
@@ -211,12 +201,8 @@ mod tests {
     const UUID: &str = "12345678-1234-1234-1234-123456789abc";
 
     async fn write_line(path: &std::path::Path, line: &str) {
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await
-            .unwrap();
+        let mut f =
+            tokio::fs::OpenOptions::new().create(true).append(true).open(path).await.unwrap();
         f.write_all(line.as_bytes()).await.unwrap();
         f.write_all(b"\n").await.unwrap();
     }

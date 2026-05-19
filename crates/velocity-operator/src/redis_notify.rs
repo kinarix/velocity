@@ -51,8 +51,7 @@ impl RedisNotify {
     /// Open a connection manager. `key` is the SET name — pass
     /// [`DEFAULT_REVOKED_SET_KEY`] unless the deployment overrides it.
     pub async fn connect(url: &str, key: impl Into<String>) -> Result<Self, RedisNotifyError> {
-        let client =
-            Client::open(url).map_err(|e| RedisNotifyError::Open(e.to_string()))?;
+        let client = Client::open(url).map_err(|e| RedisNotifyError::Open(e.to_string()))?;
         let manager = ConnectionManager::new(client)
             .await
             .map_err(|e| RedisNotifyError::Connect(e.to_string()))?;

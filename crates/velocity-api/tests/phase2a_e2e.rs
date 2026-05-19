@@ -59,8 +59,8 @@ use velocity_types::crds::auth::{
     AuthStrategySpec, AuthStrategyType, ClaimMapping, IssuerConfig as CrdIssuer, RevocationConfig,
 };
 use velocity_types::crds::schema::{
-    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec, SearchSpec,
-    SearchTier,
+    AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+    SearchSpec, SearchTier,
 };
 
 // ─── env shims (mirror phase1_crud.rs) ────────────────────────────────────
@@ -164,10 +164,8 @@ fn schema_spec() -> SchemaDefinitionSpec {
 }
 
 fn strategy_spec(iss: &str, jwks_url: &str, fail_open: bool) -> AuthStrategySpec {
-    let claims = ClaimMapping {
-        actor_id: Some(Value::String("$.sub".into())),
-        ..Default::default()
-    };
+    let claims =
+        ClaimMapping { actor_id: Some(Value::String("$.sub".into())), ..Default::default() };
     AuthStrategySpec {
         kind: AuthStrategyType::Jwt,
         config: velocity_types::crds::auth::AuthStrategyConfig {
@@ -190,14 +188,10 @@ fn strategy_spec(iss: &str, jwks_url: &str, fail_open: bool) -> AuthStrategySpec
 }
 
 async fn cleanup(admin: &PgPool, pg_schema: &str) {
-    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE"))
-        .execute(admin)
-        .await;
-    for role in [
-        format!("{pg_schema}_reader"),
-        format!("{pg_schema}_writer"),
-        format!("{pg_schema}_admin"),
-    ] {
+    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {pg_schema} CASCADE")).execute(admin).await;
+    for role in
+        [format!("{pg_schema}_reader"), format!("{pg_schema}_writer"), format!("{pg_schema}_admin")]
+    {
         let _ = sqlx::query(&format!("DROP ROLE IF EXISTS {role}")).execute(admin).await;
     }
 }
@@ -318,10 +312,8 @@ async fn happy_path_writes_audit_row_with_allowed_fail_mode() {
 
     let actor = format!("alice-{suffix}");
     let token = mint(iss, &actor, "k1", &enc);
-    let res = app
-        .oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" })))
-        .await
-        .unwrap();
+    let res =
+        app.oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" }))).await.unwrap();
     assert_eq!(res.status(), StatusCode::CREATED, "happy path must admit");
     let body = read_body(res.into_body()).await;
     assert_eq!(body["po_number"], "PO-0001");
@@ -357,10 +349,8 @@ async fn revoked_actor_is_rejected_and_writes_no_audit_row() {
     let app = build_authed_router(&h, iss, &jwks_url, /*fail_open=*/ false, checker).await;
 
     let token = mint(iss, &actor, "k1", &enc);
-    let res = app
-        .oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" })))
-        .await
-        .unwrap();
+    let res =
+        app.oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" }))).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
     let body = read_body(res.into_body()).await;
     assert_eq!(body["error"], "ACTOR_REVOKED");
@@ -393,10 +383,8 @@ async fn backend_down_fail_open_admits_and_records_decision() {
 
     let actor = format!("oscar-{suffix}");
     let token = mint(iss, &actor, "k1", &enc);
-    let res = app
-        .oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" })))
-        .await
-        .unwrap();
+    let res =
+        app.oneshot(post_create(&token, &h.path, json!({ "po_number": "PO-0001" }))).await.unwrap();
     // fail_open admits — but the audit row makes it discoverable later.
     assert_eq!(res.status(), StatusCode::CREATED);
 

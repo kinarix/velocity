@@ -145,11 +145,7 @@ fn validate_fts_weights(obj: &Value) -> ValidationResult {
 /// We deliberately stop at the static check: confirming the target schema
 /// actually exists in the cluster would require live kube reads from the
 /// webhook, which we leave to the operator's reconcile-time validation.
-fn validate_field_refs(
-    obj: &Value,
-    self_org: &str,
-    multi_tenant_mode: bool,
-) -> ValidationResult {
+fn validate_field_refs(obj: &Value, self_org: &str, multi_tenant_mode: bool) -> ValidationResult {
     let Some(fields) = obj.pointer("/spec/fields").and_then(Value::as_array) else {
         return Ok(());
     };
@@ -266,8 +262,8 @@ mod tests {
             "metadata": { "labels": { "velocity.sh/org": "acme" } },
             "spec": {}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("velocity.sh/app"));
     }
 
@@ -285,8 +281,8 @@ mod tests {
                 { "type": "cel", "rule": "x".repeat(20_000) }
             ]}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("byte cap"));
     }
 
@@ -312,8 +308,8 @@ mod tests {
                 { "type": "cel", "rule": deep }
             ]}
         });
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("nesting depth"));
     }
 
@@ -350,8 +346,8 @@ mod tests {
     #[test]
     fn ref_missing_target_rejected() {
         let obj = sd_with_field(serde_json::json!({ "name": "supplier", "type": "ref" }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("requires a `ref` block"));
     }
 
@@ -362,8 +358,8 @@ mod tests {
             "type": "ref",
             "ref": { "org": "acme", "app": "supply-chain", "domain": "procurement" }
         }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("ref.object"));
     }
 
@@ -396,8 +392,8 @@ mod tests {
                 "version": "v1"
             }
         }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", true)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", true).unwrap_err();
         assert!(err.0.contains("cross-org"));
         assert!(err.0.contains("ADR-010"));
     }
@@ -449,8 +445,8 @@ mod tests {
             "type": "string",
             "ftsWeight": "A"
         }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("searchable: true"));
     }
 
@@ -462,8 +458,8 @@ mod tests {
             "searchable": true,
             "ftsWeight": "B"
         }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("string/enum"));
     }
 
@@ -475,8 +471,8 @@ mod tests {
             "searchable": true,
             "ftsWeight": "Z"
         }));
-        let err = validate_schema_definition(&obj, "acme-supply-chain-procurement", false)
-            .unwrap_err();
+        let err =
+            validate_schema_definition(&obj, "acme-supply-chain-procurement", false).unwrap_err();
         assert!(err.0.contains("A, B, C, D"));
     }
 }

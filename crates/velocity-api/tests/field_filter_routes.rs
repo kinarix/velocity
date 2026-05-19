@@ -111,7 +111,8 @@ async fn body_json(res: Response) -> (StatusCode, Value) {
 }
 
 const COLLECTION: &str = "/api/acme/supply-chain/procurement/purchase-order/v1";
-const ITEM: &str = "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
+const ITEM: &str =
+    "/api/acme/supply-chain/procurement/purchase-order/v1/00000000-0000-0000-0000-000000000001";
 
 #[tokio::test]
 async fn create_denied_when_writing_gated_field_without_role() {
@@ -119,8 +120,8 @@ async fn create_denied_when_writing_gated_field_without_role() {
         field("po_number", &[], &[]),
         field("price", &[], &["pricing-admin"]),
     ]));
-    let app = router::build(state)
-        .layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
+    let app =
+        router::build(state).layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
     let res = app
         .oneshot(
             Request::builder()
@@ -147,8 +148,8 @@ async fn create_admitted_when_role_grants_field_write() {
         field("po_number", &[], &[]),
         field("price", &[], &["pricing-admin"]),
     ]));
-    let app = router::build(state)
-        .layer(from_fn(inject_identity(ident("alice", &["pricing-admin"]))));
+    let app =
+        router::build(state).layer(from_fn(inject_identity(ident("alice", &["pricing-admin"]))));
     let res = app
         .oneshot(
             Request::builder()
@@ -175,8 +176,8 @@ async fn update_denied_when_writing_gated_field() {
         field("po_number", &[], &[]),
         field("price", &[], &["pricing-admin"]),
     ]));
-    let app = router::build(state)
-        .layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
+    let app =
+        router::build(state).layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
     let res = app
         .oneshot(
             Request::builder()
@@ -204,8 +205,8 @@ async fn update_passes_when_only_open_fields_in_payload() {
         field("po_number", &[], &[]),
         field("price", &[], &["pricing-admin"]),
     ]));
-    let app = router::build(state)
-        .layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
+    let app =
+        router::build(state).layer(from_fn(inject_identity(ident("alice", &["pricing-reader"]))));
     let res = app
         .oneshot(
             Request::builder()

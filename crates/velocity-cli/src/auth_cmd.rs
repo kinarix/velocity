@@ -56,16 +56,9 @@ pub(crate) struct GrantArgs {
 }
 
 pub(crate) async fn grant(args: GrantArgs, kubeconfig: &Option<String>) -> Result<()> {
-    let scopes = args
-        .scope
-        .iter()
-        .map(|s| parse_scope(s))
-        .collect::<Result<Vec<_>>>()?;
+    let scopes = args.scope.iter().map(|s| parse_scope(s)).collect::<Result<Vec<_>>>()?;
 
-    let name = args
-        .name
-        .clone()
-        .unwrap_or_else(|| default_binding_name(&args.actor));
+    let name = args.name.clone().unwrap_or_else(|| default_binding_name(&args.actor));
 
     let mut rb = RoleBinding::new(
         &name,
@@ -81,13 +74,9 @@ pub(crate) async fn grant(args: GrantArgs, kubeconfig: &Option<String>) -> Resul
 
     let client = build_client(kubeconfig.as_deref()).await?;
     let api: Api<RoleBinding> = Api::namespaced(client, &args.namespace);
-    api.patch(
-        &name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&rb),
-    )
-    .await
-    .with_context(|| format!("applying RoleBinding {name}"))?;
+    api.patch(&name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&rb))
+        .await
+        .with_context(|| format!("applying RoleBinding {name}"))?;
 
     eprintln!("granted: RoleBinding {}/{name}", args.namespace);
     Ok(())
@@ -97,11 +86,7 @@ fn default_binding_name(actor: &str) -> String {
     // Use the first 6 hex chars of a random uuid v4 to disambiguate when
     // an operator grants the same actor twice with different scopes.
     let suffix = uuid::Uuid::new_v4().simple().to_string();
-    format!(
-        "{}-{}",
-        sanitize_actor(actor),
-        &suffix[..6.min(suffix.len())]
-    )
+    format!("{}-{}", sanitize_actor(actor), &suffix[..6.min(suffix.len())])
 }
 
 fn sanitize_actor(actor: &str) -> String {
@@ -119,17 +104,13 @@ fn sanitize_actor(actor: &str) -> String {
 }
 
 fn parse_scope(s: &str) -> Result<ScopeSpec> {
-    let (schema, ops) = s
-        .split_once(':')
-        .ok_or_else(|| anyhow!("scope `{s}` must be `<schema>:<op>[,<op>]`"))?;
+    let (schema, ops) =
+        s.split_once(':').ok_or_else(|| anyhow!("scope `{s}` must be `<schema>:<op>[,<op>]`"))?;
     if schema.is_empty() {
         bail!("scope `{s}` has empty schema");
     }
-    let operations: Vec<String> = if ops.is_empty() {
-        Vec::new()
-    } else {
-        ops.split(',').map(str::to_string).collect()
-    };
+    let operations: Vec<String> =
+        if ops.is_empty() { Vec::new() } else { ops.split(',').map(str::to_string).collect() };
     Ok(ScopeSpec {
         schema: schema.to_string(),
         version: None,
@@ -212,47 +193,33 @@ pub(crate) enum ApiKeyCmd {
 pub(crate) async fn api_key(cmd: ApiKeyCmd, kubeconfig: &Option<String>) -> Result<()> {
     let client = build_client(kubeconfig.as_deref()).await?;
     match cmd {
-        ApiKeyCmd::Create {
-            namespace,
-            name,
-            actor,
-            actor_type,
-            scope,
-            expires,
-            wait_secs,
-        } => {
+        ApiKeyCmd::Create { namespace, name, actor, actor_type, scope, expires, wait_secs } => {
             let scopes = scope.iter().map(|s| parse_scope(s)).collect::<Result<Vec<_>>>()?;
             let mut key = ApiKey::new(
                 &name,
-                ApiKeySpec {
-                    actor,
-                    actor_type,
-                    scopes,
-                    ip_allowlist: Vec::new(),
-                    expiry: expires,
-                },
+                ApiKeySpec { actor, actor_type, scopes, ip_allowlist: Vec::new(), expiry: expires },
             );
             key.metadata.namespace = Some(namespace.clone());
 
             let api: Api<ApiKey> = Api::namespaced(client.clone(), &namespace);
-            api.patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER).force(),
-                &Patch::Apply(&key),
-            )
-            .await
-            .with_context(|| format!("applying ApiKey {namespace}/{name}"))?;
+            api.patch(&name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&key))
+                .await
+                .with_context(|| format!("applying ApiKey {namespace}/{name}"))?;
             eprintln!("ApiKey {namespace}/{name} applied; waiting up to {wait_secs}s for the operator to mint the secret...");
 
-            let secret_ref = wait_for_secret_ref(&api, &name, Duration::from_secs(wait_secs)).await?;
-            println!("{}", json!({
-                "namespace":  namespace,
-                "name":       name,
-                "secret_ref": secret_ref,
-                "fetch_with": format!(
-                    "kubectl get secret -n {namespace} {secret_ref} -o jsonpath='{{.data.key}}' | base64 -d"
-                ),
-            }));
+            let secret_ref =
+                wait_for_secret_ref(&api, &name, Duration::from_secs(wait_secs)).await?;
+            println!(
+                "{}",
+                json!({
+                    "namespace":  namespace,
+                    "name":       name,
+                    "secret_ref": secret_ref,
+                    "fetch_with": format!(
+                        "kubectl get secret -n {namespace} {secret_ref} -o jsonpath='{{.data.key}}' | base64 -d"
+                    ),
+                })
+            );
             Ok(())
         }
         ApiKeyCmd::Revoke { namespace, name, yes } => {
@@ -274,10 +241,8 @@ pub(crate) async fn api_key(cmd: ApiKeyCmd, kubeconfig: &Option<String>) -> Resu
             // Use Discovery so the list works even if `velocity-types`
             // ApiKey GVK diverges from what's deployed (the data is
             // the same shape regardless).
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering cluster APIs")?;
+            let discovery =
+                Discovery::new(client.clone()).run().await.context("discovering cluster APIs")?;
             let (ar, caps) = find_resource(&discovery, "ApiKey")?;
             let api: Api<kube::api::DynamicObject> = if crate::kube_helpers::is_namespaced(&caps) {
                 match namespace {
@@ -287,10 +252,8 @@ pub(crate) async fn api_key(cmd: ApiKeyCmd, kubeconfig: &Option<String>) -> Resu
             } else {
                 Api::all_with(client, &ar)
             };
-            let list = api
-                .list(&kube::api::ListParams::default())
-                .await
-                .context("listing ApiKeys")?;
+            let list =
+                api.list(&kube::api::ListParams::default()).await.context("listing ApiKeys")?;
             for o in list.items {
                 let ns = o.metadata.namespace.unwrap_or_else(|| "<none>".into());
                 let nm = o.metadata.name.unwrap_or_else(|| "<unnamed>".into());
@@ -319,11 +282,7 @@ pub(crate) async fn api_key(cmd: ApiKeyCmd, kubeconfig: &Option<String>) -> Resu
 /// Poll the ApiKey's status until `status.secretRef` shows up, or
 /// `timeout` elapses. The controller writes the Secret + flips the
 /// status in a single reconcile pass once the spec validates.
-async fn wait_for_secret_ref(
-    api: &Api<ApiKey>,
-    name: &str,
-    timeout: Duration,
-) -> Result<String> {
+async fn wait_for_secret_ref(api: &Api<ApiKey>, name: &str, timeout: Duration) -> Result<String> {
     let started = Instant::now();
     loop {
         let obj = api.get(name).await.with_context(|| format!("polling ApiKey {name}"))?;
