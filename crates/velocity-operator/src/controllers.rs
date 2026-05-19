@@ -1,6 +1,7 @@
 //! kube-rs reconcilers for the hierarchy CRDs.
 
 pub mod application;
+pub mod archive_policy;
 pub mod domain;
 pub mod organisation;
 pub mod role_binding;
