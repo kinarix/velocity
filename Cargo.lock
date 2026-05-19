@@ -5369,6 +5369,7 @@ dependencies = [
  "parquet",
  "prometheus",
  "redis",
+ "reqwest 0.13.3",
  "rustls",
  "schemars",
  "serde",

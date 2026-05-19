@@ -46,6 +46,12 @@ pub struct OperatorConfig {
     /// Typesense call. Required when `typesense_url` is set; missing
     /// here while `typesense_url` is set fails boot.
     pub typesense_api_key: Option<String>,
+    /// Phase 6c: HTTP webhook the anomaly scanner POSTs alerts to.
+    /// Stands in for the Kafka `velocity.alerts` topic until a
+    /// follow-up ADR adds an rdkafka client. `None` => no webhook
+    /// delivery; alerts still land in `platform.anomaly_alerts` and
+    /// `tracing::warn!` for SIEM ingest.
+    pub alert_webhook_url: Option<String>,
 }
 
 impl OperatorConfig {
@@ -91,6 +97,9 @@ impl OperatorConfig {
             );
         }
 
+        let alert_webhook_url =
+            get("VELOCITY_OPERATOR_ALERT_WEBHOOK_URL").filter(|v| !v.trim().is_empty());
+
         Ok(Self {
             pg_url,
             health_addr,
@@ -103,6 +112,7 @@ impl OperatorConfig {
             warm_storage_url,
             typesense_url,
             typesense_api_key,
+            alert_webhook_url,
         })
     }
 

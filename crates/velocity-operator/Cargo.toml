@@ -51,6 +51,7 @@ uuid               = { workspace = true }
 arc-swap           = { workspace = true }
 redis              = { workspace = true }
 prometheus         = { workspace = true }
+reqwest            = { workspace = true }
 
 # Warm-tier export (Phase 4.2) — write Parquet objects to object_store.
 arrow              = { workspace = true }

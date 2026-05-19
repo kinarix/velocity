@@ -181,6 +181,7 @@ mod tests {
             warm_storage_url: None,
             typesense_url: None,
             typesense_api_key: None,
+            alert_webhook_url: None,
         }
     }
 

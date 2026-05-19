@@ -140,6 +140,34 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Phase 6c — anomaly scanner. Walks new `platform.audit_log` rows
+    // every minute, evaluates bulk-reader / after-hours / repeated-
+    // denials heuristics, inserts dedupe-bucketed alerts, and POSTs
+    // to a configured webhook (Kafka stand-in). Detached; takes only
+    // a pool + optional webhook client so it's safe to spawn early.
+    let anomaly_pool = ctx.pg.clone();
+    let anomaly_webhook = match cfg.alert_webhook_url.as_deref() {
+        Some(url) => match reqwest::Client::builder().build() {
+            Ok(client) => {
+                tracing::info!(url, "anomaly alert webhook wired");
+                Some(velocity_operator::anomaly::WebhookConfig { url: url.into(), client })
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to build anomaly webhook client; alerts will land in DB + logs only");
+                None
+            }
+        },
+        None => {
+            tracing::warn!(
+                "VELOCITY_OPERATOR_ALERT_WEBHOOK_URL unset — anomaly alerts will land in platform.anomaly_alerts + tracing logs only"
+            );
+            None
+        }
+    };
+    let _anomaly_handle = tokio::spawn(async move {
+        velocity_operator::anomaly::run(anomaly_pool, anomaly_webhook).await
+    });
+
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments
     // `velocity_drift_detected_total{kind="orphan_table"}` per orphan
