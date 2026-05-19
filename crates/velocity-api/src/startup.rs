@@ -212,6 +212,7 @@ mod tests {
             cursor_signing_key: None,
             typesense_url: None,
             typesense_api_key: None,
+            platform_audit_token: None,
         }
     }
 

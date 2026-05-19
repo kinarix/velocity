@@ -223,6 +223,71 @@ pub async fn write_audit_standalone(
     Ok(())
 }
 
+/// Synthetic `schema_org` the platform-internal audit endpoints record
+/// against. Pinned so a SOC analyst filtering for `schema_org = '__platform/audit/audit/audit/v1'`
+/// gets every "who read the audit log" row in one query. Format
+/// matches the org/app/domain/object/version shape so any downstream
+/// tooling that parses the path stays happy; the leading `__platform`
+/// segment makes it unmistakeably platform-internal and prevents
+/// collision with any real tenant org (CRD validation rejects
+/// double-underscore prefixes — see `crds/schema.rs::validate_path`).
+pub const AUDIT_SELF_SCHEMA_ORG: &str = "__platform/audit/audit/audit/v1";
+
+/// Write a "platform-internal" audit row directly, bypassing
+/// [`ResolvedSchema`]-based redaction.
+///
+/// Used by the audit-read endpoints to self-audit each call: the
+/// payload here is the request's filter set + result count (no tenant
+/// data), so [`redact_sensitive`] has nothing to do — and there is no
+/// `ResolvedSchema` to pass in anyway (the endpoints are not bound to
+/// a tenant schema). The `schema_org` is the synthetic
+/// [`AUDIT_SELF_SCHEMA_ORG`] string.
+///
+/// **Never call this from a tenant-data code path.** It deliberately
+/// skips redaction; misuse would leak PII into `platform.audit_log`.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_audit_meta(
+    pool: &PgPool,
+    actor: &str,
+    schema_org: &str,
+    action: &str,
+    outcome: &str,
+    payload: &Value,
+    request_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    // Fail-modes is "unwired" here — the platform-audit endpoint uses
+    // bearer-token authentication (not the per-schema AuthDecision
+    // pipeline), so there's no AuthDecision struct to flatten. Keeping
+    // the shape consistent means dashboards don't grow a special case.
+    let fail_modes = json!({ "auth": "platform_bearer" });
+    sqlx::query(
+        "SELECT platform.audit_insert(
+            p_actor       => $1,
+            p_action      => $2,
+            p_outcome     => $3,
+            p_schema_org  => $4,
+            p_entity_id   => NULL::uuid,
+            p_payload     => $5,
+            p_fail_modes  => $6,
+            p_request_id  => $7,
+            p_reason      => NULL,
+            p_ticket_ref  => NULL
+         )",
+    )
+    .bind(actor)
+    .bind(action)
+    .bind(outcome)
+    .bind(schema_org)
+    .bind(payload)
+    .bind(fail_modes)
+    .bind(request_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Write a denial audit row in its own short transaction.
 ///
 /// Denials are raised BEFORE the data-write transaction opens (RBAC →

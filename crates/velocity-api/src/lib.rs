@@ -10,6 +10,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod audit;
+pub mod audit_query;
 pub mod auth;
 pub mod auth_handlers;
 pub mod auth_informer;
@@ -25,6 +26,7 @@ pub mod identity;
 pub mod idempotency;
 pub mod informer;
 pub mod masking;
+pub mod platform_handlers;
 pub mod policy;
 pub mod query;
 pub mod rbac;

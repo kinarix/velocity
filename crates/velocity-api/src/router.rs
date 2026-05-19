@@ -18,6 +18,7 @@ use tracing::Span;
 
 use crate::auth_handlers::{self, AuthHandlersState};
 use crate::handlers;
+use crate::platform_handlers;
 use crate::state::AppState;
 
 /// 10 MB request body cap — matches the platform-wide limit referenced in
@@ -41,6 +42,19 @@ pub fn build(state: AppState) -> Router {
     // even when the middleware is installed.
     Router::new()
         .route("/api", get(index))
+        // Phase 6a-2: platform-internal audit endpoints. Mounted under
+        // /api/platform so the auth middleware's `schema_path_from_uri`
+        // (which requires 5 path segments after /api) naturally skips
+        // them — these routes authenticate via the platform service
+        // token, not the per-schema strategy.
+        .route(
+            "/api/platform/audit",
+            get(platform_handlers::audit_list),
+        )
+        .route(
+            "/api/platform/audit/verify",
+            get(platform_handlers::audit_verify),
+        )
         .route(
             "/api/{org}/{app}/{domain}/{object}/{version}",
             get(handlers::list).post(handlers::create),

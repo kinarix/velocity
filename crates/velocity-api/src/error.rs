@@ -160,6 +160,27 @@ pub enum ApiError {
     #[error("search unavailable: {0}")]
     SearchUnavailable(String),
 
+    /// Phase 6a-2: a call to `/api/platform/audit*` arrived without a
+    /// valid platform service token. 401 — distinct from
+    /// `Unauthenticated` (the per-schema auth middleware path) so a SOC
+    /// dashboard can split "user JWT missing" from "audit-reader token
+    /// missing/wrong" without re-parsing.
+    #[error("platform audit endpoint requires a valid bearer token")]
+    AuditUnauthorized,
+
+    /// Phase 6a-2: `/api/platform/audit` requires the caller to scope
+    /// queries by `schema_org` (or another mandatory filter) so the
+    /// endpoint cannot become a cross-tenant skeleton key. 400 — fix
+    /// the request; we do not silently widen the scope.
+    #[error("audit query missing required filter: {0}")]
+    AuditFilterRequired(&'static str),
+
+    /// Phase 6a-2: `/api/platform/audit/verify` cap window exceeded. The
+    /// per-row recompute cost is high; we refuse arbitrarily wide
+    /// windows so a single call cannot wedge a connection. 400.
+    #[error("audit verify window too wide (max {max_hours}h, got {requested_hours}h)")]
+    AuditWindowTooWide { max_hours: u32, requested_hours: u32 },
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -174,9 +195,13 @@ impl ApiError {
             ApiError::UnknownField(_)
             | ApiError::NotFilterable(_)
             | ApiError::NotSortable(_)
-            | ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            | ApiError::BadRequest(_)
+            | ApiError::AuditFilterRequired(_)
+            | ApiError::AuditWindowTooWide { .. } => StatusCode::BAD_REQUEST,
             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            ApiError::Unauthenticated(_) | ApiError::InvalidToken(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Unauthenticated(_)
+            | ApiError::InvalidToken(_)
+            | ApiError::AuditUnauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Revoked
             | ApiError::AccessDenied
             | ApiError::PolicyDenied(_)
@@ -226,6 +251,9 @@ impl ApiError {
             ApiError::CrossSchemaAccessDenied(_) => "CROSS_SCHEMA_ACCESS_DENIED",
             ApiError::SearchUnconfigured => "SEARCH_NOT_CONFIGURED",
             ApiError::SearchUnavailable(_) => "SEARCH_UNAVAILABLE",
+            ApiError::AuditUnauthorized => "AUDIT_UNAUTHORIZED",
+            ApiError::AuditFilterRequired(_) => "AUDIT_FILTER_REQUIRED",
+            ApiError::AuditWindowTooWide { .. } => "AUDIT_WINDOW_TOO_WIDE",
         }
     }
 }
@@ -340,6 +368,17 @@ mod tests {
                 ApiError::SearchUnavailable("s".into()),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SEARCH_UNAVAILABLE",
+            ),
+            (ApiError::AuditUnauthorized, StatusCode::UNAUTHORIZED, "AUDIT_UNAUTHORIZED"),
+            (
+                ApiError::AuditFilterRequired("schema_org"),
+                StatusCode::BAD_REQUEST,
+                "AUDIT_FILTER_REQUIRED",
+            ),
+            (
+                ApiError::AuditWindowTooWide { max_hours: 24, requested_hours: 100 },
+                StatusCode::BAD_REQUEST,
+                "AUDIT_WINDOW_TOO_WIDE",
             ),
         ];
         for (err, status, code) in cases {

@@ -52,6 +52,12 @@ pub struct ApiConfig {
     /// Phase 5c: Typesense API key. REQUIRED when `typesense_url` is
     /// set; otherwise startup fails (mirrors the warm-reader pairing).
     pub typesense_api_key: Option<String>,
+    /// Phase 6a-2: shared secret the `/api/platform/audit*` endpoints
+    /// require in `Authorization: Bearer <token>`. When `None`, those
+    /// endpoints return 401 to every caller — explicit failure over
+    /// silent admission. Minimum 16 chars (parity with
+    /// `VELOCITY_WARM_READER_SERVICE_TOKEN`).
+    pub platform_audit_token: Option<String>,
 }
 
 impl ApiConfig {
@@ -120,6 +126,17 @@ impl ApiConfig {
             );
         }
 
+        let platform_audit_token =
+            get("VELOCITY_API_PLATFORM_AUDIT_TOKEN").filter(|v| !v.trim().is_empty());
+        if let Some(t) = &platform_audit_token {
+            if t.len() < 16 {
+                anyhow::bail!(
+                    "VELOCITY_API_PLATFORM_AUDIT_TOKEN must be at least 16 characters (got {})",
+                    t.len()
+                );
+            }
+        }
+
         Ok(Self {
             pg_url,
             bind_addr,
@@ -134,6 +151,7 @@ impl ApiConfig {
             cursor_signing_key,
             typesense_url,
             typesense_api_key,
+            platform_audit_token,
         })
     }
 
@@ -312,6 +330,44 @@ mod tests {
         let cfg = ApiConfig::from_env_with(lookup(&env)).unwrap();
         assert_eq!(cfg.typesense_url.as_deref(), Some("http://typesense:8108"));
         assert_eq!(cfg.typesense_api_key.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn from_env_platform_audit_token_too_short_rejected() {
+        // Mirrors the warm-reader policy: a sub-16-char shared secret is
+        // trivially brute-forceable in a credential-stuffing scenario.
+        // Fail-loud at startup over silently accepting a weak token.
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_API_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_API_PLATFORM_AUDIT_TOKEN", "short");
+        let err = ApiConfig::from_env_with(lookup(&env)).unwrap_err();
+        assert!(format!("{err:#}").contains("at least 16 characters"));
+    }
+
+    #[test]
+    fn from_env_platform_audit_token_blank_treated_as_unset() {
+        // Whitespace-only token should be None (audit endpoint will 401)
+        // rather than be accepted as a valid short token.
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_API_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_API_PLATFORM_AUDIT_TOKEN", "   ");
+        let cfg = ApiConfig::from_env_with(lookup(&env)).unwrap();
+        assert!(cfg.platform_audit_token.is_none());
+    }
+
+    #[test]
+    fn from_env_platform_audit_token_accepted() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_API_PG_URL", "postgres://x/y");
+        env.insert(
+            "VELOCITY_API_PLATFORM_AUDIT_TOKEN",
+            "a-secure-audit-token-1234567890",
+        );
+        let cfg = ApiConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(
+            cfg.platform_audit_token.as_deref(),
+            Some("a-secure-audit-token-1234567890")
+        );
     }
 
     #[test]

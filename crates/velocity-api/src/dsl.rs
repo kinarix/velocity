@@ -218,7 +218,22 @@ impl CursorSigner {
     fn encode(&self, env: &CursorEnvelope) -> Result<String, ApiError> {
         let payload =
             serde_json::to_vec(env).map_err(|e| ApiError::Internal(format!("cursor: {e}")))?;
-        let payload_b64 = URL_SAFE_NO_PAD.encode(&payload);
+        self.sign_bytes(&payload)
+    }
+
+    fn decode(&self, cursor: &str) -> Result<CursorEnvelope, ApiError> {
+        let payload = self.verify_bytes(cursor)?;
+        serde_json::from_slice(&payload)
+            .map_err(|_| ApiError::BadRequest("cursor: bad payload json".into()))
+    }
+
+    /// Sign an arbitrary byte payload, producing a URL-safe
+    /// `<payload_b64>.<sig_b64>` token. Exposed so adjacent subsystems
+    /// (e.g. the audit `/audit` keyset cursor in [`crate::audit_query`])
+    /// can share the same HMAC key without each maintaining its own
+    /// signer — one key to rotate, one set of failure modes.
+    pub fn sign_bytes(&self, payload: &[u8]) -> Result<String, ApiError> {
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
         let mut mac = HmacSha256::new_from_slice(&self.key)
             .map_err(|_| ApiError::Internal("cursor hmac init".into()))?;
         mac.update(payload_b64.as_bytes());
@@ -226,8 +241,11 @@ impl CursorSigner {
         Ok(format!("{payload_b64}.{sig}"))
     }
 
-    fn decode(&self, cursor: &str) -> Result<CursorEnvelope, ApiError> {
-        let (payload_b64, sig_b64) = cursor
+    /// Inverse of [`Self::sign_bytes`]. Returns the decoded payload on
+    /// signature match, or [`ApiError::BadRequest`] on tampered /
+    /// malformed input — never silently accepts.
+    pub fn verify_bytes(&self, token: &str) -> Result<Vec<u8>, ApiError> {
+        let (payload_b64, sig_b64) = token
             .split_once('.')
             .ok_or_else(|| ApiError::BadRequest("cursor: malformed".into()))?;
         if payload_b64.is_empty() || sig_b64.is_empty() {
@@ -241,11 +259,9 @@ impl CursorSigner {
         mac.update(payload_b64.as_bytes());
         mac.verify_slice(&provided)
             .map_err(|_| ApiError::BadRequest("cursor: bad signature".into()))?;
-        let payload = URL_SAFE_NO_PAD
+        URL_SAFE_NO_PAD
             .decode(payload_b64)
-            .map_err(|_| ApiError::BadRequest("cursor: bad payload b64".into()))?;
-        serde_json::from_slice(&payload)
-            .map_err(|_| ApiError::BadRequest("cursor: bad payload json".into()))
+            .map_err(|_| ApiError::BadRequest("cursor: bad payload b64".into()))
     }
 }
 

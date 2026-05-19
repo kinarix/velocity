@@ -30,6 +30,11 @@ pub struct AppState {
     /// Tier-3 search — /search returns 503 SEARCH_NOT_CONFIGURED so
     /// the missing config is loud rather than silent.
     pub typesense: Option<Arc<TypesenseClient>>,
+    /// Phase 6a-2: shared secret accepted at `/api/platform/audit*`.
+    /// `None` => those endpoints uniformly return 401, never admit a
+    /// caller. Wrapped in `Arc` because the comparison happens on every
+    /// audit-endpoint request and the string itself never mutates.
+    pub platform_audit_token: Option<Arc<String>>,
 }
 
 impl AppState {
@@ -51,6 +56,7 @@ impl AppState {
             cold_jobs,
             cursor_signer: None,
             typesense: None,
+            platform_audit_token: None,
         }
     }
 
@@ -77,6 +83,13 @@ impl AppState {
     /// `VELOCITY_API_TYPESENSE_URL` is configured.
     pub fn with_typesense(mut self, ts: Arc<TypesenseClient>) -> Self {
         self.typesense = Some(ts);
+        self
+    }
+
+    /// Inject the shared secret accepted at `/api/platform/audit*`. Used
+    /// by main.rs when `VELOCITY_API_PLATFORM_AUDIT_TOKEN` is configured.
+    pub fn with_platform_audit_token(mut self, token: Arc<String>) -> Self {
+        self.platform_audit_token = Some(token);
         self
     }
 }
@@ -109,5 +122,14 @@ mod tests {
         let ts = Arc::new(TypesenseClient::new("http://localhost:8108", "xyz").unwrap());
         let state = AppState::new(registry, empty_pool()).with_typesense(ts);
         assert!(state.typesense.is_some());
+    }
+
+    #[tokio::test]
+    async fn with_platform_audit_token_attaches_token() {
+        let (registry, _) = SchemaRegistry::new();
+        let state = AppState::new(registry, empty_pool())
+            .with_platform_audit_token(Arc::new("a-valid-token-xxxx".into()));
+        assert!(state.platform_audit_token.is_some());
+        assert!(state.platform_audit_token.unwrap().len() >= 16);
     }
 }

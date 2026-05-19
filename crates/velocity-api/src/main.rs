@@ -158,6 +158,17 @@ async fn main() -> Result<()> {
             "VELOCITY_API_CURSOR_SIGNING_KEY is unset — POST /query will not mint cursors; cursor-bearing requests will 400"
         );
     }
+    // Phase 6a-2 — platform-internal audit-reader bearer token.
+    // When unset, /api/platform/audit* uniformly returns 401 — no
+    // silent admission. Logged at warn so the gap is visible.
+    if let Some(token) = cfg.platform_audit_token.clone() {
+        tracing::info!("platform audit endpoint authenticated via service token");
+        state = state.with_platform_audit_token(std::sync::Arc::new(token));
+    } else {
+        tracing::warn!(
+            "VELOCITY_API_PLATFORM_AUDIT_TOKEN is unset — /api/platform/audit* will 401 every request"
+        );
+    }
     // Phase 5c — Typesense client + CDC loop. Both optional. When
     // unset, Tier-3 schemas still apply but outbox rows accumulate
     // and /search returns 503 — the failure is loud, not silent.
