@@ -350,7 +350,8 @@ pub async fn run(args: RebuildArgs) -> Result<u64, RebuildError> {
     Ok(rows_processed)
 }
 
-async fn fetch_page(
+#[doc(hidden)]
+pub async fn fetch_page(
     pool: &PgPool,
     table: &str,
     cursor: Option<&str>,
@@ -378,7 +379,8 @@ async fn fetch_page(
     q.fetch_all(pool).await
 }
 
-async fn fetch_delta(
+#[doc(hidden)]
+pub async fn fetch_delta(
     pool: &PgPool,
     table: &str,
     cutoff_rfc3339: String,
@@ -410,7 +412,8 @@ async fn fetch_delta(
 /// self-converges across delta passes), the post-flip delete sweep
 /// is one-shot. A hard limit would silently leak whatever doesn't
 /// fit when churn is high.
-async fn fetch_deleted_ids_page(
+#[doc(hidden)]
+pub async fn fetch_deleted_ids_page(
     pool: &PgPool,
     table: &str,
     cutoff_rfc3339: &str,
