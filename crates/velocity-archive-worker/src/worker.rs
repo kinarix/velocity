@@ -46,8 +46,8 @@ use velocity_types::common::sanitize;
 use velocity_types::crds::{ArchivePolicy, ReconcilePhase, SchemaDefinition};
 
 use crate::{
-    archive_batch, ordered_column_names, purge_batch, ArchiveBatchArgs, ArchiveError,
-    PurgeBatchArgs,
+    archive_batch_with_predicate, ordered_column_names, purge_batch, table_size_bytes,
+    ArchiveBatchArgs, ArchiveError, ArchivePredicate, FieldOp, PurgeBatchArgs,
 };
 
 const MANAGER: &str = "velocity-archive-worker";
@@ -182,7 +182,10 @@ pub fn is_eligible(policy: &ArchivePolicy, min_run_interval: Duration) -> bool {
     if policy.spec.destination.backend != "postgres-cold" {
         return false;
     }
-    if policy.spec.trigger.kind != "age" {
+    if !matches!(
+        policy.spec.trigger.kind.as_str(),
+        "age" | "field" | "tableSize"
+    ) {
         return false;
     }
     match status.last_run_at.as_deref() {
@@ -195,6 +198,31 @@ pub fn is_eligible(policy: &ArchivePolicy, min_run_interval: Duration) -> bool {
             Err(_) => true, // malformed timestamp — treat as never run
         },
     }
+}
+
+/// Parse a `tableSize` trigger value. Accepts a bare integer (bytes) or
+/// `NB|KiB|MiB|GiB|TiB`. Matches the operator-side validator's accepted
+/// shapes.
+pub fn parse_byte_size_value(v: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = v.as_u64() {
+        return i64::try_from(n).ok();
+    }
+    let s = v.as_str()?.trim();
+    let cut = s.find(|c: char| !c.is_ascii_digit())?;
+    let (num, unit) = s.split_at(cut);
+    let n: i64 = num.parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    let mult: i64 = match unit {
+        "B" => 1,
+        "KiB" => 1024,
+        "MiB" => 1024i64.pow(2),
+        "GiB" => 1024i64.pow(3),
+        "TiB" => 1024i64.pow(4),
+        _ => return None,
+    };
+    n.checked_mul(mult)
 }
 
 /// Parse `Nu` durations (matches the operator-side validator).
@@ -216,6 +244,14 @@ pub fn parse_age_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
+/// Bound parameter wrapper so a `Field` predicate can hold an owned
+/// string that outlives the predicate construction.
+struct FieldPredicate {
+    field: String,
+    op: FieldOp,
+    value: String,
+}
+
 async fn run_policy(
     pool: &PgPool,
     kube: &kube::Client,
@@ -225,15 +261,61 @@ async fn run_policy(
 ) -> anyhow::Result<usize> {
     let (org, app, domain) = resolve_path(policy)?;
 
-    let age_str = policy
-        .spec
-        .trigger
-        .value
-        .as_ref()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("policy trigger.value missing or non-string"))?;
-    let min_age =
-        parse_age_duration(age_str).ok_or_else(|| anyhow::anyhow!("invalid age {age_str:?}"))?;
+    let trigger_kind = policy.spec.trigger.kind.as_str();
+    let (min_age, field_pred, table_size_threshold) = match trigger_kind {
+        "age" => {
+            let age_str = policy
+                .spec
+                .trigger
+                .value
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("age trigger.value missing or non-string"))?;
+            let d = parse_age_duration(age_str)
+                .ok_or_else(|| anyhow::anyhow!("invalid age {age_str:?}"))?;
+            (Some(d), None, None)
+        }
+        "field" => {
+            let field = policy
+                .spec
+                .trigger
+                .field
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("field trigger requires field"))?;
+            let op_str = policy
+                .spec
+                .trigger
+                .op
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("field trigger requires op"))?;
+            let op = FieldOp::parse(op_str)
+                .ok_or_else(|| anyhow::anyhow!("unknown field op {op_str:?}"))?;
+            let value = policy
+                .spec
+                .trigger
+                .value
+                .as_ref()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .ok_or_else(|| anyhow::anyhow!("field trigger requires value"))?;
+            (None, Some(FieldPredicate { field, op, value }), None)
+        }
+        "tableSize" => {
+            let v = policy
+                .spec
+                .trigger
+                .value
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("tableSize trigger requires value"))?;
+            let bytes = parse_byte_size_value(v).ok_or_else(|| {
+                anyhow::anyhow!("tableSize trigger value must be bytes integer or \"NGiB\" form")
+            })?;
+            (None, None, Some(bytes))
+        }
+        other => return Err(anyhow::anyhow!("unsupported trigger.kind {other:?}")),
+    };
 
     let batch_size = policy
         .spec
@@ -276,6 +358,28 @@ async fn run_policy(
         let table = pg_table_name(&sd.name_any(), &sd.spec.version);
         let columns = ordered_column_names(&sd.spec);
 
+        if let Some(threshold) = table_size_threshold {
+            match table_size_bytes(pool, &hot_schema, &table).await {
+                Ok(size) if size < threshold => {
+                    tracing::debug!(
+                        policy = %policy.name_any(),
+                        table = %table, size_bytes = size, threshold,
+                        "tableSize under threshold; skipping table"
+                    );
+                    continue;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        policy = %policy.name_any(),
+                        table = %table, error = %e,
+                        "table size lookup failed; skipping table"
+                    );
+                    continue;
+                }
+            }
+        }
+
         loop {
             if started.elapsed() >= max_duration {
                 tracing::info!(
@@ -293,11 +397,22 @@ async fn run_policy(
                 archive_schema: &archive_schema,
                 archive_table: &table,
                 columns: &columns,
-                min_age,
+                min_age: min_age.unwrap_or(std::time::Duration::from_secs(1)),
                 batch_size,
             };
+            let predicate = if let Some(d) = min_age {
+                ArchivePredicate::Age { min_age: d }
+            } else if let Some(p) = &field_pred {
+                ArchivePredicate::Field {
+                    field: &p.field,
+                    op: p.op,
+                    value: &p.value,
+                }
+            } else {
+                ArchivePredicate::Oldest
+            };
 
-            match archive_batch(pool, &args).await {
+            match archive_batch_with_predicate(pool, &args, &predicate).await {
                 Ok(r) => {
                     total += r.rows_archived;
                     if !r.more_pending {
@@ -498,10 +613,37 @@ mod tests {
     }
 
     #[test]
-    fn not_eligible_for_non_age_trigger() {
+    fn eligible_for_field_trigger() {
         let mut p = ready_policy();
         p.spec.trigger.kind = "field".into();
+        assert!(is_eligible(&p, Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn eligible_for_tablesize_trigger() {
+        let mut p = ready_policy();
+        p.spec.trigger.kind = "tableSize".into();
+        assert!(is_eligible(&p, Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn not_eligible_for_cel_trigger() {
+        let mut p = ready_policy();
+        p.spec.trigger.kind = "cel".into();
         assert!(!is_eligible(&p, Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn parse_byte_size_accepts_bytes_and_units() {
+        use serde_json::json;
+        assert_eq!(parse_byte_size_value(&json!(1024)), Some(1024));
+        assert_eq!(parse_byte_size_value(&json!("1024B")), Some(1024));
+        assert_eq!(parse_byte_size_value(&json!("1KiB")), Some(1024));
+        assert_eq!(parse_byte_size_value(&json!("10MiB")), Some(10 * 1024 * 1024));
+        assert_eq!(parse_byte_size_value(&json!("2GiB")), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_byte_size_value(&json!("0KiB")), None);
+        assert_eq!(parse_byte_size_value(&json!("10GB")), None);
+        assert_eq!(parse_byte_size_value(&json!(true)), None);
     }
 
     #[test]

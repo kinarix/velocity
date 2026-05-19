@@ -113,33 +113,112 @@ pub struct ArchiveBatchArgs<'a> {
     /// INSERT column list so position-coupled types line up.
     pub columns: &'a [String],
     /// Trigger: rows whose `created_at` is older than this are eligible.
-    /// Slice 5 will add other triggers (field, tableSize, cel).
     pub min_age: Duration,
     /// Upper bound on rows moved per call. Clamped 1..=10_000.
     pub batch_size: usize,
 }
 
-/// Pick → insert → mark, in one transaction.
-///
-/// Returns the number of rows moved and a `more_pending` flag the caller
-/// can use to decide whether to loop. On any error the transaction is
-/// rolled back implicitly when the `Transaction` drops.
+/// Field-comparison operator for the `field` trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+impl FieldOp {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "lt" => Some(FieldOp::Lt),
+            "le" => Some(FieldOp::Le),
+            "gt" => Some(FieldOp::Gt),
+            "ge" => Some(FieldOp::Ge),
+            "eq" => Some(FieldOp::Eq),
+            "ne" => Some(FieldOp::Ne),
+            _ => None,
+        }
+    }
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            FieldOp::Lt => "<",
+            FieldOp::Le => "<=",
+            FieldOp::Gt => ">",
+            FieldOp::Ge => ">=",
+            FieldOp::Eq => "=",
+            FieldOp::Ne => "<>",
+        }
+    }
+}
+
+/// Which trigger an `archive_batch` call is honouring. Drives both the
+/// SQL the renderer emits and the bound parameter passed to `$1`.
+#[derive(Debug, Clone)]
+pub enum ArchivePredicate<'a> {
+    /// Rows whose `created_at < now() - min_age` are eligible.
+    Age { min_age: Duration },
+    /// Rows where `{field} {op} $value` are eligible.
+    Field {
+        field: &'a str,
+        op: FieldOp,
+        value: &'a str,
+    },
+    /// No predicate beyond the existing soft filters — caller has
+    /// already checked `pg_total_relation_size` against the threshold
+    /// and decided to drain oldest rows.
+    Oldest,
+}
+
+/// Pick → insert → mark, in one transaction. Convenience wrapper around
+/// [`archive_batch_with_predicate`] for the common age trigger.
 pub async fn archive_batch(
     pool: &PgPool,
     args: &ArchiveBatchArgs<'_>,
 ) -> Result<ArchiveBatchResult, ArchiveError> {
-    let sql = build_archive_batch_sql(args)?;
+    archive_batch_with_predicate(
+        pool,
+        args,
+        &ArchivePredicate::Age {
+            min_age: args.min_age,
+        },
+    )
+    .await
+}
+
+/// Pick → insert → mark, in one transaction. Returns the number of rows
+/// moved and a `more_pending` flag.
+pub async fn archive_batch_with_predicate(
+    pool: &PgPool,
+    args: &ArchiveBatchArgs<'_>,
+    predicate: &ArchivePredicate<'_>,
+) -> Result<ArchiveBatchResult, ArchiveError> {
+    let sql = build_archive_batch_sql_for(args, predicate)?;
 
     let mut tx = pool.begin().await?;
-
-    let age_secs = args.min_age.as_secs() as i64;
     let limit = args.batch_size as i64;
 
-    let count: i64 = sqlx::query_scalar(&sql)
-        .bind(age_secs)
-        .bind(limit)
-        .fetch_one(&mut *tx)
-        .await?;
+    let count: i64 = match predicate {
+        ArchivePredicate::Age { min_age } => {
+            let age_secs = min_age.as_secs() as i64;
+            sqlx::query_scalar(&sql)
+                .bind(age_secs)
+                .bind(limit)
+                .fetch_one(&mut *tx)
+                .await?
+        }
+        ArchivePredicate::Field { value, .. } => {
+            sqlx::query_scalar(&sql)
+                .bind(*value)
+                .bind(limit)
+                .fetch_one(&mut *tx)
+                .await?
+        }
+        ArchivePredicate::Oldest => {
+            sqlx::query_scalar(&sql).bind(limit).fetch_one(&mut *tx).await?
+        }
+    };
 
     tx.commit().await?;
 
@@ -148,6 +227,23 @@ pub async fn archive_batch(
         rows_archived: n,
         more_pending: n >= args.batch_size,
     })
+}
+
+/// Returns `pg_total_relation_size(schema.table)` in bytes. Used by the
+/// `tableSize` trigger to decide whether to drain oldest rows.
+pub async fn table_size_bytes(
+    pool: &PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<i64, ArchiveError> {
+    validate_ident(schema)?;
+    validate_ident(table)?;
+    let qualified = format!("{schema}.{table}");
+    let size: i64 = sqlx::query_scalar("SELECT pg_total_relation_size($1::regclass)::bigint")
+        .bind(&qualified)
+        .fetch_one(pool)
+        .await?;
+    Ok(size)
 }
 
 /// Inputs to [`purge_batch`].
@@ -225,11 +321,22 @@ SELECT count(*)::bigint FROM deleted;"
     ))
 }
 
-/// Render the single-statement CTE that performs the archive move.
-/// Pure — exposed for unit testing and for callers that want to embed
-/// the SQL into a larger transaction (e.g. running multiple per-table
-/// batches inside one policy tick).
+/// Back-compat shim: render the age-trigger SQL.
 pub fn build_archive_batch_sql(args: &ArchiveBatchArgs<'_>) -> Result<String, ArchiveError> {
+    build_archive_batch_sql_for(
+        args,
+        &ArchivePredicate::Age {
+            min_age: args.min_age,
+        },
+    )
+}
+
+/// Render the single-statement CTE for any supported predicate.
+/// Pure — exposed for unit testing.
+pub fn build_archive_batch_sql_for(
+    args: &ArchiveBatchArgs<'_>,
+    predicate: &ArchivePredicate<'_>,
+) -> Result<String, ArchiveError> {
     validate_ident(args.hot_schema)?;
     validate_ident(args.hot_table)?;
     validate_ident(args.archive_schema)?;
@@ -247,25 +354,45 @@ pub fn build_archive_batch_sql(args: &ArchiveBatchArgs<'_>) -> Result<String, Ar
             ArchiveError::InvalidColumns(format!("column {c:?} is not a valid identifier"))
         })?;
     }
-    if args.min_age.as_secs() == 0 {
-        return Err(ArchiveError::InvalidAge);
-    }
     if !(1..=10_000).contains(&args.batch_size) {
         return Err(ArchiveError::InvalidBatchSize(args.batch_size));
     }
 
+    let (where_clause, limit_param) = match predicate {
+        ArchivePredicate::Age { min_age } => {
+            if min_age.as_secs() == 0 {
+                return Err(ArchiveError::InvalidAge);
+            }
+            (
+                "AND created_at < now() - make_interval(secs => $1)".to_string(),
+                "$2",
+            )
+        }
+        ArchivePredicate::Field { field, op, .. } => {
+            validate_ident(field).map_err(|_| {
+                ArchiveError::InvalidColumns(format!("field {field:?} is not a valid identifier"))
+            })?;
+            (format!("AND {field} {} $1", op.as_sql()), "$2")
+        }
+        ArchivePredicate::Oldest => (String::new(), "$1"),
+    };
+
     let cols = args.columns.join(", ");
     let hot = format!("{}.{}", args.hot_schema, args.hot_table);
     let arc = format!("{}.{}", args.archive_schema, args.archive_table);
+    let order_by = match predicate {
+        ArchivePredicate::Oldest => "ORDER BY created_at",
+        _ => "ORDER BY id",
+    };
 
     Ok(format!(
         "WITH picked AS (
     SELECT id FROM {hot}
     WHERE archived_at IS NULL
       AND deleted_at IS NULL
-      AND created_at < now() - make_interval(secs => $1)
-    ORDER BY id
-    LIMIT $2
+      {where_clause}
+    {order_by}
+    LIMIT {limit_param}
 ),
 inserted AS (
     INSERT INTO {arc} ({cols})
@@ -462,6 +589,92 @@ mod tests {
             batch_size: 10_000,
         };
         assert!(build_archive_batch_sql(&a).is_ok());
+    }
+
+    #[test]
+    fn field_predicate_renders_correctly() {
+        let (cols, _) = args();
+        let a = ArchiveBatchArgs {
+            hot_schema: "s",
+            hot_table: "po_v1",
+            archive_schema: "sa",
+            archive_table: "po_v1",
+            columns: &cols,
+            min_age: Duration::from_secs(1),
+            batch_size: 200,
+        };
+        let p = ArchivePredicate::Field {
+            field: "status",
+            op: FieldOp::Eq,
+            value: "closed",
+        };
+        let sql = build_archive_batch_sql_for(&a, &p).unwrap();
+        assert!(sql.contains("AND status = $1"));
+        assert!(sql.contains("LIMIT $2"));
+        assert!(!sql.contains("make_interval"));
+    }
+
+    #[test]
+    fn field_predicate_validates_field_ident() {
+        let (cols, _) = args();
+        let a = ArchiveBatchArgs {
+            hot_schema: "s",
+            hot_table: "t",
+            archive_schema: "sa",
+            archive_table: "t",
+            columns: &cols,
+            min_age: Duration::from_secs(1),
+            batch_size: 1,
+        };
+        let p = ArchivePredicate::Field {
+            field: "bad name",
+            op: FieldOp::Eq,
+            value: "x",
+        };
+        let err = build_archive_batch_sql_for(&a, &p).unwrap_err();
+        assert!(matches!(err, ArchiveError::InvalidColumns(_)));
+    }
+
+    #[test]
+    fn oldest_predicate_uses_one_param_and_orders_by_created_at() {
+        let (cols, _) = args();
+        let a = ArchiveBatchArgs {
+            hot_schema: "s",
+            hot_table: "t",
+            archive_schema: "sa",
+            archive_table: "t",
+            columns: &cols,
+            min_age: Duration::from_secs(1),
+            batch_size: 100,
+        };
+        let sql = build_archive_batch_sql_for(&a, &ArchivePredicate::Oldest).unwrap();
+        assert!(sql.contains("LIMIT $1"));
+        assert!(sql.contains("ORDER BY created_at"));
+        // no extra AND beyond the soft-filter pair
+        assert!(!sql.contains("make_interval"));
+        assert!(!sql.contains(" = $1"));
+    }
+
+    #[test]
+    fn field_op_parsing() {
+        for (s, expected) in [
+            ("lt", FieldOp::Lt),
+            ("le", FieldOp::Le),
+            ("gt", FieldOp::Gt),
+            ("ge", FieldOp::Ge),
+            ("eq", FieldOp::Eq),
+            ("ne", FieldOp::Ne),
+        ] {
+            assert_eq!(FieldOp::parse(s), Some(expected));
+        }
+        assert_eq!(FieldOp::parse("regex"), None);
+    }
+
+    #[test]
+    fn field_op_to_sql() {
+        assert_eq!(FieldOp::Lt.as_sql(), "<");
+        assert_eq!(FieldOp::Ge.as_sql(), ">=");
+        assert_eq!(FieldOp::Ne.as_sql(), "<>");
     }
 
     #[test]
