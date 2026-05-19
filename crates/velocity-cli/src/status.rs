@@ -7,9 +7,10 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use kube::api::ListParams;
-use kube::{Api, Client, Config};
+use kube::Api;
 use velocity_types::crds::schema::{SchemaDefinition, SchemaDefinitionStatus};
 
+use crate::kube_helpers::build_client;
 use crate::output::{self, OutputFormat};
 
 #[derive(Debug, Args)]
@@ -73,29 +74,6 @@ pub(crate) async fn run(
 
     output::print(&["NAMESPACE", "NAME", "PHASE", "CREATED", "READY"], &rows, output);
     Ok(())
-}
-
-/// Build a kube client honouring `--kubeconfig` if given, otherwise
-/// falling back to the standard discovery chain (KUBECONFIG env,
-/// `~/.kube/config`, in-cluster service account).
-async fn build_client(kubeconfig: Option<&str>) -> Result<Client> {
-    if let Some(path) = kubeconfig {
-        // KubeConfigOptions::default() picks current-context; explicit
-        // KUBECONFIG-style paths are honoured via the env var only, so
-        // for an explicit path arg we read + parse the file ourselves.
-        let cfg_file = std::fs::read_to_string(path)
-            .with_context(|| format!("reading kubeconfig at {path}"))?;
-        let kubeconfig: kube::config::Kubeconfig =
-            serde_yaml::from_str(&cfg_file).context("parsing kubeconfig YAML")?;
-        let config = Config::from_custom_kubeconfig(kubeconfig, &Default::default())
-            .await
-            .context("building kube config from --kubeconfig")?;
-        Client::try_from(config).context("building kube client")
-    } else {
-        Client::try_default()
-            .await
-            .context("building kube client (no kubeconfig — using default discovery)")
-    }
 }
 
 /// Pick the phase + a short Ready-condition message for the row.

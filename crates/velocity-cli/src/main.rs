@@ -25,6 +25,8 @@ mod client;
 mod config;
 mod context_cmd;
 mod drift;
+mod kube_cmd;
+mod kube_helpers;
 mod output;
 mod reconcile;
 mod status;
@@ -33,6 +35,7 @@ mod version_cmd;
 use audit::AuditCmd;
 use context_cmd::ContextCmd;
 use drift::DriftCmd;
+use kube_cmd::{ApplyArgs, DeleteArgs, DescribeArgs, DiffArgs, GetArgs};
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
 use status::StatusArgs;
@@ -96,6 +99,16 @@ enum Cmd {
     },
     /// Print client + server build info.
     Version(VersionArgs),
+    /// Server-side apply a Velocity manifest (file or stdin, multi-doc).
+    Apply(ApplyArgs),
+    /// List or fetch CRD objects (case-insensitive kind lookup).
+    Get(GetArgs),
+    /// Pretty-print spec + conditions for one CRD object.
+    Describe(DescribeArgs),
+    /// Delete a CRD object (prompts unless --yes).
+    Delete(DeleteArgs),
+    /// Show what `apply` would change, against the current cluster state.
+    Diff(DiffArgs),
 }
 
 #[tokio::main]
@@ -126,5 +139,10 @@ async fn main() -> Result<()> {
         Cmd::Version(args) => {
             version_cmd::run(args, cli.config.as_deref(), cli.context.as_deref(), cli.output).await
         }
+        Cmd::Apply(args) => kube_cmd::apply(args, &cli.kubeconfig).await,
+        Cmd::Get(args) => kube_cmd::get(args, &cli.kubeconfig, cli.output).await,
+        Cmd::Describe(args) => kube_cmd::describe(args, &cli.kubeconfig).await,
+        Cmd::Delete(args) => kube_cmd::delete(args, &cli.kubeconfig).await,
+        Cmd::Diff(args) => kube_cmd::diff(args, &cli.kubeconfig).await,
     }
 }
