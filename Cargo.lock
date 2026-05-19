@@ -5334,6 +5334,12 @@ name = "velocity-log-collector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "chrono",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
