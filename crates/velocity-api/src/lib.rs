@@ -26,6 +26,8 @@ pub mod identity;
 pub mod idempotency;
 pub mod informer;
 pub mod masking;
+pub mod metrics;
+pub mod metrics_middleware;
 pub mod platform_handlers;
 pub mod policy;
 pub mod query;
