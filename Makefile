@@ -155,7 +155,11 @@ build: ## cargo build --workspace
 	cargo build --workspace
 
 .PHONY: test
-test: ## cargo test --workspace
+test: ## cargo test --workspace (provisions an ephemeral k3d cluster when k3d is present)
+	@bash scripts/k3d-test.sh
+
+.PHONY: test-no-k3d
+test-no-k3d: ## cargo test --workspace without provisioning a k3d cluster
 	cargo test --workspace
 
 .PHONY: fmt
