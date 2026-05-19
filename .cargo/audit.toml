@@ -1,0 +1,36 @@
+# cargo-audit configuration for the Velocity workspace.
+#
+# `cargo audit` reads this file from the repo root and applies the
+# ignore list against the advisory database. Same shape is consumed by
+# rustsec/audit-check in CI.
+#
+# Every entry below MUST cite the RUSTSEC ID and explain why the
+# advisory is acceptable for this codebase. Without a comment, the
+# next person to read this file has no way to tell whether the ignore
+# is a deliberate decision or a stale workaround.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa 0.9.x` Marvin Attack timing sidechannel.
+    #
+    # Status: no fixed upstream release; tracking issue
+    # https://github.com/RustCrypto/RSA/issues/19 .
+    #
+    # Why we accept it: `rsa` is a *dev-dependency* of `velocity-api`
+    # only (used in `tests/` fixtures to build test JWTs). It is never
+    # linked into the API server, operator, webhook, archive worker,
+    # log processor/collector, warm-reader, or CLI binaries shipped to
+    # users. `cargo tree -i rsa` confirms:
+    #
+    #   rsa v0.9.10
+    #   [dev-dependencies]
+    #   └── velocity-api v0.1.x (crates/velocity-api)
+    #
+    # The Marvin Attack requires an attacker to time the application
+    # under inspection. There is no production attack surface here.
+    #
+    # Revisit when: (a) RustCrypto/RSA ships a fixed release — bump
+    # and drop this entry; or (b) we replace the test fixture's RSA
+    # usage with an `ed25519`/`HS256` token (also drops the ignore).
+    "RUSTSEC-2023-0071",
+]

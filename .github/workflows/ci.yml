@@ -58,6 +58,14 @@ jobs:
   audit:
     name: audit
     runs-on: ubuntu-latest
+    # rustsec/audit-check creates a "check run" against the commit so
+    # findings show up inline in the GitHub UI. Default workflow token
+    # is read-only since the 2023 security update; without checks:write
+    # the action errors with "Resource not accessible by integration"
+    # before reporting any findings.
+    permissions:
+      contents: read
+      checks:   write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2

@@ -1,0 +1,28 @@
+# Cross configuration for the cross-rs musl builds in release.yml.
+#
+# cross runs the cargo build inside a Docker container; the GitHub
+# Actions ubuntu-latest runner ships with RUSTC_WRAPPER=sccache and
+# SCCACHE_GHA_ENABLED=true preset in its environment, and the cross
+# musl images inherit/repeat that setting. sccache is *not* installed
+# inside the container, so cargo fails immediately with
+#   "could not execute process `sccache rustc -vV`".
+#
+# We clear those vars at workflow level (release.yml `env:` block),
+# but cross does not pass host env into the container unless told to.
+# `passthrough = [...]` here lists every host env var we want exposed
+# inside the build container — with whatever value the host shell has
+# at invocation time, including empty strings.
+#
+# VELOCITY_GIT_SHA is also listed so `velocity version` reports the
+# commit baked into musl Linux binaries the same way it does on the
+# native macOS builds.
+
+[build.env]
+passthrough = [
+    "RUSTC_WRAPPER",
+    "SCCACHE_GHA_ENABLED",
+    "CARGO_INCREMENTAL",
+    "CARGO_TERM_COLOR",
+    "RUST_BACKTRACE",
+    "VELOCITY_GIT_SHA",
+]
