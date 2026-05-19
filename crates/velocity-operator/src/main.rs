@@ -81,37 +81,21 @@ async fn main() -> Result<()> {
     // (Phase 5d-2). Boot stays alive whether or not Typesense is reachable
     // at this point — a Tier-3 reconcile that can't hit Typesense will
     // return Err, kube-runtime will requeue, and the status condition
-    // reflects the failure. Only the construction step gates here.
-    // Note: `health()` uses the client's default 5s timeout, so an
-    // unreachable Typesense delays boot by up to that long but never
-    // fails it.
-    let typesense = match (cfg.typesense_url.as_ref(), cfg.typesense_api_key.as_ref()) {
-        (Some(url), Some(key)) => {
-            match velocity_typesense::TypesenseClient::new(url.clone(), key.clone()) {
-                Ok(c) => {
-                    if let Err(e) = c.health().await {
-                        tracing::warn!(
-                            url = %url,
-                            error = %e,
-                            "typesense health probe failed at startup — Tier-3 reconciles will retry"
-                        );
-                    } else {
-                        tracing::info!(url = %url, "typesense client initialised");
-                    }
-                    Some(c)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to construct typesense client — Tier-3 schemas will not be eagerly provisioned");
-                    None
-                }
+    // reflects the failure. Construction gates here; the runtime
+    // health probe (uses the client's 5s default timeout) is a
+    // visibility-only check.
+    let typesense = match startup::build_typesense_client(&cfg) {
+        startup::TypesenseStartup::Configured(c) => {
+            if let Err(e) = c.health().await {
+                tracing::warn!(
+                    error = %e,
+                    "typesense health probe failed at startup — Tier-3 reconciles will retry"
+                );
             }
+            Some(c)
         }
-        _ => {
-            tracing::warn!(
-                "VELOCITY_OPERATOR_TYPESENSE_URL is unset — Tier-3 collections will be created lazily by velocity-api CDC instead"
-            );
-            None
-        }
+        startup::TypesenseStartup::NotConfigured
+        | startup::TypesenseStartup::ConstructionFailed(_) => None,
     };
 
     let mut ctx_inner = Context::new(kube.clone(), pg, ready_tx);

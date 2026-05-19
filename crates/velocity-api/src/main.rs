@@ -117,24 +117,7 @@ async fn main() -> Result<()> {
     // startup so a missing key fails loudly rather than at first
     // /auth/login. Must be at least 32 bytes; truncated/short values are
     // rejected with a hard error.
-    let flow_cookie_key = match std::env::var("VELOCITY_API_FLOW_COOKIE_KEY") {
-        Ok(s) if s.len() >= 32 => Arc::new(s.into_bytes()),
-        Ok(_) => {
-            anyhow::bail!(
-                "VELOCITY_API_FLOW_COOKIE_KEY must be at least 32 bytes — refusing to start"
-            );
-        }
-        Err(_) => {
-            tracing::warn!(
-                "VELOCITY_API_FLOW_COOKIE_KEY not set — /auth/login will reject every request"
-            );
-            // Use a zero-length placeholder so non-OIDC deployments aren't
-            // forced to set it. `encode_flow_cookie` returns an error on a
-            // too-short HMAC key, which surfaces as 500 on /auth/login —
-            // never silently admitting an unsigned cookie.
-            Arc::new(Vec::new())
-        }
-    };
+    let flow_cookie_key = startup::parse_flow_cookie_key(|k| std::env::var(k).ok())?;
 
     let auth_handlers_state = AuthHandlersState {
         auth_registry: auth_registry.clone(),
@@ -148,13 +131,7 @@ async fn main() -> Result<()> {
         claim_mappings: auth_state.claim_mappings.clone(),
         // OIDC token + JWKS calls go through this client. A hung IdP
         // must not block a request indefinitely — set bounded timeouts.
-        // 10s overall is generous enough for slow IdPs (Okta cold-start)
-        // and still well below the upstream request deadline.
-        http: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .connect_timeout(std::time::Duration::from_secs(3))
-            .build()
-            .context("building OIDC http client")?,
+        http: startup::build_oidc_http_client()?,
         client_secret_resolver: Arc::new(EnvClientSecretResolver),
     };
 
@@ -162,36 +139,7 @@ async fn main() -> Result<()> {
     // Hot tier is always wired; warm tier requires a configured
     // warm-reader URL + service token (config layer pairs them so we
     // can rely on both-or-neither here).
-    let hot_reader: std::sync::Arc<dyn velocity_api::tiering::EventReader> =
-        std::sync::Arc::new(velocity_api::tiering::PostgresEventReader::new(pool.clone()));
-    let warm_reader: Option<std::sync::Arc<dyn velocity_api::tiering::EventReader>> =
-        match (cfg.warm_reader_url.as_deref(), cfg.warm_reader_service_token.as_deref()) {
-            (Some(url), Some(token)) => {
-                match velocity_api::tiering::WarmEventReader::new(
-                    url,
-                    token,
-                    std::time::Duration::from_millis(cfg.warm_reader_timeout_ms),
-                ) {
-                    Ok(r) => {
-                        tracing::info!(warm_reader_url = %url, "warm-tier reader wired");
-                        Some(std::sync::Arc::new(r))
-                    }
-                    Err(e) => {
-                        tracing::error!(error = ?e, "warm-tier reader could not be initialised — warm requests will return WARM_TIER_NOT_CONFIGURED");
-                        None
-                    }
-                }
-            }
-            _ => {
-                tracing::warn!("warm-tier reader not configured — time-machine reads older than the hot window will fail with WARM_TIER_NOT_CONFIGURED");
-                None
-            }
-        };
-    let tiered_reader = std::sync::Arc::new(velocity_api::tiering::TieredEventReader::new(
-        hot_reader,
-        warm_reader,
-    ));
-    let cold_jobs = velocity_api::tiering::cold_stub::ColdJobStore::new();
+    let (tiered_reader, cold_jobs) = startup::build_tiered_reader(&cfg, pool.clone());
 
     // Public API. The base `new` constructs a hot-only state with
     // sensible defaults — keeps tests compiling — and `with_tiering`
