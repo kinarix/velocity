@@ -45,7 +45,10 @@ use sqlx::PgPool;
 use velocity_types::common::sanitize;
 use velocity_types::crds::{ArchivePolicy, ReconcilePhase, SchemaDefinition};
 
-use crate::{archive_batch, ordered_column_names, ArchiveBatchArgs, ArchiveError};
+use crate::{
+    archive_batch, ordered_column_names, purge_batch, ArchiveBatchArgs, ArchiveError,
+    PurgeBatchArgs,
+};
 
 const MANAGER: &str = "velocity-archive-worker";
 
@@ -259,8 +262,15 @@ async fn run_policy(
         .await?
         .items;
 
+    let purge_after = policy
+        .spec
+        .purge_after
+        .as_deref()
+        .and_then(parse_age_duration);
+
     let started = Instant::now();
     let mut total = 0usize;
+    let mut total_purged = 0usize;
 
     'schemas: for sd in &sds {
         let table = pg_table_name(&sd.name_any(), &sd.spec.version);
@@ -314,10 +324,40 @@ async fn run_policy(
                 }
             }
         }
+
+        if let Some(min_age_since_archive) = purge_after {
+            loop {
+                if started.elapsed() >= max_duration {
+                    break 'schemas;
+                }
+                let args = PurgeBatchArgs {
+                    hot_schema: &hot_schema,
+                    hot_table: &table,
+                    min_age_since_archive,
+                    batch_size,
+                };
+                match purge_batch(pool, &args).await {
+                    Ok(r) => {
+                        total_purged += r.rows_archived;
+                        if !r.more_pending {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            policy = %policy.name_any(),
+                            table = %table, error = %e,
+                            "purge_batch error; skipping table"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    patch_status(kube, policy, namespace, total).await?;
-    Ok(total)
+    patch_status(kube, policy, namespace, total, total_purged).await?;
+    Ok(total + total_purged)
 }
 
 /// Resolve `(org, app, domain)` from the policy's `velocity.sh/*` labels.
@@ -348,19 +388,27 @@ async fn patch_status(
     policy: &ArchivePolicy,
     namespace: &str,
     archived_now: usize,
+    purged_now: usize,
 ) -> anyhow::Result<()> {
-    let prior_total: u64 = policy
+    let prior_archived: u64 = policy
         .status
         .as_ref()
         .and_then(|s| s.records_archived)
         .unwrap_or(0);
-    let new_total = prior_total.saturating_add(archived_now as u64);
+    let prior_purged: u64 = policy
+        .status
+        .as_ref()
+        .and_then(|s| s.records_purged)
+        .unwrap_or(0);
+    let new_archived = prior_archived.saturating_add(archived_now as u64);
+    let new_purged = prior_purged.saturating_add(purged_now as u64);
 
     let api: Api<ArchivePolicy> = Api::namespaced(kube.clone(), namespace);
     let patch = json!({
         "status": {
             "lastRunAt": Utc::now().to_rfc3339(),
-            "recordsArchived": new_total,
+            "recordsArchived": new_archived,
+            "recordsPurged": new_purged,
         }
     });
     api.patch_status(
@@ -413,6 +461,7 @@ mod tests {
             phase: Some(ReconcilePhase::Ready),
             last_run_at: None,
             records_archived: None,
+            records_purged: None,
             archive_schema: Some("acme_sc_proc_archive".into()),
             archive_roles: vec![],
             mirrored_tables: vec![],

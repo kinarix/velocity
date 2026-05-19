@@ -145,6 +145,15 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
+              recordsPurged:
+                description: |-
+                  Cumulative count of rows hard-deleted from the hot table after
+                  their `archived_at + purgeAfter` window elapsed. Only meaningful
+                  when the policy sets `purgeAfter`.
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
             type: object
         required:
         - spec

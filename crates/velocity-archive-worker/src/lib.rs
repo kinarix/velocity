@@ -150,6 +150,81 @@ pub async fn archive_batch(
     })
 }
 
+/// Inputs to [`purge_batch`].
+#[derive(Debug, Clone)]
+pub struct PurgeBatchArgs<'a> {
+    pub hot_schema: &'a str,
+    pub hot_table: &'a str,
+    /// Rows with `archived_at < now() - min_age_since_archive` are eligible
+    /// for hard-delete from the hot table. The archive copy stays.
+    pub min_age_since_archive: Duration,
+    /// Upper bound on rows deleted per call. Clamped 1..=10_000.
+    pub batch_size: usize,
+}
+
+/// Hard-delete archived rows from the hot table.
+///
+/// `archive_batch` (slice 4) sets `archived_at` on the hot row; readers
+/// already filter `archived_at IS NULL` so the row is invisible. This
+/// primitive reclaims storage by deleting those marked rows after the
+/// policy's `purgeAfter` window has elapsed. The archive copy is the
+/// long-term home.
+///
+/// One transaction. Returns the number of rows deleted.
+pub async fn purge_batch(
+    pool: &PgPool,
+    args: &PurgeBatchArgs<'_>,
+) -> Result<ArchiveBatchResult, ArchiveError> {
+    let sql = build_purge_batch_sql(args)?;
+    let mut tx = pool.begin().await?;
+
+    let age_secs = args.min_age_since_archive.as_secs() as i64;
+    let limit = args.batch_size as i64;
+
+    let count: i64 = sqlx::query_scalar(&sql)
+        .bind(age_secs)
+        .bind(limit)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    let n = count as usize;
+    Ok(ArchiveBatchResult {
+        rows_archived: n,
+        more_pending: n >= args.batch_size,
+    })
+}
+
+/// Render the CTE that picks + deletes archived rows from the hot table.
+/// Pure — exposed for unit testing.
+pub fn build_purge_batch_sql(args: &PurgeBatchArgs<'_>) -> Result<String, ArchiveError> {
+    validate_ident(args.hot_schema)?;
+    validate_ident(args.hot_table)?;
+    if args.min_age_since_archive.as_secs() == 0 {
+        return Err(ArchiveError::InvalidAge);
+    }
+    if !(1..=10_000).contains(&args.batch_size) {
+        return Err(ArchiveError::InvalidBatchSize(args.batch_size));
+    }
+    let hot = format!("{}.{}", args.hot_schema, args.hot_table);
+    Ok(format!(
+        "WITH picked AS (
+    SELECT id FROM {hot}
+    WHERE archived_at IS NOT NULL
+      AND archived_at < now() - make_interval(secs => $1)
+    ORDER BY id
+    LIMIT $2
+),
+deleted AS (
+    DELETE FROM {hot}
+    WHERE id IN (SELECT id FROM picked)
+    RETURNING id
+)
+SELECT count(*)::bigint FROM deleted;"
+    ))
+}
+
 /// Render the single-statement CTE that performs the archive move.
 /// Pure — exposed for unit testing and for callers that want to embed
 /// the SQL into a larger transaction (e.g. running multiple per-table
@@ -387,6 +462,48 @@ mod tests {
             batch_size: 10_000,
         };
         assert!(build_archive_batch_sql(&a).is_ok());
+    }
+
+    #[test]
+    fn purge_sql_basic_shape() {
+        let a = PurgeBatchArgs {
+            hot_schema: "acme_sc_proc",
+            hot_table: "purchase_order_v1",
+            min_age_since_archive: Duration::from_secs(90 * 86_400),
+            batch_size: 500,
+        };
+        let sql = build_purge_batch_sql(&a).unwrap();
+        assert!(sql.contains("DELETE FROM acme_sc_proc.purchase_order_v1"));
+        assert!(sql.contains("archived_at IS NOT NULL"));
+        assert!(sql.contains("archived_at < now() - make_interval(secs => $1)"));
+        assert!(sql.contains("LIMIT $2"));
+        assert!(sql.contains("SELECT count(*)::bigint FROM deleted"));
+    }
+
+    #[test]
+    fn purge_sql_validates_inputs() {
+        let mut a = PurgeBatchArgs {
+            hot_schema: "s",
+            hot_table: "t",
+            min_age_since_archive: Duration::from_secs(0),
+            batch_size: 100,
+        };
+        assert!(matches!(
+            build_purge_batch_sql(&a).unwrap_err(),
+            ArchiveError::InvalidAge
+        ));
+        a.min_age_since_archive = Duration::from_secs(60);
+        a.batch_size = 0;
+        assert!(matches!(
+            build_purge_batch_sql(&a).unwrap_err(),
+            ArchiveError::InvalidBatchSize(_)
+        ));
+        a.batch_size = 100;
+        a.hot_schema = "bad name";
+        assert!(matches!(
+            build_purge_batch_sql(&a).unwrap_err(),
+            ArchiveError::InvalidIdent(_)
+        ));
     }
 
     #[test]

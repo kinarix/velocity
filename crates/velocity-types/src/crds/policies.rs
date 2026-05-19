@@ -69,6 +69,10 @@ pub struct ArchivePolicyStatus {
     pub phase: Option<ReconcilePhase>,
     pub last_run_at: Option<String>,
     pub records_archived: Option<u64>,
+    /// Cumulative count of rows hard-deleted from the hot table after
+    /// their `archived_at + purgeAfter` window elapsed. Only meaningful
+    /// when the policy sets `purgeAfter`.
+    pub records_purged: Option<u64>,
     /// Postgres schema name that will receive archived rows when the
     /// policy's `destination.backend = postgres-cold`. Set by the
     /// operator once the archive schema is provisioned; absent for s3
