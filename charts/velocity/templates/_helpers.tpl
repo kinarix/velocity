@@ -20,6 +20,38 @@
 {{- printf "%s-webhook" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "velocity.logProcessor.fullname" -}}
+{{- printf "%s-log-processor" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.logCollector.fullname" -}}
+{{- printf "%s-log-collector" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.logProcessor.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: log-processor
+{{- end -}}
+
+{{- define "velocity.logCollector.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: log-collector
+{{- end -}}
+
+{{- define "velocity.logProcessor.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.logProcessor.image.name .Values.logProcessor.image.tag -}}
+{{- end -}}
+
+{{- define "velocity.logCollector.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.logCollector.image.name .Values.logCollector.image.tag -}}
+{{- end -}}
+
 {{- define "velocity.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

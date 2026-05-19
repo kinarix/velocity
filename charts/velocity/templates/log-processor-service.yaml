@@ -1,0 +1,18 @@
+{{- if .Values.logProcessor.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "velocity.logProcessor.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: log-processor
+spec:
+  type: {{ .Values.logProcessor.service.type }}
+  selector:
+    {{- include "velocity.logProcessor.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.logProcessor.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end -}}

@@ -1,0 +1,76 @@
+{{- if .Values.logProcessor.enabled -}}
+{{- $secretName := default (printf "%s-token" (include "velocity.logProcessor.fullname" .)) .Values.logProcessor.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.logProcessor.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: log-processor
+spec:
+  replicas: {{ .Values.logProcessor.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "velocity.logProcessor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.logProcessor.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.logProcessor.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: processor
+          image: {{ include "velocity.logProcessor.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.logProcessor.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_LP_BIND_ADDR
+              value: {{ .Values.logProcessor.bindAddr | quote }}
+            - name: VELOCITY_LP_POLICY_PATH
+              value: "/etc/velocity/log-policies.yaml"
+            - name: VELOCITY_LP_POLICY_RELOAD_SECS
+              value: {{ .Values.logProcessor.policyReloadSecs | quote }}
+            - name: VELOCITY_LP_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.logProcessor.ingestTokenKey }}
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_log_processor=%s" .Values.logProcessor.logging.level .Values.logProcessor.logging.level | quote }}
+          ports:
+            - name: http
+              containerPort: 9090
+              protocol: TCP
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.logProcessor.resources | nindent 12 }}
+          volumeMounts:
+            - name: policies
+              mountPath: /etc/velocity
+              readOnly: true
+      volumes:
+        # ConfigMap rendered by the operator's log_policy sweeper. If
+        # the sweeper hasn't run yet, the file is absent and the
+        # processor starts with a fail-open empty bundle (documented).
+        - name: policies
+          configMap:
+            name: velocity-log-policies
+            optional: true
+{{- end -}}

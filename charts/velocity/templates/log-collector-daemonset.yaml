@@ -1,0 +1,67 @@
+{{- if .Values.logCollector.enabled -}}
+{{- $secretName := default (printf "%s-token" (include "velocity.logProcessor.fullname" .)) .Values.logProcessor.existingSecret -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "velocity.logCollector.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: log-collector
+spec:
+  selector:
+    matchLabels:
+      {{- include "velocity.logCollector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.logCollector.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.logCollector.podSecurityContext | nindent 8 }}
+      {{- with .Values.logCollector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: {{ include "velocity.logCollector.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.logCollector.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_LC_LOG_ROOT
+              value: {{ .Values.logCollector.logRoot | quote }}
+            - name: VELOCITY_LC_PROCESSOR_ENDPOINT
+              value: {{ printf "http://%s.%s.svc:%d/v1/logs" (include "velocity.logProcessor.fullname" .) .Release.Namespace (int .Values.logProcessor.service.port) | quote }}
+            - name: VELOCITY_LC_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.logProcessor.ingestTokenKey }}
+            - name: VELOCITY_LC_SCAN_SECS
+              value: {{ .Values.logCollector.scanSecs | quote }}
+            - name: VELOCITY_LC_FLUSH_SECS
+              value: {{ .Values.logCollector.flushSecs | quote }}
+            - name: VELOCITY_LC_MAX_BATCH
+              value: {{ .Values.logCollector.maxBatch | quote }}
+            - name: VELOCITY_LC_MAX_BATCH_AGE_SECS
+              value: {{ .Values.logCollector.maxBatchAgeSecs | quote }}
+            - name: RUST_LOG
+              value: "info,velocity_log_collector=info"
+          resources:
+            {{- toYaml .Values.logCollector.resources | nindent 12 }}
+          volumeMounts:
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+{{- end -}}

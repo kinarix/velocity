@@ -138,6 +138,78 @@ webhook:
     level: "info"
 
 ###############################################################################
+# Log processor (Phase 6b)
+###############################################################################
+# Receives JSON batches from velocity-log-collector, applies the merged
+# LogFilterPolicy rules + ships kept records to the destinations declared
+# in LogRoutingPolicy. Reads its policy bundle from a ConfigMap that the
+# operator's log_policy sweeper renders cluster-wide.
+logProcessor:
+  enabled: true
+  replicaCount: 1
+  image:
+    name: velocity-log-processor
+    tag: "0.1.0"
+  service:
+    type: ClusterIP
+    port: 9090
+  # Bearer token shared with the collector. If empty, a 32-char token is
+  # rendered into a Secret (dev convenience). For production set an
+  # external Secret via existingSecret + ingestTokenKey.
+  ingestToken: ""
+  existingSecret: ""
+  ingestTokenKey: "token"
+  # Cadence at which the processor re-reads the policy bundle file.
+  # Aligned with the operator's log_policy sweep so the worst-case
+  # observed-policy lag is one sweep period.
+  policyReloadSecs: 30
+  bindAddr: "0.0.0.0:9090"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  logging:
+    level: "info"
+
+###############################################################################
+# Log collector (Phase 6b)
+###############################################################################
+# DaemonSet that tails /var/log/pods on every node and ships lines to the
+# log processor over HTTP with the shared bearer token.
+logCollector:
+  enabled: true
+  image:
+    name: velocity-log-collector
+    tag: "0.1.0"
+  scanSecs: 5
+  flushSecs: 1
+  maxBatch: 500
+  maxBatchAgeSecs: 2
+  logRoot: "/var/log/pods"
+  resources:
+    requests: { cpu: 50m,  memory: 64Mi }
+    limits:   { cpu: 250m, memory: 256Mi }
+  podSecurityContext:
+    runAsNonRoot: false      # /var/log/pods is root-owned on most nodes
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  tolerations:
+    # Run on every node, including control-plane, so we don't lose the
+    # control-plane components' logs.
+    - operator: "Exists"
+      effect: "NoSchedule"
+
+###############################################################################
 # RBAC + ServiceAccount
 ###############################################################################
 serviceAccount:
