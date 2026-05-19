@@ -69,6 +69,16 @@ pub struct ArchivePolicyStatus {
     pub phase: Option<ReconcilePhase>,
     pub last_run_at: Option<String>,
     pub records_archived: Option<u64>,
+    /// Postgres schema name that will receive archived rows when the
+    /// policy's `destination.backend = postgres-cold`. Set by the
+    /// operator once the cold schema is provisioned; absent for s3
+    /// destinations or until the spec passes validation.
+    pub cold_schema: Option<String>,
+    /// Postgres roles granted on the cold schema (reader/writer/admin).
+    /// Surfaced for operator visibility — the eventual archive worker
+    /// `SET LOCAL ROLE`s into the writer for inserts, mirroring ADR-007.
+    #[serde(default)]
+    pub cold_roles: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

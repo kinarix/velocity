@@ -68,6 +68,16 @@ pub struct ProvisionedDomain {
     pub pg_roles: Vec<String>,
 }
 
+/// Result of [`PostgresProvisioner::sync_cold_schema`] — the cold-tier
+/// destination for archived rows. Schema is a sibling of the hot domain
+/// schema with a `_cold` suffix; roles mirror the hot tier so the eventual
+/// archive worker can run with the same role-switching discipline.
+#[derive(Debug, Clone)]
+pub struct ProvisionedColdSchema {
+    pub pg_schema: String,
+    pub pg_roles: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct PostgresProvisioner {
     pool: PgPool,
@@ -231,6 +241,103 @@ impl PostgresProvisioner {
         tx.commit().await?;
 
         Ok(ProvisionedDomain { pg_schema: schema, pg_roles: vec![reader, writer, admin] })
+    }
+
+    /// Provision the cold-tier destination schema for a domain that has an
+    /// `ArchivePolicy` with `destination.backend = postgres-cold`. Idempotent.
+    ///
+    /// Layout mirrors `sync_domain`:
+    ///
+    /// - schema name: `<org>_<app>_<domain>_cold`
+    /// - roles:       `<schema>_reader`, `<schema>_writer`, `<schema>_admin`
+    /// - `velocity_api` is granted membership in each role so reads from the
+    ///   API (archive lookup, GET /{id}/archive) can `SET LOCAL ROLE` into
+    ///   the cold reader the same way hot reads do.
+    ///
+    /// What's NOT here yet: per-table mirror provisioning (lands when the
+    /// archive worker is introduced and needs a target shape), default
+    /// privileges for SEQUENCES (cold tables don't take new sequences —
+    /// rows arrive with their original id), and `platform.*` grants
+    /// (the cold tier is mutation-free from the user's perspective, so
+    /// audit/event-log writes don't happen under the cold role).
+    pub async fn sync_cold_schema(
+        &self,
+        org: &str,
+        app: &str,
+        domain: &str,
+    ) -> Result<ProvisionedColdSchema, ProvisionError> {
+        let org_id = validate_ident(&sanitize(org))?;
+        let app_id = validate_ident(&sanitize(app))?;
+        let dom_id = validate_ident(&sanitize(domain))?;
+
+        let schema = format!("{org_id}_{app_id}_{dom_id}_cold");
+        validate_ident(&schema)?;
+
+        let reader = format!("{schema}_reader");
+        let writer = format!("{schema}_writer");
+        let admin = format!("{schema}_admin");
+        for role in [&reader, &writer, &admin] {
+            validate_ident(role)?;
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // Same advisory-lock pattern as sync_domain — concurrent reconciles
+        // racing on pg_roles / pg_default_acl can return "tuple concurrently
+        // updated". Reuse the same lock key so cold + hot provisioning of
+        // different domains can't overlap on these system catalogs either.
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
+            .execute(&mut *tx)
+            .await?;
+
+        exec(&mut tx, &format!("CREATE SCHEMA IF NOT EXISTS {schema}")).await?;
+
+        create_role_if_absent(&mut tx, &reader).await?;
+        create_role_if_absent(&mut tx, &writer).await?;
+        create_role_if_absent(&mut tx, &admin).await?;
+
+        for role in [&reader, &writer, &admin] {
+            exec(&mut tx, &format!("GRANT {role} TO velocity_api")).await?;
+            exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO {role}")).await?;
+        }
+        exec(&mut tx, &format!("GRANT USAGE ON SCHEMA {schema} TO velocity_api")).await?;
+        exec(
+            &mut tx,
+            &format!("GRANT USAGE, CREATE ON SCHEMA {schema} TO velocity_operator"),
+        )
+        .await?;
+
+        exec(
+            &mut tx,
+            &format!(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} \
+                 GRANT SELECT ON TABLES TO {reader}, velocity_api"
+            ),
+        )
+        .await?;
+        exec(
+            &mut tx,
+            &format!(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} \
+                 GRANT SELECT, INSERT ON TABLES TO {writer}, velocity_api"
+            ),
+        )
+        .await?;
+        exec(
+            &mut tx,
+            &format!(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} \
+                 GRANT SELECT, INSERT, DELETE ON TABLES TO {admin}"
+            ),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(ProvisionedColdSchema {
+            pg_schema: schema,
+            pg_roles: vec![reader, writer, admin],
+        })
     }
 
     /// Provision the per-schema tables (main + history + optional outbox) from

@@ -53,7 +53,25 @@ pub async fn reconcile(
         "reconciling ArchivePolicy"
     );
 
-    let conditions = validate_spec(&obj.spec);
+    let mut conditions = validate_spec(&obj.spec);
+    let spec_valid = conditions.iter().all(|c| c.status == "True");
+
+    let mut cold_schema: Option<String> = None;
+    let mut cold_roles: Vec<String> = Vec::new();
+
+    if spec_valid && obj.spec.destination.backend == "postgres-cold" {
+        match provision_cold(&obj, &ctx).await {
+            Ok((schema, roles)) => {
+                cold_schema = Some(schema);
+                cold_roles = roles;
+                conditions.push(check("ColdSchemaProvisioned", Ok(())));
+            }
+            Err(msg) => {
+                conditions.push(check("ColdSchemaProvisioned", Err(msg)));
+            }
+        }
+    }
+
     let phase = if conditions.iter().all(|c| c.status == "True") {
         ReconcilePhase::Ready
     } else {
@@ -61,16 +79,49 @@ pub async fn reconcile(
     };
 
     let api: Api<ArchivePolicy> = Api::namespaced(ctx.kube.clone(), &namespace);
-    let status_patch = json!({
-        "status": {
-            "phase": phase,
-            "conditions": conditions,
-        }
+    let mut status = json!({
+        "phase": phase,
+        "conditions": conditions,
     });
+    if let Some(s) = &cold_schema {
+        status["coldSchema"] = json!(s);
+    }
+    if !cold_roles.is_empty() {
+        status["coldRoles"] = json!(cold_roles);
+    }
+    let status_patch = json!({ "status": status });
     api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch))
         .await?;
 
     Ok(Action::requeue(std::time::Duration::from_secs(300)))
+}
+
+/// Resolves org/app/domain from the ArchivePolicy's labels (same convention
+/// as Domain/SchemaDefinition — `velocity.sh/{org,app,domain}`), then calls
+/// the provisioner. Failures are returned as the human-readable message that
+/// will land in the `ColdSchemaProvisioned` condition.
+async fn provision_cold(
+    obj: &ArchivePolicy,
+    ctx: &Context,
+) -> Result<(String, Vec<String>), String> {
+    let labels = obj.labels();
+    let org = labels
+        .get("velocity.sh/org")
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/org".to_string())?;
+    let app = labels
+        .get("velocity.sh/app")
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/app".to_string())?;
+    let domain = labels
+        .get("velocity.sh/domain")
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/domain".to_string())?;
+
+    let provisioned = ctx
+        .provisioner
+        .sync_cold_schema(org, app, domain)
+        .await
+        .map_err(|e| format!("cold schema provisioning failed: {e}"))?;
+
+    Ok((provisioned.pg_schema, provisioned.pg_roles))
 }
 
 pub fn error_policy(_obj: Arc<ArchivePolicy>, err: &ReconcileError, _ctx: Arc<Context>) -> Action {
