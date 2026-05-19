@@ -3,26 +3,28 @@ name: docker
 # Build and publish the seven server-side images (one per workspace
 # binary that runs in-cluster) to ghcr.io/<owner>/<bin>.
 #
+# Architecture model:
+#   - Each (bin, arch) pair builds on a NATIVE runner — ubuntu-latest for
+#     amd64, ubuntu-24.04-arm for arm64. No QEMU. The arm64 build no
+#     longer takes 6-10× longer than amd64; both finish in ~6-8 min.
+#   - Each build pushes by *digest* only (no tags). The intermediate
+#     manifests live untagged on ghcr.io and get GC'd eventually.
+#   - The `merge` job per bin downloads all that bin's per-arch digests
+#     and uses `docker buildx imagetools create` to stitch them into a
+#     single multi-arch manifest with the final tags (:v1.2.3, :latest,
+#     :main, :sha-xxx, …). Pulling that tag from an Apple Silicon or
+#     Graviton host returns the arm64 manifest; from amd64 returns the
+#     amd64 manifest — same UX as before, only the back-end changed.
+#
 # Trigger model:
 #   - tag v<semver>          → publish :<semver>, :<major>.<minor>, :latest
 #   - push to main           → publish :main + :sha-<short>
-#   - pull_request           → build only (no push) — proves the Dockerfile
-#                              still works and CI catches regressions before
-#                              merge. Push to ghcr.io requires write-perm
-#                              which PRs from forks don't have.
 #   - workflow_dispatch      → manual rebuild against current main
 #
-# We use the project Dockerfile with `--build-arg BIN=<crate>` so all
-# seven images share build logic (rust → debian-slim multi-stage). Buildx
-# + QEMU gives us linux/amd64 + linux/arm64 multi-arch manifests so users
-# on Apple Silicon and Graviton nodes both pull the right binary.
+# Pull requests do not run this workflow; PR builds from forks can't
+# push to ghcr.io anyway, and multi-arch builds are not cheap.
 
 on:
-  # Main-only. PR builds would consume Actions minutes (multi-arch QEMU
-  # builds are not cheap) without producing a useful artefact — they
-  # can't push to ghcr.io from forks anyway. Tag pushes are accepted
-  # because release tagging happens against main commits (enforced by
-  # the on-main guard below).
   push:
     branches: [main]
     tags:     ['v*']
@@ -39,10 +41,10 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
-# Same sccache override as ci.yml + release.yml — the ubuntu-latest
-# runner preset breaks every cargo invocation otherwise. Only matters
-# for the `test` job below; the matrix build runs cargo inside the
-# Dockerfile, where these don't propagate.
+# sccache override (the ubuntu-latest runner preset breaks cargo
+# invocations otherwise) — only meaningful for the `test` job, where
+# cargo runs directly on the runner. The matrix build's cargo runs
+# inside the Dockerfile, where these env vars don't propagate.
 env:
   CARGO_TERM_COLOR:    always
   RUST_BACKTRACE:      "1"
@@ -51,15 +53,13 @@ env:
 
 jobs:
   # Tests gate the image builds. A regression that slips into main
-  # shouldn't end up tagged :main or :latest on ghcr.io. The same gate
-  # protects tag pushes — they're guaranteed to be reachable from main,
-  # but the SHA could still be one where tests are red.
+  # shouldn't end up tagged :main or :latest on ghcr.io. Tag pushes are
+  # guaranteed to be reachable from main, but the SHA could still be
+  # one where tests are red.
   test:
     name: test
     runs-on: ubuntu-latest
-    # Same Postgres service container shape as ci.yml — kept in lockstep
-    # by hand rather than via a reusable workflow. If you change one,
-    # change both (verifying with a `diff` is faster than abstracting).
+    # Mirrors ci.yml's test job — keep both in sync by hand.
     services:
       postgres:
         image: postgres:18
@@ -100,12 +100,10 @@ jobs:
       - run: make test
 
   build:
-    name: ${{ matrix.bin }}
+    name: ${{ matrix.bin }} (${{ matrix.arch }})
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
-      # Don't abort the whole matrix on a single image failure — easier
-      # to triage when you can see which ones still built clean.
       fail-fast: false
       matrix:
         bin:
@@ -116,13 +114,19 @@ jobs:
           - velocity-log-collector
           - velocity-log-processor
           - velocity-warm-reader
+        arch: [amd64, arm64]
+        include:
+          # Map arch → native runner. Public repos get ubuntu-24.04-arm
+          # free (Apr 2025+). If the org disables hosted arm runners,
+          # change `ubuntu-24.04-arm` here back to `ubuntu-latest` and
+          # bring back `docker/setup-qemu-action` in the steps below —
+          # everything else still works.
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        # arm64 emulation for cross-arch builds on amd64 runners. Slower
-        # than native but acceptable for the release cadence here.
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -151,11 +155,105 @@ jobs:
         # be mixed-case if the org/user uses CamelCase.
         run: echo "lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Image metadata (tags + labels)
+      - name: Image labels
         id: meta
-        # docker/metadata-action derives the right tag set for each
-        # trigger shape — semver tags get :X.Y.Z + :X.Y + :latest, main
-        # gets :main, branches get :<branch>, PRs get :pr-<num>.
+        # We only need labels here — tags are applied to the final
+        # manifest in the merge job. Pulling the digest-only image by
+        # its sha256 still gets these OCI labels.
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.bin }}
+            org.opencontainers.image.description=Velocity ${{ matrix.bin }}
+            org.opencontainers.image.url=https://velocity.kinarix.com
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            BIN=${{ matrix.bin }}
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # `push-by-digest=true` pushes an untagged manifest and returns
+          # its digest; `name-canonical=true` makes the image carry its
+          # canonical name (matters for some registries' GC heuristics).
+          # The merge job uses these digests to assemble the manifest list.
+          outputs: type=image,name=ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }},push-by-digest=true,name-canonical=true,push=true
+          # GHA cache makes incremental builds tolerable. Scope per
+          # (bin, arch) so the amd64 build doesn't poison the arm64
+          # cache with foreign-arch object files.
+          cache-from: type=gha,scope=${{ matrix.bin }}-${{ matrix.arch }}
+          cache-to:   type=gha,scope=${{ matrix.bin }}-${{ matrix.arch }},mode=max
+          provenance: false
+
+      - name: Export digest
+        # `docker buildx imagetools create` in the merge job needs the
+        # sha256 of each per-arch manifest. Easiest cross-job channel
+        # is the upload-artifact / download-artifact pair — we touch a
+        # file whose name IS the digest and upload it.
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.bin }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: manifest (${{ matrix.bin }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bin:
+          - velocity-api
+          - velocity-operator
+          - velocity-webhook
+          - velocity-archive-worker
+          - velocity-log-collector
+          - velocity-log-processor
+          - velocity-warm-reader
+    steps:
+      - name: Download per-arch digests
+        uses: actions/download-artifact@v4
+        with:
+          # Both digests-<bin>-amd64 and digests-<bin>-arm64 land
+          # together in $RUNNER_TEMP/digests/.
+          pattern: digests-${{ matrix.bin }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Owner (lowercase)
+        id: owner
+        run: echo "lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: meta
+        # All the final tags live on the manifest list, not the per-arch
+        # images. metadata-action emits them as a JSON document on
+        # DOCKER_METADATA_OUTPUT_JSON which the next step parses.
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}
@@ -166,27 +264,24 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.bin }}
-            org.opencontainers.image.description=Velocity ${{ matrix.bin }}
-            org.opencontainers.image.url=https://velocity.kinarix.com
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.licenses=Apache-2.0
 
-      - name: Build (and push on non-PR)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          build-args: |
-            BIN=${{ matrix.bin }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags:   ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # GHA cache makes incremental builds tolerable (~5–7 min vs.
-          # 15+ from scratch). `mode=max` keeps intermediate layers so a
-          # change in one image doesn't bust the others.
-          cache-from: type=gha,scope=${{ matrix.bin }}
-          cache-to:   type=gha,scope=${{ matrix.bin }},mode=max
-          provenance: false
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        # `imagetools create` takes a set of source images (`repo@sha256:…`)
+        # and produces a manifest list under one or more target tags.
+        # jq maps each tag in $DOCKER_METADATA_OUTPUT_JSON to `-t <tag>`;
+        # the source images are reconstructed by listing each digest
+        # file name (which IS the sha256 sans prefix).
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}@sha256:%s ' *)
+
+      - name: Inspect published manifest
+        # Sanity-print the manifest list so a glance at the workflow log
+        # confirms both arches landed. If only one digest arrived, the
+        # imagetools create above would still succeed silently — this
+        # step makes that visible.
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}:${{ steps.meta.outputs.version }}
