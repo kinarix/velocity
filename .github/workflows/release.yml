@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: write  # creating the release + uploading assets, and the
-                   # `formula` job below commits the updated Formula/velocity.rb
+                   # `formula` job below commits the updated homebrew/velocity.rb
                    # back to main using the workflow's GITHUB_TOKEN.
 
 env:
@@ -208,7 +208,7 @@ jobs:
             echo "${key}=${sum}" >> "$GITHUB_OUTPUT"
           done
 
-      - name: Rewrite Formula/velocity.rb
+      - name: Rewrite homebrew/velocity.rb
         env:
           VER:            ${{ steps.sums.outputs.version }}
           SHA_DARWIN_ARM: ${{ steps.sums.outputs.aarch64_apple_darwin }}
@@ -223,7 +223,7 @@ jobs:
         run: |
           python3 <<'PY'
           import os, re, pathlib
-          p = pathlib.Path("Formula/velocity.rb")
+          p = pathlib.Path("homebrew/velocity.rb")
           src = p.read_text().splitlines(keepends=True)
           ver   = os.environ["VER"]
           sums = {
@@ -259,7 +259,7 @@ jobs:
 
               out.append(line)
           p.write_text("".join(out))
-          print(f"rewrote Formula/velocity.rb for version {ver}")
+          print(f"rewrote homebrew/velocity.rb for version {ver}")
           PY
 
       - name: Commit + push formula update
@@ -271,11 +271,11 @@ jobs:
           git checkout main
           # The `set -u` above will have killed us already if Python
           # didn't write — defensive check anyway.
-          if git diff --quiet Formula/velocity.rb; then
+          if git diff --quiet homebrew/velocity.rb; then
             echo "==> formula already up to date (re-run?)"
             exit 0
           fi
-          git add Formula/velocity.rb
+          git add homebrew/velocity.rb
           git commit -m "chore(formula): velocity v${{ steps.sums.outputs.version }}" \
                      -m "Auto-updated by release.yml from tag ${GITHUB_REF##*/}."
           git push origin main

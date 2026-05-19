@@ -81,7 +81,7 @@ If the tap isn't published yet, install the formula by raw URL:
 
 ```sh
 brew install --formula \
-  https://raw.githubusercontent.com/kinarix/velocity/main/Formula/velocity.rb
+  https://raw.githubusercontent.com/kinarix/velocity/main/homebrew/velocity.rb
 ```
 
 **Curl install (Linux / macOS):**

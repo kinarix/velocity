@@ -52,8 +52,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Belt-and-braces: build with --locked first so a drifted Cargo.lock
+      # fails loudly before tests run. `make test` itself doesn't pass
+      # --locked because local devs change Cargo.toml often and the lock
+      # auto-updates on `cargo build`; CI is the one place that should
+      # refuse to update it.
       - run: cargo build --workspace --locked
-      - run: cargo test  --workspace --locked
+      # Run the same target devs run locally so "works on my machine" and
+      # "works in CI" stay aligned. See `make test` in Makefile.
+      - run: make test
 
   audit:
     name: audit

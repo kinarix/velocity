@@ -17,7 +17,7 @@
 # Or install from this file directly without a tap:
 #
 #   brew install --formula \
-#     https://raw.githubusercontent.com/kinarix/velocity/main/Formula/velocity.rb
+#     https://raw.githubusercontent.com/kinarix/velocity/main/homebrew/velocity.rb
 
 class Velocity < Formula
   desc "Operator CLI for Velocity — schema-driven Kubernetes backend platform"
