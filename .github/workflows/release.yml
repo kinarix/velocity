@@ -21,6 +21,15 @@ env:
   # Forward into the build so `velocity version` reports the source
   # commit. Same env name the CLI reads in version_cmd.rs.
   VELOCITY_GIT_SHA: ${{ github.sha }}
+  # The ubuntu-latest runner image presets RUSTC_WRAPPER=sccache and
+  # SCCACHE_GHA_ENABLED=true, but sccache isn't on PATH — cargo fails
+  # immediately with "could not execute process `sccache rustc -vV`".
+  # Override at workflow level so every cargo invocation sees clean
+  # values. (cross-compiled Linux jobs run cargo inside a `cross`
+  # container which ignores these anyway; the override is harmless
+  # there and necessary on the macOS jobs.)
+  RUSTC_WRAPPER: ""
+  SCCACHE_GHA_ENABLED: "false"
 
 jobs:
   # One job per target triple. Linux uses musl so the binary is fully
