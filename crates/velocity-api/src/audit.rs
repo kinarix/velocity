@@ -23,12 +23,17 @@
 //! [`AuthDecision`]: crate::auth::AuthDecision
 //! [`RevocationDecision::as_audit_str`]: crate::auth::RevocationDecision::as_audit_str
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
+use velocity_types::crds::schema::Sensitivity;
 
 use crate::auth::AuthDecision;
 use crate::identity::Identity;
 use crate::registry::ResolvedSchema;
+
+/// Marker the audit row stores in place of a sensitive field's value.
+/// Stable across versions — Grafana / SOC tooling greps for it.
+pub const REDACTED: &str = "***";
 
 /// Stable action strings the audit table will record. Match the
 /// route-level RBAC ops in [`crate::rbac::op`] for cross-referencing.
@@ -68,9 +73,58 @@ pub fn build_fail_modes(decision: Option<&AuthDecision>) -> Value {
     }
 }
 
+/// Sensitivity levels that MUST be redacted before the value reaches
+/// `platform.audit_log`. Per CLAUDE.md › Security › "Sensitive data
+/// never in logs": `financial | pii | confidential` are redacted;
+/// `public` and `internal` pass through verbatim.
+fn is_sensitive(s: &Sensitivity) -> bool {
+    matches!(
+        s,
+        Sensitivity::Financial | Sensitivity::Pii | Sensitivity::Confidential
+    )
+}
+
+/// Return a copy of `payload` where any top-level key matching a
+/// sensitive field in the schema has its value replaced with [`REDACTED`].
+///
+/// Keys are preserved so the audit row still proves *which* fields
+/// were touched — only the values disappear. Non-object payloads
+/// (delete sentinels like `{ "id": "..." }`, RBAC denial code maps)
+/// pass through unchanged because they cannot carry user data.
+///
+/// Nested objects/arrays are not recursed into: the field index is keyed
+/// on top-level CRD field names, and JSON-typed fields are themselves
+/// the sensitive unit (the whole value gets `***`, not a sub-key walk
+/// the registry has no schema for).
+pub fn redact_sensitive(schema: &ResolvedSchema, payload: &Value) -> Value {
+    let Value::Object(map) = payload else {
+        return payload.clone();
+    };
+    let mut out = Map::with_capacity(map.len());
+    for (k, v) in map {
+        let redact = schema
+            .fields
+            .by_name
+            .get(k)
+            .and_then(|f| f.sensitivity.as_ref())
+            .is_some_and(is_sensitive);
+        if redact {
+            out.insert(k.clone(), Value::String(REDACTED.into()));
+        } else {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
 /// Write an audit row inside the caller's transaction. `entity_id` is the
 /// UUID of the row that was written/updated/deleted; `payload` is the
 /// post-image (or, for deletes, just `{ "id": "..." }`).
+///
+/// The payload is passed through [`redact_sensitive`] before reaching
+/// the stored procedure — callers may hand over the raw record without
+/// risk of leaking PII / financial / confidential field values into
+/// `platform.audit_log`.
 ///
 /// Calls `platform.audit_insert()` as `SECURITY DEFINER`, so the
 /// per-domain role under `SET LOCAL ROLE` doesn't need direct INSERT
@@ -88,6 +142,7 @@ pub async fn write_audit(
     request_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let fail_modes = build_fail_modes(decision);
+    let safe_payload = redact_sensitive(schema, payload);
 
     sqlx::query(
         "SELECT platform.audit_insert(
@@ -109,7 +164,7 @@ pub async fn write_audit(
     // schema_org is the registry key — same shape audit consumers index on.
     .bind(crate::registry::registry_key(&schema.path))
     .bind(entity_id)
-    .bind(payload)
+    .bind(safe_payload)
     .bind(fail_modes)
     .bind(request_id)
     .execute(&mut **tx)
@@ -175,6 +230,48 @@ pub async fn write_audit_denial(
 mod tests {
     use super::*;
     use crate::auth::{AuthDecision, RevocationDecision};
+    use crate::registry::ResolvedSchema;
+    use velocity_types::common::SchemaPath;
+    use velocity_types::crds::schema::{
+        AccessSpec, AuthSpec, FieldKind, FieldSpec, ObservabilitySpec, SchemaDefinitionSpec,
+        SearchSpec, SearchTier, Sensitivity,
+    };
+
+    fn field_with(name: &str, sensitivity: Option<Sensitivity>) -> FieldSpec {
+        let mut f: FieldSpec = serde_json::from_value(serde_json::json!({
+            "name": name,
+            "type": "string",
+        }))
+        .unwrap();
+        f.kind = FieldKind::String;
+        f.sensitivity = sensitivity;
+        f
+    }
+
+    fn schema_with(fields: Vec<FieldSpec>) -> ResolvedSchema {
+        let spec = SchemaDefinitionSpec {
+            version: "v1".into(),
+            partitioning: None,
+            auth: AuthSpec {
+                strategy_ref: velocity_types::common::NamespacedRef {
+                    name: "default".into(),
+                    namespace: "acme-platform".into(),
+                },
+                overrides: Vec::new(),
+            },
+            access: AccessSpec::default(),
+            fields,
+            validations: Vec::new(),
+            search: SearchSpec { tier: SearchTier::Tier1, ..Default::default() },
+            time_machine: None,
+            audit: None,
+            archive: None,
+            observability: ObservabilitySpec::default(),
+            scaling: None,
+        };
+        let p = SchemaPath::new("acme", "supply-chain", "procurement", "purchase-order", "v1");
+        ResolvedSchema::from_spec(p, spec)
+    }
 
     #[test]
     fn fail_modes_none_is_unwired() {
@@ -213,5 +310,96 @@ mod tests {
         let v = build_fail_modes(Some(&d));
         assert_eq!(v["revocation"], "backend_down_admitted");
         assert_eq!(v["revocation_fail_open"], true);
+    }
+
+    #[test]
+    fn redact_sensitive_replaces_pii_financial_confidential_with_marker() {
+        // CLAUDE.md › Security: these three classes never reach
+        // platform.audit_log in plaintext. The marker must be a literal
+        // "***" — SOC dashboards greps for it.
+        let schema = schema_with(vec![
+            field_with("ssn", Some(Sensitivity::Pii)),
+            field_with("salary", Some(Sensitivity::Financial)),
+            field_with("contract_terms", Some(Sensitivity::Confidential)),
+        ]);
+        let payload = json!({
+            "ssn": "123-45-6789",
+            "salary": 150000,
+            "contract_terms": "internal-only",
+        });
+        let redacted = redact_sensitive(&schema, &payload);
+        assert_eq!(redacted["ssn"], REDACTED);
+        assert_eq!(redacted["salary"], REDACTED);
+        assert_eq!(redacted["contract_terms"], REDACTED);
+    }
+
+    #[test]
+    fn redact_sensitive_passes_public_internal_through() {
+        // Without an explicit redact-list, only sensitive fields are
+        // touched. Public + Internal preserve their original JSON shape
+        // so audit consumers can still see the data they're allowed to.
+        let schema = schema_with(vec![
+            field_with("po_number", Some(Sensitivity::Public)),
+            field_with("note", Some(Sensitivity::Internal)),
+            field_with("untagged", None),
+        ]);
+        let payload = json!({
+            "po_number": "PO-1",
+            "note": "ok",
+            "untagged": 42,
+        });
+        let redacted = redact_sensitive(&schema, &payload);
+        assert_eq!(redacted["po_number"], "PO-1");
+        assert_eq!(redacted["note"], "ok");
+        assert_eq!(redacted["untagged"], 42);
+    }
+
+    #[test]
+    fn redact_sensitive_preserves_keys_for_unknown_fields() {
+        // Fields not in the index (e.g. `id`, `created_at`, anything
+        // added by the DB) MUST pass through — losing them would mean
+        // losing the audit row's whole reason to exist. Only the values
+        // of *known sensitive* fields are scrubbed.
+        let schema = schema_with(vec![field_with("ssn", Some(Sensitivity::Pii))]);
+        let payload = json!({
+            "id": "abc",
+            "ssn": "123",
+            "created_at": "2026-05-19T00:00:00Z",
+        });
+        let redacted = redact_sensitive(&schema, &payload);
+        assert_eq!(redacted["id"], "abc");
+        assert_eq!(redacted["ssn"], REDACTED);
+        assert_eq!(redacted["created_at"], "2026-05-19T00:00:00Z");
+    }
+
+    #[test]
+    fn redact_sensitive_non_object_payload_passes_through() {
+        // Delete sentinels and denial code-maps aren't always full
+        // records — accept any JSON. Non-objects can't carry user data
+        // (the schema's field index is keyed on object keys), so
+        // there's nothing to scrub.
+        let schema = schema_with(vec![field_with("ssn", Some(Sensitivity::Pii))]);
+        assert_eq!(redact_sensitive(&schema, &json!(null)), json!(null));
+        assert_eq!(redact_sensitive(&schema, &json!("string")), json!("string"));
+        assert_eq!(redact_sensitive(&schema, &json!([1, 2, 3])), json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn redact_sensitive_does_not_recurse_into_nested_objects() {
+        // JSON-typed fields are themselves the sensitive unit per the
+        // schema — the *whole* JSON blob gets `***`, not a structural
+        // walk through keys the registry has no schema for. Document
+        // the behaviour so a future refactor doesn't quietly deepen
+        // the redaction (which would also be wrong — the registry
+        // can't know which sub-keys are sensitive).
+        let mut json_field = field_with("metadata", Some(Sensitivity::Pii));
+        json_field.kind = FieldKind::Json;
+        let schema = schema_with(vec![json_field]);
+        let payload = json!({
+            "metadata": { "ssn": "123", "harmless": "ok" }
+        });
+        let redacted = redact_sensitive(&schema, &payload);
+        // The whole field becomes `***`; we don't try to redact inside.
+        assert_eq!(redacted["metadata"], REDACTED);
     }
 }
