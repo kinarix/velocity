@@ -22,7 +22,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use thiserror::Error;
 use velocity_types::common::sanitize;
 
-use crate::ddl_builder::DdlPlan;
+use crate::ddl_builder::{ColumnSpec, DdlPlan};
 use crate::migration_diff::{
     classify, diff_columns, fetch_existing_columns, fetch_existing_fts_hash, fts_comment_sql,
     fts_expression_hash, fts_migration_ops, DiffError, MigrationOp,
@@ -68,12 +68,14 @@ pub struct ProvisionedDomain {
     pub pg_roles: Vec<String>,
 }
 
-/// Result of [`PostgresProvisioner::sync_cold_schema`] — the cold-tier
+/// Result of [`PostgresProvisioner::sync_archive_schema`] — the cold-tier
 /// destination for archived rows. Schema is a sibling of the hot domain
-/// schema with a `_cold` suffix; roles mirror the hot tier so the eventual
-/// archive worker can run with the same role-switching discipline.
+/// schema with an `_archive` suffix (matching the `archived_at` /
+/// `archive_ref` system-column convention from `ddl_builder`); roles
+/// mirror the hot tier so the eventual archive worker can run with the
+/// same role-switching discipline.
 #[derive(Debug, Clone)]
-pub struct ProvisionedColdSchema {
+pub struct ProvisionedArchiveSchema {
     pub pg_schema: String,
     pub pg_roles: Vec<String>,
 }
@@ -243,34 +245,33 @@ impl PostgresProvisioner {
         Ok(ProvisionedDomain { pg_schema: schema, pg_roles: vec![reader, writer, admin] })
     }
 
-    /// Provision the cold-tier destination schema for a domain that has an
+    /// Provision the archive destination schema for a domain that has an
     /// `ArchivePolicy` with `destination.backend = postgres-cold`. Idempotent.
     ///
     /// Layout mirrors `sync_domain`:
     ///
-    /// - schema name: `<org>_<app>_<domain>_cold`
+    /// - schema name: `<org>_<app>_<domain>_archive`
     /// - roles:       `<schema>_reader`, `<schema>_writer`, `<schema>_admin`
     /// - `velocity_api` is granted membership in each role so reads from the
     ///   API (archive lookup, GET /{id}/archive) can `SET LOCAL ROLE` into
-    ///   the cold reader the same way hot reads do.
+    ///   the archive reader the same way hot reads do.
     ///
-    /// What's NOT here yet: per-table mirror provisioning (lands when the
-    /// archive worker is introduced and needs a target shape), default
-    /// privileges for SEQUENCES (cold tables don't take new sequences —
-    /// rows arrive with their original id), and `platform.*` grants
-    /// (the cold tier is mutation-free from the user's perspective, so
-    /// audit/event-log writes don't happen under the cold role).
-    pub async fn sync_cold_schema(
+    /// What's NOT here yet: default privileges for SEQUENCES (archive tables
+    /// don't take new sequences — rows arrive with their original id), and
+    /// `platform.*` grants (the archive tier is mutation-free from the
+    /// user's perspective, so audit/event-log writes don't happen under
+    /// the archive role).
+    pub async fn sync_archive_schema(
         &self,
         org: &str,
         app: &str,
         domain: &str,
-    ) -> Result<ProvisionedColdSchema, ProvisionError> {
+    ) -> Result<ProvisionedArchiveSchema, ProvisionError> {
         let org_id = validate_ident(&sanitize(org))?;
         let app_id = validate_ident(&sanitize(app))?;
         let dom_id = validate_ident(&sanitize(domain))?;
 
-        let schema = format!("{org_id}_{app_id}_{dom_id}_cold");
+        let schema = format!("{org_id}_{app_id}_{dom_id}_archive");
         validate_ident(&schema)?;
 
         let reader = format!("{schema}_reader");
@@ -334,10 +335,42 @@ impl PostgresProvisioner {
 
         tx.commit().await?;
 
-        Ok(ProvisionedColdSchema {
+        Ok(ProvisionedArchiveSchema {
             pg_schema: schema,
             pg_roles: vec![reader, writer, admin],
         })
+    }
+
+    /// Provision a mirror of a hot table inside the archive schema.
+    /// Column-for-column copy (excluding generated columns like `__fts`),
+    /// primary key on `id`, no foreign keys or indexes. Idempotent — uses
+    /// `CREATE TABLE IF NOT EXISTS` so re-runs are no-ops.
+    ///
+    /// Called by the `ArchivePolicy` reconciler once the archive schema
+    /// exists; gives the eventual archive worker a target table whose
+    /// shape matches the hot table being drained. The mirror does NOT
+    /// include a `_history` partner — archived rows are terminal; their
+    /// history (if any) is left in the hot history table to be reaped
+    /// by the existing retention machinery.
+    pub async fn sync_archive_mirror_table(
+        &self,
+        archive_schema: &str,
+        table: &str,
+        columns: &[ColumnSpec],
+    ) -> Result<(), ProvisionError> {
+        let schema_id = validate_ident(archive_schema)?;
+        let table_id = validate_ident(table)?;
+        let ddl = build_archive_mirror_ddl(&schema_id, &table_id, columns);
+
+        let mut tx = self.pool.begin().await?;
+        // Same advisory lock as sync_archive_schema so a mirror table
+        // creation can't race with the schema-level grants being applied.
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
+            .execute(&mut *tx)
+            .await?;
+        exec(&mut tx, &ddl).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Provision the per-schema tables (main + history + optional outbox) from
@@ -513,6 +546,39 @@ fn split_statements(sql: &str) -> Vec<String> {
     out
 }
 
+/// Render the `CREATE TABLE IF NOT EXISTS` for an archive-tier mirror.
+///
+/// Pure (no DB) so it can be unit-tested. Column order follows the input,
+/// every column is `NOT NULL` if the source was, type follows the source
+/// `base_type` (with optional `(length)`), and there are no defaults — the
+/// archive worker is expected to copy `id`, `created_at`, etc. verbatim
+/// from the hot row, so server-side defaults aren't useful and would just
+/// surprise anyone running a manual `INSERT` against the archive.
+///
+/// The mirror has no `__fts` generated column (search is hot-only), no
+/// indexes (added later if archive queries demand them), and no foreign
+/// keys (cross-domain refs may not exist in the archive tier).
+pub fn build_archive_mirror_ddl(schema: &str, table: &str, columns: &[ColumnSpec]) -> String {
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let ty = match c.length {
+                Some(n) if c.base_type == "varchar" => format!("varchar({n})"),
+                _ => c.base_type.clone(),
+            };
+            let null = if c.not_null { " NOT NULL" } else { "" };
+            format!("    {} {}{}", c.name, ty, null)
+        })
+        .collect();
+
+    let mut body = cols.join(",\n");
+    if columns.iter().any(|c| c.name == "id") {
+        body.push_str(",\n    PRIMARY KEY (id)");
+    }
+
+    format!("CREATE TABLE IF NOT EXISTS {schema}.{table} (\n{body}\n);")
+}
+
 async fn exec(tx: &mut Transaction<'_, Postgres>, sql: &str) -> Result<(), sqlx::Error> {
     sqlx::query(sql).execute(&mut **tx).await?;
     Ok(())
@@ -589,5 +655,60 @@ mod tests {
         let sql_err = sqlx::Error::PoolTimedOut;
         let sql: ProvisionError = DiffError::Sql(sql_err).into();
         assert!(matches!(sql, ProvisionError::Sql(_)));
+    }
+
+    fn col(name: &str, ty: &str, not_null: bool) -> ColumnSpec {
+        ColumnSpec {
+            name: name.into(),
+            base_type: ty.into(),
+            length: None,
+            not_null,
+            system: false,
+        }
+    }
+
+    #[test]
+    fn archive_mirror_ddl_basic_shape() {
+        let cols = vec![
+            col("id", "uuid", true),
+            col("created_at", "timestamptz", true),
+            col("po_number", "text", true),
+            col("notes", "text", false),
+        ];
+        let ddl = build_archive_mirror_ddl("acme_sc_proc_archive", "purchase_order_v1", &cols);
+        assert!(ddl.starts_with(
+            "CREATE TABLE IF NOT EXISTS acme_sc_proc_archive.purchase_order_v1 ("
+        ));
+        assert!(ddl.contains("id uuid NOT NULL"));
+        assert!(ddl.contains("created_at timestamptz NOT NULL"));
+        assert!(ddl.contains("po_number text NOT NULL"));
+        assert!(ddl.contains("notes text,"));
+        assert!(ddl.contains("PRIMARY KEY (id)"));
+        assert!(ddl.trim_end().ends_with(");"));
+    }
+
+    #[test]
+    fn archive_mirror_ddl_renders_varchar_with_length() {
+        let mut c = col("po_number", "varchar", true);
+        c.length = Some(32);
+        let ddl = build_archive_mirror_ddl("acme_sc_proc_archive", "po_v1", &[c]);
+        assert!(
+            ddl.contains("po_number varchar(32) NOT NULL"),
+            "got: {ddl}"
+        );
+    }
+
+    #[test]
+    fn archive_mirror_ddl_no_primary_key_when_no_id_column() {
+        let cols = vec![col("name", "text", true)];
+        let ddl = build_archive_mirror_ddl("acme_sc_proc_archive", "kv_v1", &cols);
+        assert!(!ddl.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn archive_mirror_ddl_emits_idempotent_create() {
+        let cols = vec![col("id", "uuid", true)];
+        let ddl = build_archive_mirror_ddl("s", "t", &cols);
+        assert!(ddl.contains("IF NOT EXISTS"));
     }
 }

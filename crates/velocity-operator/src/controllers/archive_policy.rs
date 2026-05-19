@@ -18,14 +18,18 @@
 
 use std::sync::Arc;
 
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::ResourceExt;
 use serde_json::json;
-use velocity_types::crds::{ArchivePolicy, ArchivePolicySpec, Condition, ReconcilePhase};
+use velocity_types::common::SchemaPath;
+use velocity_types::crds::{
+    ArchivePolicy, ArchivePolicySpec, Condition, ReconcilePhase, SchemaDefinition,
+};
 
 use crate::context::Context;
 use crate::controllers::{error_action, ReconcileError};
+use crate::ddl_builder::build_ddl;
 
 const MANAGER: &str = "velocity-operator";
 
@@ -56,18 +60,52 @@ pub async fn reconcile(
     let mut conditions = validate_spec(&obj.spec);
     let spec_valid = conditions.iter().all(|c| c.status == "True");
 
-    let mut cold_schema: Option<String> = None;
-    let mut cold_roles: Vec<String> = Vec::new();
+    let mut archive_schema: Option<String> = None;
+    let mut archive_roles: Vec<String> = Vec::new();
+    let mut mirrored_tables: Vec<String> = Vec::new();
 
     if spec_valid && obj.spec.destination.backend == "postgres-cold" {
-        match provision_cold(&obj, &ctx).await {
-            Ok((schema, roles)) => {
-                cold_schema = Some(schema);
-                cold_roles = roles;
-                conditions.push(check("ColdSchemaProvisioned", Ok(())));
+        match resolve_path_parts(&obj) {
+            Ok((org, app, domain)) => {
+                match ctx.provisioner.sync_archive_schema(&org, &app, &domain).await {
+                    Ok(provisioned) => {
+                        archive_schema = Some(provisioned.pg_schema.clone());
+                        archive_roles = provisioned.pg_roles.clone();
+                        conditions.push(check("ArchiveSchemaProvisioned", Ok(())));
+
+                        // Mirror every SchemaDefinition in the namespace into
+                        // the archive schema. Order is deterministic (sorted by
+                        // name) so the status `mirroredTables` list is stable
+                        // across reconciles.
+                        match mirror_tables(
+                            &ctx,
+                            &namespace,
+                            &provisioned.pg_schema,
+                            &org,
+                            &app,
+                            &domain,
+                        )
+                        .await
+                        {
+                            Ok(tables) => {
+                                mirrored_tables = tables;
+                                conditions.push(check("ArchiveMirrorsProvisioned", Ok(())));
+                            }
+                            Err(msg) => {
+                                conditions.push(check("ArchiveMirrorsProvisioned", Err(msg)));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        conditions.push(check(
+                            "ArchiveSchemaProvisioned",
+                            Err(format!("archive schema provisioning failed: {e}")),
+                        ));
+                    }
+                }
             }
             Err(msg) => {
-                conditions.push(check("ColdSchemaProvisioned", Err(msg)));
+                conditions.push(check("ArchiveSchemaProvisioned", Err(msg)));
             }
         }
     }
@@ -83,11 +121,14 @@ pub async fn reconcile(
         "phase": phase,
         "conditions": conditions,
     });
-    if let Some(s) = &cold_schema {
-        status["coldSchema"] = json!(s);
+    if let Some(s) = &archive_schema {
+        status["archiveSchema"] = json!(s);
     }
-    if !cold_roles.is_empty() {
-        status["coldRoles"] = json!(cold_roles);
+    if !archive_roles.is_empty() {
+        status["archiveRoles"] = json!(archive_roles);
+    }
+    if !mirrored_tables.is_empty() {
+        status["mirroredTables"] = json!(mirrored_tables);
     }
     let status_patch = json!({ "status": status });
     api.patch_status(&name, &PatchParams::apply(MANAGER), &Patch::Merge(&status_patch))
@@ -96,32 +137,70 @@ pub async fn reconcile(
     Ok(Action::requeue(std::time::Duration::from_secs(300)))
 }
 
-/// Resolves org/app/domain from the ArchivePolicy's labels (same convention
-/// as Domain/SchemaDefinition — `velocity.sh/{org,app,domain}`), then calls
-/// the provisioner. Failures are returned as the human-readable message that
-/// will land in the `ColdSchemaProvisioned` condition.
-async fn provision_cold(
-    obj: &ArchivePolicy,
-    ctx: &Context,
-) -> Result<(String, Vec<String>), String> {
+/// Resolve `(org, app, domain)` from the ArchivePolicy's labels (same
+/// convention as Domain/SchemaDefinition — `velocity.sh/{org,app,domain}`).
+fn resolve_path_parts(obj: &ArchivePolicy) -> Result<(String, String, String), String> {
     let labels = obj.labels();
     let org = labels
         .get("velocity.sh/org")
-        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/org".to_string())?;
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/org".to_string())?
+        .clone();
     let app = labels
         .get("velocity.sh/app")
-        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/app".to_string())?;
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/app".to_string())?
+        .clone();
     let domain = labels
         .get("velocity.sh/domain")
-        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/domain".to_string())?;
+        .ok_or_else(|| "ArchivePolicy missing label velocity.sh/domain".to_string())?
+        .clone();
+    Ok((org, app, domain))
+}
 
-    let provisioned = ctx
-        .provisioner
-        .sync_cold_schema(org, app, domain)
+/// List every `SchemaDefinition` in the policy's namespace and provision a
+/// mirror table in the archive schema for each. Returns the list of mirror
+/// tables actually created/verified, sorted for status stability.
+///
+/// Failure handling: if a SchemaDefinition's spec can't be built into a DDL
+/// plan (e.g. invalid spec) it is logged and skipped — one bad schema
+/// shouldn't block mirroring of its siblings. If a mirror CREATE fails the
+/// whole reconcile errors via the surfacing condition.
+async fn mirror_tables(
+    ctx: &Context,
+    namespace: &str,
+    archive_schema: &str,
+    org: &str,
+    app: &str,
+    domain: &str,
+) -> Result<Vec<String>, String> {
+    let sd_api: Api<SchemaDefinition> = Api::namespaced(ctx.kube.clone(), namespace);
+    let list = sd_api
+        .list(&ListParams::default())
         .await
-        .map_err(|e| format!("cold schema provisioning failed: {e}"))?;
+        .map_err(|e| format!("list SchemaDefinitions: {e}"))?;
 
-    Ok((provisioned.pg_schema, provisioned.pg_roles))
+    let mut out: Vec<String> = Vec::with_capacity(list.items.len());
+    for sd in list.items {
+        let object = sd.name_any();
+        let version = sd.spec.version.clone();
+        let path = SchemaPath::new(org, app, domain, object.clone(), version.clone());
+        let plan = match build_ddl(&sd.spec, &path) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    %object, %version, error = %e,
+                    "skipping mirror for invalid SchemaDefinition"
+                );
+                continue;
+            }
+        };
+        ctx.provisioner
+            .sync_archive_mirror_table(archive_schema, &path.pg_table(), &plan.columns)
+            .await
+            .map_err(|e| format!("mirror {}: {e}", path.pg_table()))?;
+        out.push(path.pg_table());
+    }
+    out.sort();
+    Ok(out)
 }
 
 pub fn error_policy(_obj: Arc<ArchivePolicy>, err: &ReconcileError, _ctx: Arc<Context>) -> Action {

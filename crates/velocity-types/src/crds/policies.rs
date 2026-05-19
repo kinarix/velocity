@@ -71,14 +71,18 @@ pub struct ArchivePolicyStatus {
     pub records_archived: Option<u64>,
     /// Postgres schema name that will receive archived rows when the
     /// policy's `destination.backend = postgres-cold`. Set by the
-    /// operator once the cold schema is provisioned; absent for s3
+    /// operator once the archive schema is provisioned; absent for s3
     /// destinations or until the spec passes validation.
-    pub cold_schema: Option<String>,
-    /// Postgres roles granted on the cold schema (reader/writer/admin).
+    pub archive_schema: Option<String>,
+    /// Postgres roles granted on the archive schema (reader/writer/admin).
     /// Surfaced for operator visibility — the eventual archive worker
     /// `SET LOCAL ROLE`s into the writer for inserts, mirroring ADR-007.
     #[serde(default)]
-    pub cold_roles: Vec<String>,
+    pub archive_roles: Vec<String>,
+    /// Mirror tables created inside `archive_schema` — one per
+    /// `SchemaDefinition` in the policy's namespace. Sorted for stability.
+    #[serde(default)]
+    pub mirrored_tables: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

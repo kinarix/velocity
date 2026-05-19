@@ -78,20 +78,20 @@ spec:
           status:
             nullable: true
             properties:
-              coldRoles:
+              archiveRoles:
                 default: []
                 description: |-
-                  Postgres roles granted on the cold schema (reader/writer/admin).
+                  Postgres roles granted on the archive schema (reader/writer/admin).
                   Surfaced for operator visibility — the eventual archive worker
                   `SET LOCAL ROLE`s into the writer for inserts, mirroring ADR-007.
                 items:
                   type: string
                 type: array
-              coldSchema:
+              archiveSchema:
                 description: |-
                   Postgres schema name that will receive archived rows when the
                   policy's `destination.backend = postgres-cold`. Set by the
-                  operator once the cold schema is provisioned; absent for s3
+                  operator once the archive schema is provisioned; absent for s3
                   destinations or until the spec passes validation.
                 nullable: true
                 type: string
@@ -121,6 +121,14 @@ spec:
               lastRunAt:
                 nullable: true
                 type: string
+              mirroredTables:
+                default: []
+                description: |-
+                  Mirror tables created inside `archive_schema` — one per
+                  `SchemaDefinition` in the policy's namespace. Sorted for stability.
+                items:
+                  type: string
+                type: array
               phase:
                 description: Phase reported by an operator-managed resource.
                 enum:
