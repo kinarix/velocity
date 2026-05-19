@@ -222,6 +222,24 @@ impl ApiClient {
         let resp = self.inner.post(&url).send().await?;
         decode_json(resp).await
     }
+
+    /// `GET /metrics` — Prometheus exposition format text. Most
+    /// production deployments expose this on a side-listener (the
+    /// health server in `velocity-api/src/health.rs`); same-listener
+    /// is also valid and is what `cargo run` does by default. The
+    /// CLI honours `--metrics-url` to point elsewhere if needed.
+    pub(crate) async fn get_metrics_raw(&self, override_url: Option<&str>) -> Result<String, ApiError> {
+        let url = match override_url {
+            Some(u) => u.to_string(),
+            None => format!("{}/metrics", self.base_url),
+        };
+        let resp = self.inner.get(&url).send().await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.text().await?);
+        }
+        Err(parse_error(status, resp).await)
+    }
 }
 
 /// 5-segment data-plane path. Validates shape eagerly so a typo at the

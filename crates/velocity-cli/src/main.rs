@@ -31,6 +31,7 @@ mod drift;
 mod history_cmd;
 mod kube_cmd;
 mod kube_helpers;
+mod obs_cmd;
 mod output;
 mod reconcile;
 mod record_cmd;
@@ -44,6 +45,7 @@ use context_cmd::ContextCmd;
 use drift::DriftCmd;
 use history_cmd::{HistoryArgs, RestoreArgs};
 use kube_cmd::{ApplyArgs, DeleteArgs, DescribeArgs, DiffArgs, GetArgs};
+use obs_cmd::{HealthArgs, MetricsArgs, SloArgs};
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
 use record_cmd::RecordCmd;
@@ -143,6 +145,12 @@ enum Cmd {
     },
     /// Approve a PurgeRequest (writes `velocity.sh/approved-by`).
     Approve(ApproveArgs),
+    /// Reachability check against the active context's API.
+    Health(HealthArgs),
+    /// Fetch /metrics (Prometheus exposition format).
+    Metrics(MetricsArgs),
+    /// Print SLOs declared in SchemaDefinitions.
+    Slo(SloArgs),
 }
 
 #[tokio::main]
@@ -194,5 +202,12 @@ async fn main() -> Result<()> {
             archive_cmd::run(cmd, cli.config.as_deref(), cli.context.as_deref()).await
         }
         Cmd::Approve(args) => archive_cmd::approve(args, &cli.kubeconfig).await,
+        Cmd::Health(args) => {
+            obs_cmd::health(args, cli.config.as_deref(), cli.context.as_deref()).await
+        }
+        Cmd::Metrics(args) => {
+            obs_cmd::metrics(args, cli.config.as_deref(), cli.context.as_deref()).await
+        }
+        Cmd::Slo(args) => obs_cmd::slo(args, &cli.kubeconfig, cli.output).await,
     }
 }
