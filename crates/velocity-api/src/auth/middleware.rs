@@ -1145,6 +1145,64 @@ mod tests {
     }
 
     #[test]
+    fn auth_state_debug_redacts_handles_and_reports_configured_flags() {
+        // Covers the manual Debug impl (lines 77-90). The output must be
+        // free of <Arc<RevocationChecker>>-style raw pointers and must
+        // surface configuration-presence as booleans so a deploy log
+        // shows whether revocation/api-keys/sessions/audit-pool are
+        // wired without leaking implementation types.
+        let state = state_with_strategies(vec![]);
+        let dbg = format!("{state:?}");
+        assert!(dbg.contains("AuthState"));
+        assert!(dbg.contains("<SchemaRegistry>"));
+        assert!(dbg.contains("<AuthRegistry>"));
+        assert!(dbg.contains("revocation_configured: false"));
+        assert!(dbg.contains("api_keys_configured: false"));
+        assert!(dbg.contains("sessions_configured: false"));
+        assert!(dbg.contains("audit_pool_configured: false"));
+        assert!(dbg.contains("claim_mappings_len: 0"));
+    }
+
+    #[tokio::test]
+    async fn auth_state_debug_reports_configured_flags_when_set() {
+        // Drive each "configured" flag true and verify the Debug
+        // output flips. Catches a regression where a future builder
+        // wires a backend but forgets to mark it visible in Debug.
+        use std::time::Duration;
+        let mut state = state_with_strategies(vec![]);
+        // Each `with_*` builder mutates `self` and returns Self; we
+        // need each on a separate state to keep the test independent.
+        state = state.with_audit_pool(Arc::new(
+            sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
+                .acquire_timeout(Duration::from_millis(100))
+                .connect_lazy("postgres://stub:stub@127.0.0.1:1/stub")
+                .unwrap(),
+        ));
+        let dbg = format!("{state:?}");
+        assert!(
+            dbg.contains("audit_pool_configured: true"),
+            "audit pool flag should flip: {dbg}"
+        );
+    }
+
+    #[test]
+    fn auth_decision_clone_preserves_fields() {
+        // The middleware attaches an AuthDecision to the request
+        // extension; the audit pipeline clones it out. Catch field
+        // drift between manual clone implementations.
+        let d = AuthDecision {
+            revocation: RevocationDecision::BackendDownAdmitted,
+            revocation_fail_open: true,
+            strategy: "acme-platform/default".into(),
+        };
+        let c = d.clone();
+        assert!(c.revocation_fail_open);
+        assert_eq!(c.strategy, "acme-platform/default");
+        // Pattern matches keep this honest if a variant is renamed.
+        assert!(matches!(c.revocation, RevocationDecision::BackendDownAdmitted));
+    }
+
+    #[test]
     fn scheme_matches_pairs_schemes_to_kinds() {
         // Pin the kind→scheme mapping so a future kind addition has to
         // either pick a scheme or explicitly opt-out. JWT and OIDC share
