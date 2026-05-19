@@ -393,6 +393,12 @@ pub async fn create(
     let audit_decision = decision.clone();
     let event_schema = schema.clone();
     let event_identity = identity.clone();
+    // Phase 6a-3: captured before the closure-move so the post-image
+    // we write into the audit row can carry `__fields_changed` = the
+    // user-submitted top-level field names (id/timestamps/version are
+    // server-managed and filtered out by `submitted_field_names`).
+    let submitted_fields =
+        audit::submitted_field_names(&Value::Object(payload_obj.clone()));
 
     let inserted = with_session_context(
         &state.pool,
@@ -421,6 +427,12 @@ pub async fn create(
                 // ADR-005: audit row writes in the same tx as the data
                 // change. A best-effort log line *after* commit would leave
                 // the data and audit chain visibly out of sync on a crash.
+                //
+                // Phase 6a-3: record which fields the caller submitted so
+                // `__fields_changed` is queryable from `platform.audit_log`
+                // without diffing two payloads.
+                let mut audit_payload = row.clone();
+                audit::attach_fields_changed(&mut audit_payload, &submitted_fields);
                 audit::write_audit(
                     tx,
                     &audit_schema,
@@ -428,7 +440,7 @@ pub async fn create(
                     action::CREATE,
                     outcome::SUCCESS,
                     Some(&id),
-                    &row,
+                    &audit_payload,
                     audit_decision.as_ref(),
                     None,
                 )
@@ -786,6 +798,13 @@ pub async fn update(
                 if matches!(tier, SearchTier::Tier3) {
                     write_outbox(tx, &outbox_table, "update", &id, &row).await?;
                 }
+                // Phase 6a-3: strict before/after delta — only fields
+                // whose value actually changed. UPDATEs that no-op a
+                // field (re-submitting the same value) won't pollute
+                // the changed-list.
+                let changed = audit::changed_field_names(before.as_ref(), &row);
+                let mut audit_payload = row.clone();
+                audit::attach_fields_changed(&mut audit_payload, &changed);
                 audit::write_audit(
                     tx,
                     &audit_schema,
@@ -793,7 +812,7 @@ pub async fn update(
                     action::UPDATE,
                     outcome::SUCCESS,
                     Some(&id),
-                    &row,
+                    &audit_payload,
                     audit_decision.as_ref(),
                     None,
                 )

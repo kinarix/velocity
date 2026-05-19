@@ -223,6 +223,98 @@ pub async fn write_audit_standalone(
     Ok(())
 }
 
+/// Reserved payload key carrying the sorted list of field names that
+/// changed on a write. We splice it into the audit payload at the
+/// handler (CREATE → all submitted user-declared fields, UPDATE → the
+/// strict before/after delta). The leading `__` keeps it from
+/// colliding with any user-declared field name — schema validation
+/// reserves the prefix.
+///
+/// Recorded so a SOC analyst can answer "which fields did this actor
+/// touch" without diffing two payloads themselves; matches the
+/// `fields_changed` deliverable on phases.md L485.
+pub const FIELDS_CHANGED_KEY: &str = "__fields_changed";
+
+/// Return the sorted list of TOP-LEVEL field names whose value
+/// differs between `before` and `after`. Used by the UPDATE handler
+/// to build the audit row's `__fields_changed` array.
+///
+/// - Keys present only on `after` count as changed (added).
+/// - Keys present only on `before` count as changed (removed) — but
+///   in practice we never see this on UPDATE because the post-image
+///   carries every column.
+/// - Non-object inputs collapse to "everything changed" (`[]` if
+///   either side is non-object — caller should treat that as
+///   uninformative; in practice both sides are always JSONB rows
+///   from the RETURNING/SELECT).
+///
+/// Nested diff is intentionally NOT computed — the field index is
+/// keyed on top-level names, and the redaction layer treats a JSON
+/// field's whole value as the sensitive unit. Going deeper would
+/// reveal sub-keys the schema doesn't model.
+pub fn changed_field_names(before: Option<&Value>, after: &Value) -> Vec<String> {
+    let (Some(b), Value::Object(a)) = (before, after) else {
+        return Vec::new();
+    };
+    let Value::Object(b) = b else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (k, v_after) in a {
+        match b.get(k) {
+            Some(v_before) if v_before == v_after => {}
+            _ => out.push(k.clone()),
+        }
+    }
+    for k in b.keys() {
+        if !a.contains_key(k) {
+            out.push(k.clone());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Return the sorted list of TOP-LEVEL keys submitted on a CREATE
+/// payload — every present key counts as "changed from null".
+/// Filters the reserved server-managed names so the array reflects
+/// what the *caller* actually set.
+pub fn submitted_field_names(payload: &Value) -> Vec<String> {
+    let Value::Object(m) = payload else {
+        return Vec::new();
+    };
+    // Server-controlled columns aren't part of the user's submission
+    // even when the post-image carries them — recording them as
+    // "changed by caller" would mislead.
+    const SERVER_MANAGED: &[&str] = &[
+        "id",
+        "created_at",
+        "updated_at",
+        "version",
+        "created_by",
+        "updated_by",
+        "deleted_at",
+        "deleted_by",
+    ];
+    let mut out: Vec<String> = m
+        .keys()
+        .filter(|k| !SERVER_MANAGED.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// Splice `__fields_changed` into a payload destined for
+/// [`write_audit`]. Mutates in place when `payload` is a JSON object;
+/// otherwise no-op (non-object payloads carry no field metadata).
+pub fn attach_fields_changed(payload: &mut Value, fields: &[String]) {
+    if let Value::Object(m) = payload {
+        m.insert(FIELDS_CHANGED_KEY.into(), serde_json::to_value(fields).unwrap_or(Value::Null));
+    }
+}
+
 /// Synthetic `schema_org` the platform-internal audit endpoints record
 /// against. Pinned so a SOC analyst filtering for `schema_org = '__platform/audit/audit/audit/v1'`
 /// gets every "who read the audit log" row in one query. Format
@@ -498,6 +590,91 @@ mod tests {
         assert_eq!(redact_sensitive(&schema, &json!(null)), json!(null));
         assert_eq!(redact_sensitive(&schema, &json!("string")), json!("string"));
         assert_eq!(redact_sensitive(&schema, &json!([1, 2, 3])), json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn changed_field_names_pins_changed_added_removed() {
+        // Three flavours of "changed": value differs, key added, key
+        // removed. Each must appear exactly once in the output, sorted.
+        let before = json!({ "a": 1, "b": 2, "c": 3 });
+        let after = json!({ "a": 1, "b": 99, "d": 4 });
+        let got = changed_field_names(Some(&before), &after);
+        assert_eq!(got, vec!["b".to_string(), "c".into(), "d".into()]);
+    }
+
+    #[test]
+    fn changed_field_names_empty_when_identical() {
+        // Re-submitting the same row must produce an empty list — the
+        // SOC dashboard's "no-op writes" panel keys off this.
+        let before = json!({ "a": 1, "b": "x" });
+        let after = json!({ "b": "x", "a": 1 });
+        assert!(changed_field_names(Some(&before), &after).is_empty());
+    }
+
+    #[test]
+    fn changed_field_names_returns_empty_when_no_before() {
+        // CREATE path uses `submitted_field_names` instead, but the
+        // UPDATE helper must degrade gracefully when called without
+        // a before-image rather than producing a misleading delta.
+        assert!(changed_field_names(None, &json!({ "a": 1 })).is_empty());
+    }
+
+    #[test]
+    fn changed_field_names_returns_empty_for_non_object_inputs() {
+        // Defensive — we never get a non-object row from RETURNING, but
+        // a future caller passing a JSON scalar must get a safe empty
+        // result rather than a panic or a misleading single-key list.
+        let before = json!("scalar");
+        let after = json!({ "a": 1 });
+        assert!(changed_field_names(Some(&before), &after).is_empty());
+        let after2 = json!(42);
+        assert!(changed_field_names(Some(&before), &after2).is_empty());
+    }
+
+    #[test]
+    fn submitted_field_names_excludes_server_managed_columns() {
+        // A CREATE caller submitting `created_at` (e.g. a backfill
+        // import) shouldn't pollute the audit row with a fake "user
+        // changed created_at" entry — server-managed columns are
+        // filtered server-side.
+        let payload = json!({
+            "po_number": "PO-1",
+            "supplier": "ACME",
+            "id": "ignored",
+            "created_at": "2026-05-19T00:00:00Z",
+            "version": 0,
+        });
+        let names = submitted_field_names(&payload);
+        assert_eq!(names, vec!["po_number".to_string(), "supplier".into()]);
+    }
+
+    #[test]
+    fn submitted_field_names_returns_empty_for_non_object() {
+        assert!(submitted_field_names(&json!(null)).is_empty());
+        assert!(submitted_field_names(&json!("scalar")).is_empty());
+    }
+
+    #[test]
+    fn attach_fields_changed_inserts_under_reserved_key() {
+        // Reserved key name must be exactly the FIELDS_CHANGED_KEY
+        // const — Grafana queries pivot on `payload->>'__fields_changed'`,
+        // so a rename here is breaking.
+        let mut payload = json!({ "id": "abc", "po_number": "PO-1" });
+        attach_fields_changed(&mut payload, &["po_number".into()]);
+        assert_eq!(payload[FIELDS_CHANGED_KEY], json!(["po_number"]));
+        // Original fields preserved alongside the metadata.
+        assert_eq!(payload["id"], "abc");
+        assert_eq!(payload["po_number"], "PO-1");
+    }
+
+    #[test]
+    fn attach_fields_changed_no_op_on_non_object() {
+        // Delete sentinels are non-object payloads (or carry a
+        // hand-built `{"id":...}`) — attaching to a scalar must
+        // silently do nothing rather than rewrite the shape.
+        let mut payload = json!(null);
+        attach_fields_changed(&mut payload, &["x".into()]);
+        assert_eq!(payload, json!(null));
     }
 
     #[test]
