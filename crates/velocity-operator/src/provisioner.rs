@@ -464,4 +464,23 @@ mod tests {
         assert!(validate_ident("x").is_ok());
         assert!(validate_ident(&"a".repeat(63)).is_ok());
     }
+
+    #[test]
+    fn diff_error_into_provision_error_covers_every_arm() {
+        // Each arm of `From<DiffError> for ProvisionError`. The reconciler
+        // tests cover the BreakingChange branches end-to-end against a
+        // live DB, but the `DiffError::Sql` arm only fires when sqlx
+        // returns an error mid-diff — easier to construct directly.
+        use crate::DiffError;
+
+        let blocked: ProvisionError = DiffError::BreakingOpsBlocked(vec![]).into();
+        assert!(matches!(blocked, ProvisionError::BreakingChange(_)));
+
+        let deferred: ProvisionError = DiffError::BreakingOpsDeferred(vec![]).into();
+        assert!(matches!(deferred, ProvisionError::BreakingChangeDeferred(_)));
+
+        let sql_err = sqlx::Error::PoolTimedOut;
+        let sql: ProvisionError = DiffError::Sql(sql_err).into();
+        assert!(matches!(sql, ProvisionError::Sql(_)));
+    }
 }

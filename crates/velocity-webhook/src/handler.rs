@@ -259,6 +259,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn appstate_debug_redacts_checker_trait_object() {
+        let state = AppState::new(
+            WebhookConfig {
+                tls_addr: String::new(),
+                health_addr: String::new(),
+                tls_cert_path: None,
+                tls_key_path: None,
+                pretty_logs: false,
+                multi_tenant_mode: false,
+            },
+            Arc::new(crate::strategy_check::MockStrategyChecker::default()),
+        );
+        let dbg = format!("{state:?}");
+        assert!(dbg.contains("AppState"));
+        assert!(dbg.contains("<dyn>"), "trait object should be redacted: {dbg}");
+    }
+
+    #[tokio::test]
+    async fn admission_review_without_object_admits() {
+        // DELETE has no `object` — the decide() short-circuits to Ok(()).
+        let body = json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid-2",
+                "kind": { "group": "velocity.sh", "version": "v1", "kind": "Domain" },
+                "resource": { "group": "velocity.sh", "version": "v1", "resource": "domains" },
+                "name": "test",
+                "namespace": "ns",
+                "operation": "DELETE",
+                "userInfo": { "username": "tester" },
+                "dryRun": false,
+            }
+        });
+        let resp = run(body).await;
+        assert_eq!(resp["response"]["allowed"], true);
+    }
+
+    #[tokio::test]
+    async fn unknown_kind_is_admitted() {
+        // Triggers the `_ => Ok(())` fall-through.
+        let body = review("Organisation", "platform", json!({ "metadata": { "name": "x" } }));
+        let resp = run(body).await;
+        assert_eq!(resp["response"]["allowed"], true);
+    }
+
+    #[tokio::test]
+    async fn application_kind_runs_app_validator() {
+        // Triggers the Application arm. Use an invalid payload so the
+        // validator returns a deny — that is sufficient to prove the
+        // dispatch arm was taken (otherwise we'd hit the catch-all).
+        let body = review(
+            "Application",
+            "wrong-namespace",
+            json!({
+                "metadata": { "labels": { "velocity.sh/org": "acme" } },
+                "spec": {}
+            }),
+        );
+        let resp = run(body).await;
+        assert_eq!(resp["response"]["allowed"], false);
+    }
+
+    #[tokio::test]
+    async fn malformed_admission_review_returns_bad_request() {
+        // No `request` field — TryInto<AdmissionRequest> fails, mapped
+        // to a 400. Covers the error arm on line 55-57.
+        let body = json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+        });
+        let app = app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/validate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn denies_namespace_mismatch() {
         let body = review(
             "Domain",
