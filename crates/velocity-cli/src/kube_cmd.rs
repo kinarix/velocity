@@ -303,7 +303,7 @@ pub(crate) struct DeleteArgs {
 }
 
 pub(crate) async fn delete(args: DeleteArgs, kubeconfig: &Option<String>) -> Result<()> {
-    if !args.yes && !confirm(&format!("delete {} {}?", args.kind, args.name))? {
+    if !args.yes && !crate::confirm::confirm(&format!("delete {} {}?", args.kind, args.name))? {
         bail!("aborted");
     }
     let client = build_client(kubeconfig.as_deref()).await?;
@@ -319,19 +319,6 @@ pub(crate) async fn delete(args: DeleteArgs, kubeconfig: &Option<String>) -> Res
         .with_context(|| format!("deleting {} {}", args.kind, args.name))?;
     eprintln!("{} {} deleted", args.kind, args.name);
     Ok(())
-}
-
-fn confirm(prompt: &str) -> Result<bool> {
-    use std::io::{stdin, stdout, BufRead, Write};
-    eprint!("{prompt} [y/N] ");
-    stdout().flush().ok();
-    let mut line = String::new();
-    stdin()
-        .lock()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    let answer = line.trim().to_ascii_lowercase();
-    Ok(answer == "y" || answer == "yes")
 }
 
 // ---------------------------------------------------------------------

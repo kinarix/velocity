@@ -23,8 +23,10 @@ use clap::Parser;
 mod audit;
 mod client;
 mod config;
+mod confirm;
 mod context_cmd;
 mod drift;
+mod history_cmd;
 mod kube_cmd;
 mod kube_helpers;
 mod output;
@@ -36,6 +38,7 @@ mod version_cmd;
 use audit::AuditCmd;
 use context_cmd::ContextCmd;
 use drift::DriftCmd;
+use history_cmd::{HistoryArgs, RestoreArgs};
 use kube_cmd::{ApplyArgs, DeleteArgs, DescribeArgs, DiffArgs, GetArgs};
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
@@ -116,6 +119,10 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RecordCmd,
     },
+    /// Show event history for a record, or reconstruct state at a point in time.
+    History(HistoryArgs),
+    /// Restore a record to its state at a past instant (writes a new event).
+    Restore(RestoreArgs),
 }
 
 #[tokio::main]
@@ -153,6 +160,12 @@ async fn main() -> Result<()> {
         Cmd::Diff(args) => kube_cmd::diff(args, &cli.kubeconfig).await,
         Cmd::Record { cmd } => {
             record_cmd::run(cmd, cli.config.as_deref(), cli.context.as_deref()).await
+        }
+        Cmd::History(args) => {
+            history_cmd::history(args, cli.config.as_deref(), cli.context.as_deref()).await
+        }
+        Cmd::Restore(args) => {
+            history_cmd::restore(args, cli.config.as_deref(), cli.context.as_deref()).await
         }
     }
 }

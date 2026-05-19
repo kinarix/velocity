@@ -133,6 +133,58 @@ impl ApiClient {
         let resp = self.inner.post(&url).json(body).send().await?;
         decode_json(resp).await
     }
+
+    /// `GET /{path}/{id}/history`. Two modes (chosen by query params):
+    /// list events (newest-first, paginated) when `at` is absent;
+    /// reconstruct state at a point-in-time when `at` is set.
+    pub(crate) async fn get_history(
+        &self,
+        path: &SchemaPath,
+        id: &str,
+        limit: Option<u32>,
+        before: Option<&str>,
+        at: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut url = format!("{}/api/{}/{}/history", self.base_url, path.as_url(), id);
+        let mut sep = '?';
+        if let Some(l) = limit {
+            url.push(sep);
+            url.push_str(&format!("limit={l}"));
+            sep = '&';
+        }
+        if let Some(b) = before {
+            url.push(sep);
+            url.push_str("before=");
+            url.push_str(b);
+            sep = '&';
+        }
+        if let Some(a) = at {
+            url.push(sep);
+            url.push_str("at=");
+            url.push_str(a);
+        }
+        let resp = self.inner.get(&url).send().await?;
+        decode_json(resp).await
+    }
+
+    /// `POST /{path}/{id}/restore` with `{ at, reason }`. Restoring is a
+    /// write — the server creates a new event in `platform.event_log`
+    /// representing the rollback; older history is preserved.
+    pub(crate) async fn post_restore(
+        &self,
+        path: &SchemaPath,
+        id: &str,
+        at: &str,
+        reason: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let url = format!("{}/api/{}/{}/restore", self.base_url, path.as_url(), id);
+        let body = match reason {
+            Some(r) => serde_json::json!({ "at": at, "reason": r }),
+            None => serde_json::json!({ "at": at }),
+        };
+        let resp = self.inner.post(&url).json(&body).send().await?;
+        decode_json(resp).await
+    }
 }
 
 /// 5-segment data-plane path. Validates shape eagerly so a typo at the
