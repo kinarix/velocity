@@ -66,6 +66,12 @@ pub struct AuthState {
     /// [`crate::auth::session::PgSessionStore`]. Strategies whose
     /// resolved leaf isn't `Oidc` never touch this.
     pub sessions: Option<Arc<dyn SessionStore>>,
+    /// Optional PG pool for writing denial audit rows when the
+    /// middleware itself denies a request (Revoked / RevocationUnavailable).
+    /// When `None`, denial audit at the middleware layer is skipped —
+    /// the request still returns the right HTTP status. Production
+    /// wires the same `velocity_api` pool the handlers use.
+    pub audit_pool: Option<Arc<sqlx::PgPool>>,
 }
 
 impl std::fmt::Debug for AuthState {
@@ -78,6 +84,7 @@ impl std::fmt::Debug for AuthState {
             .field("revocation_configured", &self.revocation.is_some())
             .field("api_keys_configured", &self.api_keys.is_some())
             .field("sessions_configured", &self.sessions.is_some())
+            .field("audit_pool_configured", &self.audit_pool.is_some())
             .finish()
     }
 }
@@ -111,7 +118,17 @@ impl AuthState {
             revocation: None,
             api_keys: None,
             sessions: None,
+            audit_pool: None,
         }
+    }
+
+    /// Builder-style — install the PG pool used to write middleware-layer
+    /// denial audit rows. Without this, Revoked / RevocationUnavailable
+    /// denials still produce the correct HTTP response but are not
+    /// recorded in `platform.audit_log`.
+    pub fn with_audit_pool(mut self, pool: Arc<sqlx::PgPool>) -> Self {
+        self.audit_pool = Some(pool);
+        self
     }
 
     /// Builder-style — install the browser-session store. Required when
@@ -254,7 +271,51 @@ async fn try_authenticate(state: &AuthState, req: &mut Request<Body>) -> Result<
         // No actor to look up in the revoked set.
         RevocationDecision::Allowed
     } else {
-        check_revocation(state, &leaf, &identity.actor_id).await?
+        match check_revocation(state, &leaf, &identity.actor_id).await {
+            Ok(d) => d,
+            Err(err) => {
+                // ADR-005: revocation-class denials (Revoked, RevocationUnavailable
+                // with fail-closed) are the most security-critical 403/503 paths
+                // we serve — record them in the audit chain even though the
+                // request never reaches a handler. Audit failure is logged but
+                // does not block the rejection.
+                if let Some(pool) = state.audit_pool.as_ref() {
+                    let code = err.code();
+                    let action = action_from_method(req.method());
+                    let request_id = req
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|v| v.to_str().ok());
+                    let provisional = AuthDecision {
+                        revocation: match &err {
+                            ApiError::Revoked => RevocationDecision::RevokedActor,
+                            _ => RevocationDecision::BackendDownDenied,
+                        },
+                        revocation_fail_open: leaf.revocation_fail_open,
+                        strategy: leaf.key.clone(),
+                    };
+                    if let Err(e) = crate::audit::write_audit_denial(
+                        pool.as_ref(),
+                        &schema,
+                        &identity,
+                        action,
+                        code,
+                        Some(&provisional),
+                        request_id,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            error = %e,
+                            code = %code,
+                            actor = %identity.actor_id,
+                            "middleware-layer denial audit write failed"
+                        );
+                    }
+                }
+                return Err(err);
+            }
+        }
     };
     req.extensions_mut().insert(identity);
     req.extensions_mut().insert(AuthDecision {
@@ -706,6 +767,24 @@ fn unverified_issuer(token: &str) -> Option<String> {
     v.get("iss").and_then(Value::as_str).map(str::to_string)
 }
 
+/// Render the audit `action` for a denial happening in the middleware
+/// layer. The handler-layer `audit_if_denied` is method-agnostic
+/// (each handler passes its own constant), but the middleware sees the
+/// raw HTTP method so we map it back to the same vocabulary. POST to
+/// `/.../query` is folded into `"query"` (close enough for SOC dashboards
+/// — the URL is captured via `request_id` -> trace anyway).
+fn action_from_method(method: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    use crate::audit::action;
+    match *method {
+        Method::GET => action::READ,
+        Method::POST => action::CREATE,
+        Method::PUT | Method::PATCH => action::UPDATE,
+        Method::DELETE => action::DELETE,
+        _ => "unknown",
+    }
+}
+
 /// Parse `/api/{org}/{app}/{domain}/{object}/{version}[/...]`.
 /// Returns `None` for any non-`/api/...` path or one with too few segments.
 fn schema_path_from_uri(uri_path: &str) -> Option<SchemaPath> {
@@ -851,6 +930,21 @@ mod tests {
         assert_eq!(id.issuer, "acme-supply-chain-procurement/erp-sync-key");
         assert_eq!(id.attributes.get("actor_type").map(String::as_str), Some("service"));
         assert!(!id.is_anonymous());
+    }
+
+    #[test]
+    fn action_from_method_maps_each_verb() {
+        use axum::http::Method;
+        assert_eq!(action_from_method(&Method::GET), "read");
+        assert_eq!(action_from_method(&Method::POST), "create");
+        assert_eq!(action_from_method(&Method::PUT), "update");
+        assert_eq!(action_from_method(&Method::PATCH), "update");
+        assert_eq!(action_from_method(&Method::DELETE), "delete");
+        // Any other method (HEAD, OPTIONS) gets the sentinel — the
+        // route layer wouldn't accept it on a CRUD path anyway, but
+        // we don't want denials on unusual methods to silently mis-tag
+        // as create/read.
+        assert_eq!(action_from_method(&Method::OPTIONS), "unknown");
     }
 
     #[test]

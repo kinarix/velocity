@@ -368,3 +368,179 @@ async fn no_checker_configured_admits_and_records_allowed() {
     let body = read_body(res.into_body()).await;
     assert_eq!(body["decision"], "allowed");
 }
+
+// ─── Denial-audit integration (real PG) ─────────────────────────────────────
+//
+// These two tests verify that the middleware writes an audit row for
+// the two security-critical denials it owns: Revoked and
+// RevocationUnavailable. The earlier tests above use only the in-memory
+// stack — these need real Postgres to call `platform.audit_insert()`.
+// Skipped unless `VELOCITY_API_TEST_PG_URL` (or
+// `VELOCITY_OPERATOR_PG_URL`) is set.
+
+fn pg_url() -> Option<String> {
+    std::env::var("VELOCITY_API_TEST_PG_URL")
+        .ok()
+        .or_else(|| std::env::var("VELOCITY_OPERATOR_PG_URL").ok())
+}
+
+async fn connect_pg() -> Option<sqlx::PgPool> {
+    let url = pg_url()?;
+    Some(
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap(),
+    )
+}
+
+async fn cleanup_audit(pool: &sqlx::PgPool, schema_org: &str) {
+    let _ = sqlx::query("DELETE FROM platform.audit_log WHERE schema_org = $1")
+        .bind(schema_org)
+        .execute(pool)
+        .await;
+}
+
+async fn build_router_with_audit(
+    iss: &str,
+    jwks_url: String,
+    fail_open: bool,
+    checker: MockChecker,
+    pool: Arc<sqlx::PgPool>,
+    org: &str,
+) -> Router {
+    let (schemas, _ready) = SchemaRegistry::new();
+    let path = SchemaPath::new(org, "supply-chain", "procurement", "purchase-order", "v1");
+    schemas.upsert(ResolvedSchema::from_spec(
+        path.clone(),
+        schema_spec("acme-platform", "default"),
+    ));
+
+    let strategies = AuthRegistry::new();
+    let strategy_ref = NamespacedRef { name: "default".into(), namespace: "acme-platform".into() };
+    let resolved =
+        ResolvedAuthStrategy::from_spec(&strategy_ref, strategy_spec(iss, &jwks_url, fail_open));
+    let jwks = JwksCache::new();
+    resolved.prime_jwks(&jwks).await;
+    strategies.upsert(resolved.clone());
+
+    let auth_state = AuthState::new(schemas, strategies, jwks)
+        .with_revocation(Arc::new(checker))
+        .with_audit_pool(pool);
+    auth_state.prime_strategy(&resolved).unwrap();
+
+    Router::new()
+        .route("/api/{org}/{app}/{domain}/{object}/{version}", get(echo_decision))
+        .layer(from_fn_with_state(auth_state, authenticate))
+}
+
+#[tokio::test]
+async fn revoked_actor_produces_denial_audit_row() {
+    let Some(pool) = connect_pg().await else {
+        eprintln!("skipping: VELOCITY_API_TEST_PG_URL not set");
+        return;
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let org = format!("revaudit{suffix}");
+    let schema_org = format!("{org}/supply-chain/procurement/purchase-order/v1");
+    cleanup_audit(&pool, &schema_org).await;
+
+    let iss = "https://idp.test";
+    let (jwk, enc) = make_keypair("k1");
+    let (jwks_url, _srv) = spawn_jwks(jwk).await;
+    let checker = MockChecker::new();
+    checker.revoke("mallory");
+    let app = build_router_with_audit(
+        iss,
+        jwks_url,
+        /*fail_open=*/ false,
+        checker,
+        Arc::new(pool.clone()),
+        &org,
+    )
+    .await;
+
+    let token = mint(iss, "mallory", "k1", &enc);
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/{org}/supply-chain/procurement/purchase-order/v1"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+    // Audit row landed.
+    let row: (String, Option<String>, Value, Value) = sqlx::query_as(
+        "SELECT actor, outcome, payload, fail_modes FROM platform.audit_log \
+         WHERE schema_org = $1 ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(&schema_org)
+    .fetch_one(&pool)
+    .await
+    .expect("denial audit row present");
+
+    assert_eq!(row.0, "mallory", "actor recorded");
+    assert_eq!(row.1.as_deref(), Some("denied"), "outcome=denied");
+    assert_eq!(row.2["code"], "ACTOR_REVOKED");
+    assert_eq!(row.3["revocation"], "revoked");
+    assert_eq!(row.3["strategy"], "acme-platform/default");
+
+    cleanup_audit(&pool, &schema_org).await;
+}
+
+#[tokio::test]
+async fn revocation_unavailable_fail_closed_produces_denial_audit_row() {
+    let Some(pool) = connect_pg().await else {
+        eprintln!("skipping: VELOCITY_API_TEST_PG_URL not set");
+        return;
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let org = format!("revfailaudit{suffix}");
+    let schema_org = format!("{org}/supply-chain/procurement/purchase-order/v1");
+    cleanup_audit(&pool, &schema_org).await;
+
+    let iss = "https://idp.test";
+    let (jwk, enc) = make_keypair("k1");
+    let (jwks_url, _srv) = spawn_jwks(jwk).await;
+    let checker = MockChecker::new();
+    checker.set_failing(true);
+    let app = build_router_with_audit(
+        iss,
+        jwks_url,
+        /*fail_open=*/ false,
+        checker,
+        Arc::new(pool.clone()),
+        &org,
+    )
+    .await;
+
+    let token = mint(iss, "alice", "k1", &enc);
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/{org}/supply-chain/procurement/purchase-order/v1"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let row: (Option<String>, Value, Value) = sqlx::query_as(
+        "SELECT outcome, payload, fail_modes FROM platform.audit_log \
+         WHERE schema_org = $1 ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(&schema_org)
+    .fetch_one(&pool)
+    .await
+    .expect("denial audit row present");
+
+    assert_eq!(row.0.as_deref(), Some("denied"));
+    assert_eq!(row.1["code"], "REVOCATION_UNAVAILABLE");
+    // The provisional decision recorded must distinguish backend-down
+    // from a real revocation — dashboards key on this to alert
+    // separately on Redis outages.
+    assert_eq!(row.2["revocation"], "backend_down_denied");
+
+    cleanup_audit(&pool, &schema_org).await;
+}

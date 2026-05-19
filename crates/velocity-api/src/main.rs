@@ -61,7 +61,8 @@ async fn main() -> Result<()> {
     let mut auth_state =
         AuthState::new(registry.clone(), auth_registry.clone(), jwks_cache.clone())
             .with_api_keys(api_key_checker)
-            .with_sessions(session_store.clone());
+            .with_sessions(session_store.clone())
+            .with_audit_pool(Arc::new(pool.clone()));
 
     // ADR-003 actor revocation backend. Optional at boot — operators must
     // opt-in by setting `VELOCITY_API_REDIS_URL`. If absent, every request
