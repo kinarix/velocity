@@ -1,3 +1,25 @@
 apiVersion: v1
-entries: {}
-generated: "1970-01-01T00:00:00Z"
+entries:
+  velocity:
+  - apiVersion: v2
+    appVersion: 0.1.1
+    created: "2026-05-19T14:10:37.168852872Z"
+    description: Velocity — schema-driven Kubernetes-native backend platform.
+    digest: b98929f5bd8fa2ec627dc559659e734168086d26819a7139c6dead78b0ffad2a
+    home: https://velocity.kinarix.com
+    keywords:
+    - kubernetes
+    - operator
+    - schema-driven
+    - rust
+    maintainers:
+    - name: Kinarix
+      url: https://velocity.kinarix.com
+    name: velocity
+    sources:
+    - https://github.com/kinarix/velocity
+    type: application
+    urls:
+    - https://velocity.kinarix.com/charts/velocity-0.1.1.tgz
+    version: 0.1.1
+generated: "2026-05-19T14:10:37.167662291Z"
