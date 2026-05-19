@@ -1,0 +1,38 @@
+# Workspace-wide cargo config for local dev iteration.
+#
+# Two levers here:
+#   1. lld linker — cuts the link step of large workspaces (datafusion,
+#      arrow, kube-rs) substantially. On macOS we point at the absolute
+#      path to ld64.lld so Apple's bundled clang doesn't have to find it.
+#   2. sccache rustc wrapper — caches compiled rlibs across `cargo clean`
+#      and across worktrees. Pays off most after `make clean-target`.
+#
+# Prerequisites (one-time):
+#   brew install lld sccache    # macOS
+#   apt install lld sccache     # Debian/Ubuntu
+#
+# If you don't have these tools installed, cargo will fail loudly on the
+# first invocation. Override per-invocation with:
+#   RUSTC_WRAPPER= cargo build                            # disable sccache
+#   CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS= cargo build   # disable lld
+
+[build]
+# Set sccache as the rustc wrapper. Cache lives under ~/Library/Caches/Mozilla.sccache
+# on macOS. Inspect with `sccache --show-stats`.
+rustc-wrapper = "sccache"
+
+# macOS Apple Silicon: use Homebrew's ld64.lld. The absolute path avoids
+# relying on Apple clang's linker search (which doesn't see /opt/homebrew/bin).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
+
+# macOS Intel: same idea via /usr/local (Homebrew's Intel prefix).
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/usr/local/bin/ld64.lld"]
+
+# Linux: lld is on PATH after `apt install lld`. -fuse-ld=lld resolves it.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

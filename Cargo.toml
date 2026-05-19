@@ -127,7 +127,19 @@ url             = "2"
 object_store    = { version = "0.13", features = ["aws"] }
 # DataFusion's version is kept lockstep with arrow/parquet — release 53.x
 # tracks the arrow 58.x series. Don't bump one without the other.
-datafusion      = "53"
+#
+# Features trimmed from defaults: warm-reader only does range scans
+# (occurred_at), equality filters on string columns, and Parquet IO. The
+# unused expression libs (crypto/encoding/regex/math/unicode/nested) cost
+# ~30–40% of datafusion's compile time. Re-add the relevant feature if a
+# future query needs e.g. regexp_match.
+datafusion      = { version = "53", default-features = false, features = [
+    "parquet",
+    "datetime_expressions",
+    "string_expressions",
+    "recursive_protection",
+    "compression",
+] }
 # Constant-time service-token comparison for the inter-service RPC pattern
 # established in Phase 4 (CLAUDE.md §Inter-Service RPC).
 subtle          = "2"
@@ -155,7 +167,11 @@ strip    = "none"
 
 [profile.dev]
 opt-level = 0
-debug     = true
+# line-tables-only keeps file:line in backtraces while dropping the full
+# DWARF type info that dominates link time. Cuts target/ debug size and
+# `make test` link step substantially on a workspace this size. Switch
+# back to `true` only if you need to drive a debugger through a crate.
+debug     = "line-tables-only"
 
 [profile.test]
 opt-level = 1

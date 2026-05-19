@@ -156,11 +156,32 @@ build: ## cargo build --workspace
 
 .PHONY: test
 test: ## cargo test --workspace (provisions an ephemeral k3d cluster when k3d is present)
+	@$(MAKE) --no-print-directory clean-target-if-bloated
 	@bash scripts/k3d-test.sh
 
 .PHONY: test-no-k3d
 test-no-k3d: ## cargo test --workspace without provisioning a k3d cluster
 	cargo test --workspace
+
+# Threshold (KB) above which `make test` wipes target/ entirely.
+# 20 GiB = 20 * 1024 * 1024 KiB = 20971520.
+TARGET_BLOAT_KB ?= 20971520
+
+.PHONY: clean-target
+clean-target: ## Wipe the entire cargo target/ directory (full rebuild next compile)
+	@rm -rf target
+	@echo "→ removed target/"
+
+.PHONY: clean-target-if-bloated
+clean-target-if-bloated: ## Run clean-target only if target/ exceeds TARGET_BLOAT_KB
+	@if [ -d target ]; then \
+	  size_kb=$$(du -sk target | awk '{print $$1}'); \
+	  if [ "$$size_kb" -gt $(TARGET_BLOAT_KB) ]; then \
+	    printf '→ target/ is %d MiB (>%d MiB), wiping it\n' \
+	      "$$((size_kb / 1024))" "$$(( $(TARGET_BLOAT_KB) / 1024 ))"; \
+	    $(MAKE) --no-print-directory clean-target; \
+	  fi; \
+	fi
 
 .PHONY: fmt
 fmt: ## cargo fmt
