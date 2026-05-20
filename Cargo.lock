@@ -5284,7 +5284,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "velocity-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5338,7 +5338,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-archive-worker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5360,7 +5360,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5386,7 +5386,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-log-collector"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -5403,7 +5403,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-log-processor"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5426,7 +5426,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-operator"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5465,7 +5465,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-types"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5481,7 +5481,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-typesense"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "chrono",
@@ -5497,7 +5497,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-warm-reader"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5526,7 +5526,7 @@ dependencies = [
 
 [[package]]
 name = "velocity-webhook"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
