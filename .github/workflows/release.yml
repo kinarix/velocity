@@ -117,17 +117,14 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
-          # Native runner per target arch. macos-latest is Apple Silicon
-          # (arm64); for x86_64 we use macos-13 (Intel) so the compile is
-          # native instead of cross-compiling rustc/clang outputs from
-          # arm64 to x86_64. macos-13 will be deprecated eventually —
-          # when GitHub drops it, this entry becomes either macos-15 (if
-          # still Intel) or moves back to a single macos-latest with the
-          # cross-compile re-enabled. The `os` is the lever; everything
-          # else in the step list stays identical.
-          - target: x86_64-apple-darwin
-            os: macos-13
-            cross: false
+          # macOS Apple Silicon only. We previously also built
+          # x86_64-apple-darwin on macos-13 (Intel) for older Macs, but
+          # the macos-13 runner pool queues were waiting forever — jobs
+          # never picked up a runner across multiple release cuts. Drop
+          # the target entirely rather than ship a release pipeline that
+          # blocks on a hung job. Apple Silicon is the macOS we support;
+          # Intel Mac users can build from source (`cargo install
+          # --git ...`) or use the Linux musl binary under Rosetta.
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
@@ -286,9 +283,11 @@ jobs:
       - name: Extract checksums
         id: sums
         # Each .sha256 file is "<hex>  <archive>"; we want the hex only.
-        # Pin the four targets the formula references so a missing
+        # Pin the three targets the formula references so a missing
         # artifact fails loudly instead of silently leaving zeros in
-        # place.
+        # place. x86_64-apple-darwin was here too until the macos-13
+        # runner pool became unusable (jobs waited forever for a
+        # runner); see the build matrix comment for the full story.
         run: |
           set -euo pipefail
           tag="${GITHUB_REF##*/}"             # vX.Y.Z
@@ -296,7 +295,6 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           for target in \
             aarch64-apple-darwin \
-            x86_64-apple-darwin \
             aarch64-unknown-linux-musl \
             x86_64-unknown-linux-musl; do
             f="dist/velocity-${tag}-${target}.tar.gz.sha256"
@@ -313,14 +311,18 @@ jobs:
         env:
           VER:            ${{ steps.sums.outputs.version }}
           SHA_DARWIN_ARM: ${{ steps.sums.outputs.aarch64_apple_darwin }}
-          SHA_DARWIN_X64: ${{ steps.sums.outputs.x86_64_apple_darwin }}
           SHA_LINUX_ARM:  ${{ steps.sums.outputs.aarch64_unknown_linux_musl }}
           SHA_LINUX_X64:  ${{ steps.sums.outputs.x86_64_unknown_linux_musl }}
-        # A targeted python rewrite is more reliable than nested sed
-        # patterns — the formula has four sha256 lines that the macOS
-        # arm / macOS x64 / linux arm / linux x64 branches each own. We
-        # walk the file line-by-line tracking which `on_*` + `if/else`
-        # block we're inside, then replace exactly one sha256 per block.
+        # Targeted python rewrite over sed because the formula has one
+        # sha256 line per (os, arch) branch and we need to pick the
+        # right value for each. We walk the file line-by-line tracking
+        # which `on_*` + `if/else` block we're inside.
+        #
+        # macOS x86_64 was a fourth branch until we dropped the Intel
+        # build (macos-13 runner pool was queuing forever); the formula
+        # itself no longer has an `else` after `Hardware::CPU.arm?` in
+        # the on_macos block, so the walker only ever resolves
+        # ("macos", "arm").
         run: |
           python3 <<'PY'
           import os, re, pathlib
@@ -329,7 +331,6 @@ jobs:
           ver   = os.environ["VER"]
           sums = {
               ("macos", "arm"): os.environ["SHA_DARWIN_ARM"],
-              ("macos", "x64"): os.environ["SHA_DARWIN_X64"],
               ("linux", "arm"): os.environ["SHA_LINUX_ARM"],
               ("linux", "x64"): os.environ["SHA_LINUX_X64"],
           }

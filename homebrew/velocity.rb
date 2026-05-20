@@ -30,13 +30,16 @@ class Velocity < Formula
   # placeholder zeros here just exist so the file parses on a fresh
   # checkout before the first release lands.
   on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-    else
-      url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-    end
+    # Apple Silicon only. We dropped x86_64-apple-darwin from the
+    # release matrix because GitHub's macos-13 (Intel) runner pool
+    # was queuing forever, blocking releases. Intel-Mac users can
+    # `cargo install --git https://github.com/kinarix/velocity` or
+    # run the Linux musl binary under Rosetta. `Hardware::CPU.arm?`
+    # is enforced so brew fails clearly on Intel rather than 404ing
+    # on a missing tarball.
+    odie "velocity is only published for Apple Silicon Macs" unless Hardware::CPU.arm?
+    url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-aarch64-apple-darwin.tar.gz"
+    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 
   on_linux do
