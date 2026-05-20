@@ -712,10 +712,14 @@ Deferred (explicit, not silent):
 
 **velocity-cli crate** with full command set:
 - apply, get, describe, delete, diff
-- logs, history, query, export
+- logs (kube-rs pod log streamer; see crates/velocity-cli/src/logs_cmd.rs)
+- record query, record export (nested under `record` since records are
+  the queried/exported entity; functionally equivalent to top-level
+  `velocity query` / `velocity export` from the original spec)
+- history
 - restore, grant, revoke
-- create api-key, revoke api-key
-- archive, unarchive, approve
+- api-key (create, revoke, rotate)
+- archive (request, approve, status, list)
 - drift, reconcile, status
 - audit verify
 - health, metrics, slo

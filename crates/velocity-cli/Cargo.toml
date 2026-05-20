@@ -37,6 +37,14 @@ reqwest        = { workspace = true }
 dirs           = { workspace = true }
 # Pinned for kube-rs's rustls feature path (matches velocity-api's choice).
 rustls         = { version = "0.23", features = ["aws-lc-rs"] }
+# `futures` is pulled in transitively by kube-rs, but we need a direct
+# dep with the `io` feature so the AsyncBufReadExt::read_until method
+# is in scope (logs_cmd.rs streams pod logs line-by-line). The default
+# features of the umbrella `futures` crate do not enable `io` extension
+# methods on their own — feature unification through kube-rs picks the
+# kube-rs-shaped set, which is fine for the rest of the codebase but
+# leaves `read_until` missing.
+futures        = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

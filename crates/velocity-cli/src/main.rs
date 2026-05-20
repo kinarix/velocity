@@ -31,6 +31,7 @@ mod drift;
 mod history_cmd;
 mod kube_cmd;
 mod kube_helpers;
+mod logs_cmd;
 mod obs_cmd;
 mod output;
 mod reconcile;
@@ -45,6 +46,7 @@ use context_cmd::ContextCmd;
 use drift::DriftCmd;
 use history_cmd::{HistoryArgs, RestoreArgs};
 use kube_cmd::{ApplyArgs, DeleteArgs, DescribeArgs, DiffArgs, GetArgs};
+use logs_cmd::LogsArgs;
 use obs_cmd::{HealthArgs, MetricsArgs, SloArgs};
 use output::OutputFormat;
 use reconcile::ReconcileArgs;
@@ -125,6 +127,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RecordCmd,
     },
+    /// Stream pod logs for a Velocity in-cluster component
+    /// (operator, webhook, log-processor, log-collector). Talks to
+    /// the kube apiserver directly — kubectl-style; no Velocity API
+    /// server needed.
+    Logs(LogsArgs),
     /// Show event history for a record, or reconstruct state at a point in time.
     History(HistoryArgs),
     /// Restore a record to its state at a past instant (writes a new event).
@@ -186,6 +193,7 @@ async fn main() -> Result<()> {
         Cmd::Describe(args) => kube_cmd::describe(args, &cli.kubeconfig).await,
         Cmd::Delete(args) => kube_cmd::delete(args, &cli.kubeconfig).await,
         Cmd::Diff(args) => kube_cmd::diff(args, &cli.kubeconfig).await,
+        Cmd::Logs(args) => logs_cmd::run(args, cli.kubeconfig.as_deref()).await,
         Cmd::Record { cmd } => {
             record_cmd::run(cmd, cli.config.as_deref(), cli.context.as_deref()).await
         }

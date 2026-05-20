@@ -5366,6 +5366,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "futures",
  "k8s-openapi",
  "kube",
  "reqwest 0.13.3",
