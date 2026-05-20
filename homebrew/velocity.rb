@@ -22,7 +22,7 @@
 class Velocity < Formula
   desc "Operator CLI for Velocity — schema-driven Kubernetes backend platform"
   homepage "https://velocity.kinarix.com"
-  version "0.0.0"
+  version "0.1.5"
   license "Apache-2.0"
 
   # Pre-built tarballs from the GitHub Release. The `formula` job will
@@ -39,16 +39,16 @@ class Velocity < Formula
     # on a missing tarball.
     odie "velocity is only published for Apple Silicon Macs" unless Hardware::CPU.arm?
     url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-aarch64-apple-darwin.tar.gz"
-    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    sha256 "c73633cf9c86727aa852b1c291c98c4fc84c34d97a773efd01b7b096b286eb41"
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "6e1fd4a28dd4c366bd31f1ae34dfd007f5267215b042160593d7965e3e166e95"
     else
       url "https://github.com/kinarix/velocity/releases/download/v#{version}/velocity-v#{version}-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "d5ba37ded16a26148cdc8cac4ec0636178f76d8c9f581fd12f090ed6009fbd64"
     end
   end
 
