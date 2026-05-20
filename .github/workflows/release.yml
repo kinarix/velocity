@@ -1,22 +1,23 @@
 name: release
 
 # Triggers:
-#   - push to main           → run the four-target CLI build matrix +
-#                              the test job. Publish/formula skip. This
-#                              catches cross-compile regressions (musl,
-#                              macOS link, lld override, 20 MB size
-#                              guard) at merge-time instead of at the
-#                              next release.
-#   - tag v<semver>          → same matrix runs, but publish + formula
-#                              now also fire (gated on tests passing
-#                              AND build succeeding).
-#   - workflow_dispatch      → dry run from the Actions tab. Matrix +
-#                              test run, publish/formula skip — same
-#                              shape as a main push.
+#   - tag v<semver>          → run test, build matrix, publish, formula.
+#                              This is the only path that produces a
+#                              GitHub Release + Homebrew formula bump.
+#   - workflow_dispatch      → dry run from the Actions tab. test +
+#                              build run; publish/formula skip because
+#                              their `if:` clauses require the tag.
+#
+# Push-to-main does NOT trigger this workflow — ci.yml is the on-main
+# regression gate. Trade-off: cross-compile regressions (musl link,
+# lld availability, 20 MB size guard) won't surface until the next
+# release is cut, but the Actions minutes savings vs. running the
+# macOS + musl matrix on every merge are substantial. Reversal of an
+# earlier "build on every main push" experiment that turned out to
+# cost more than it caught.
 on:
   push:
-    branches: [main]
-    tags:     ['v*']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:

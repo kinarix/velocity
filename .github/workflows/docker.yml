@@ -11,23 +11,26 @@ name: docker
 #     manifests live untagged on ghcr.io and get GC'd eventually.
 #   - The `merge` job per bin downloads all that bin's per-arch digests
 #     and uses `docker buildx imagetools create` to stitch them into a
-#     single multi-arch manifest with the final tags (:v1.2.3, :latest,
-#     :main, :sha-xxx, …). Pulling that tag from an Apple Silicon or
+#     single multi-arch manifest with the final tags (:v1.2.3,
+#     :<major>.<minor>, :latest). Pulling from an Apple Silicon or
 #     Graviton host returns the arm64 manifest; from amd64 returns the
 #     amd64 manifest — same UX as before, only the back-end changed.
 #
 # Trigger model:
 #   - tag v<semver>          → publish :<semver>, :<major>.<minor>, :latest
-#   - push to main           → publish :main + :sha-<short>
-#   - workflow_dispatch      → manual rebuild against current main
+#   - workflow_dispatch      → manual rebuild against the dispatch ref
+#                              (typically main); same set of tags lands
+#                              if the ref is a v* tag, otherwise the
+#                              run is a build-only smoke test.
 #
-# Pull requests do not run this workflow; PR builds from forks can't
-# push to ghcr.io anyway, and multi-arch builds are not cheap.
+# Push-to-main does NOT trigger this workflow — ci.yml is the on-main
+# regression gate. Building the 14 per-arch images on every merge cost
+# more Actions minutes than the value of having :main + :sha-xxx tags
+# floating on ghcr.io. Reversal of an earlier experiment.
 
 on:
   push:
-    branches: [main]
-    tags:     ['v*']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -35,11 +38,12 @@ permissions:
   packages: write   # required to push to ghcr.io
 
 concurrency:
-  # Serialise per-ref so a quick succession of pushes doesn't double-push
-  # the same tags. cancel-in-progress is OFF for tag pushes (we don't
-  # want to lose a release mid-build); ON for branch pushes.
+  # Serialise per-tag in case someone re-pushes the same tag mid-build
+  # (`git push --force` over a v* tag during a release). cancel-in-
+  # progress is OFF because tag builds are release events — we don't
+  # want a re-push or workflow_dispatch to abandon a half-built release.
   group: docker-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: false
 
 # sccache override (the ubuntu-latest runner preset breaks cargo
 # invocations otherwise) — only meaningful for the `test` job, where
@@ -268,15 +272,17 @@ jobs:
         # All the final tags live on the manifest list, not the per-arch
         # images. metadata-action emits them as a JSON document on
         # DOCKER_METADATA_OUTPUT_JSON which the next step parses.
+        #
+        # Workflow only fires on v* tags now, so the tag patterns we
+        # produce are :<X.Y.Z>, :<X.Y>, and :latest. The previous
+        # branch/pr/sha patterns are dropped — they were reachable
+        # only under the older "build on every main push" model.
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create multi-arch manifest
