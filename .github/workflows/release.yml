@@ -39,16 +39,15 @@ env:
   # there and necessary on the macOS jobs.)
   RUSTC_WRAPPER: ""
   SCCACHE_GHA_ENABLED: "false"
-  # Override .cargo/config.toml's lld linker for the two macOS targets.
-  # The config points at Homebrew's ld64.lld (/opt/homebrew/... on
-  # Apple Silicon, /usr/local/... on Intel) so local devs get a faster
-  # link; GitHub's macos-latest runner doesn't install lld, and clang
-  # rejects the argument with "invalid linker name". Empty value here
-  # wins over the config table per cargo's env-overrides-config rule.
-  # (cargo's env knob is the documented escape hatch — see comments
-  # at the top of .cargo/config.toml.)
-  CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ""
-  CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS: ""
+  # No CARGO_TARGET_*_APPLE_DARWIN_RUSTFLAGS overrides here. We tried
+  # setting them to empty to defeat .cargo/config.toml's lld override
+  # on CI macOS; in practice empty-string env values don't override
+  # an array in [target.*-apple-darwin].rustflags — the config-file
+  # rustflags still won, and the macOS build kept failing with
+  # "invalid linker name". The current fix is the brew-install-lld
+  # step on each macOS build job plus a native runner per target arch
+  # so the absolute /opt/homebrew/bin vs /usr/local/bin path in the
+  # config file resolves correctly.
 
 jobs:
   # Tests gate publish (not build). Same pattern as docker.yml: build
@@ -115,8 +114,16 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+          # Native runner per target arch. macos-latest is Apple Silicon
+          # (arm64); for x86_64 we use macos-13 (Intel) so the compile is
+          # native instead of cross-compiling rustc/clang outputs from
+          # arm64 to x86_64. macos-13 will be deprecated eventually —
+          # when GitHub drops it, this entry becomes either macos-15 (if
+          # still Intel) or moves back to a single macos-latest with the
+          # cross-compile re-enabled. The `os` is the lever; everything
+          # else in the step list stays identical.
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -153,6 +160,20 @@ jobs:
       - name: install cross
         if: matrix.cross
         run: cargo install cross --locked
+
+      # .cargo/config.toml's [target.*-apple-darwin] rustflags point at
+      # absolute Homebrew paths to ld64.lld (/opt/homebrew/bin on Apple
+      # Silicon runners, /usr/local/bin on Intel). The path matches the
+      # native runner per matrix entry — so installing lld here makes
+      # the existing config work without any env-var trickery.
+      #
+      # Costs ~30-60 s per macOS job. We pay that to keep dev and CI
+      # using the same linker; tracked in [punch-list-item-1] as the
+      # decided fix after the empty-rustflags override approach turned
+      # out not to override an array in the config file.
+      - name: install lld (macOS only)
+        if: runner.os == 'macOS'
+        run: brew install lld
 
       - name: build (release)
         env:
