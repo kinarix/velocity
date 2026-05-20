@@ -28,6 +28,22 @@
 {{- printf "%s-log-collector" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "velocity.portal.fullname" -}}
+{{- printf "%s-portal" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.portal.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: portal
+{{- end -}}
+
+{{- define "velocity.portal.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.portal.image.name .Values.portal.image.tag -}}
+{{- end -}}
+
 {{- define "velocity.logProcessor.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "velocity.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

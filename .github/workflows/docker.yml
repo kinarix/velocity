@@ -305,3 +305,135 @@ jobs:
         run: |
           docker buildx imagetools inspect \
             ghcr.io/${{ steps.owner.outputs.lc }}/${{ matrix.bin }}:${{ steps.meta.outputs.version }}
+
+  # ─────────────────────────────────────────────────────────────────────
+  # velocity-portal (Phase 10) — React SPA served by nginx. Lives in
+  # portal/ with its own Dockerfile (node build → nginx). Kept out of the
+  # main matrix because the build args, context, and Dockerfile path all
+  # differ from the Rust binaries; the shape of the steps mirrors `build`
+  # and `merge` above so caching / digest plumbing stays familiar.
+  # ─────────────────────────────────────────────────────────────────────
+  build_portal:
+    name: velocity-portal (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Ensure tag points to main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch origin main --depth=200
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::tag ${GITHUB_REF} not reachable from main — refusing to publish"
+            exit 1
+          fi
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Owner (lowercase)
+        id: owner
+        run: echo "lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Image labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.lc }}/velocity-portal
+          labels: |
+            org.opencontainers.image.title=velocity-portal
+            org.opencontainers.image.description=Velocity admin portal (React SPA)
+            org.opencontainers.image.url=https://velocity.kinarix.com
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./portal
+          file: ./portal/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ steps.owner.outputs.lc }}/velocity-portal,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=velocity-portal-${{ matrix.arch }}
+          cache-to:   type=gha,scope=velocity-portal-${{ matrix.arch }},mode=max
+          provenance: false
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-velocity-portal-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge_portal:
+    name: manifest (velocity-portal)
+    needs: [build_portal, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download per-arch digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-velocity-portal-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Owner (lowercase)
+        id: owner
+        run: echo "lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.lc }}/velocity-portal
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ steps.owner.outputs.lc }}/velocity-portal@sha256:%s ' *)
+
+      - name: Inspect published manifest
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ steps.owner.outputs.lc }}/velocity-portal:${{ steps.meta.outputs.version }}

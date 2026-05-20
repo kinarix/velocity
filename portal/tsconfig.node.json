@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node"]
+  },
+  // vitest.config.ts is intentionally excluded — it imports
+  // `vitest/config` which pins a different vite version than the
+  // top-level one. Type-checking both in the same tsc project produces a
+  // PluginOption mismatch. The vitest runtime doesn't need a tsc pass
+  // anyway; it transpiles directly.
+  "include": ["vite.config.ts", "tailwind.config.ts", "postcss.config.js"]
+}

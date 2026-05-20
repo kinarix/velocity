@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background-color: theme("colors.ink.950");
+    color: theme("colors.ink.100");
+  }
+  ::selection {
+    background-color: theme("colors.amber.500");
+    color: theme("colors.ink.950");
+  }
+  /* Scrollbar styling — keep dense panes legible in the dark theme. */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: theme("colors.ink.600");
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: theme("colors.ink.500");
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium
+           rounded border border-ink-600 bg-ink-800 text-ink-100
+           hover:bg-ink-700 hover:border-ink-500
+           focus:outline-none focus:ring-1 focus:ring-amber-500
+           disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+  }
+  .btn-primary {
+    @apply border-amber-500 bg-amber-500 text-ink-950 hover:bg-amber-400 hover:border-amber-400;
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent hover:bg-ink-800;
+  }
+  .input {
+    @apply w-full px-2 py-1.5 text-xs rounded border border-ink-600 bg-ink-900 text-ink-100
+           placeholder-ink-400 focus:outline-none focus:ring-1 focus:ring-amber-500;
+  }
+  .label {
+    @apply block text-[11px] uppercase tracking-wide text-ink-300 mb-1;
+  }
+  .badge {
+    @apply inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium
+           border border-ink-600 bg-ink-800 text-ink-200;
+  }
+  .badge-ok {
+    @apply border-emerald-700 bg-emerald-900/40 text-emerald-300;
+  }
+  .badge-warn {
+    @apply border-amber-700 bg-amber-900/40 text-amber-300;
+  }
+  .badge-err {
+    @apply border-red-700 bg-red-900/40 text-red-300;
+  }
+  .card {
+    @apply rounded border border-ink-700 bg-ink-900;
+  }
+  .panel-title {
+    @apply text-[11px] uppercase tracking-wider text-ink-300 px-3 py-2 border-b border-ink-700;
+  }
+  .table {
+    @apply w-full text-xs;
+  }
+  .table th {
+    @apply text-left font-medium text-ink-300 px-3 py-2 border-b border-ink-700;
+  }
+  .table td {
+    @apply px-3 py-2 border-b border-ink-800;
+  }
+  .table tr:hover td {
+    background-color: theme("colors.ink.800");
+  }
+}

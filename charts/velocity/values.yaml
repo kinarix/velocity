@@ -210,6 +210,53 @@ logCollector:
       effect: "NoSchedule"
 
 ###############################################################################
+# Admin portal (Phase 10) — React SPA served by nginx; same-origin proxy to
+# velocity-api so the browser never has to deal with CORS.
+###############################################################################
+portal:
+  enabled: false
+  replicaCount: 1
+  image:
+    name: velocity-portal
+    tag: "0.1.0"
+  # In-cluster host:port the nginx layer proxies /api, /auth, /version,
+  # /healthz, /readyz to. Defaults to the API Service shipped by this chart.
+  apiHost: "velocity-api:8080"
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: portal.velocity.local
+        path: /
+        pathType: Prefix
+    tls: []
+  config:
+    # AuthStrategy the portal redirects unauthenticated users to (NS/NAME).
+    # Leave empty for dev (then the portal shows the page but won't auto-redirect).
+    defaultAuthStrategy: ""
+    # Central Grafana URL used by Metrics page link-outs. Empty hides links.
+    grafanaUrl: ""
+    # Short banner string (e.g. "PROD") for the header.
+    environment: ""
+  resources:
+    requests: { cpu: 25m,  memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101            # nginx user inside the official image
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    # nginx writes to /var/cache/nginx + /var/run; can't enable ROFS without
+    # additional emptyDir mounts. Left writable for the v1 chart.
+    readOnlyRootFilesystem: false
+    capabilities: { drop: ["ALL"] }
+
+###############################################################################
 # RBAC + ServiceAccount
 ###############################################################################
 serviceAccount:

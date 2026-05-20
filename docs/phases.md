@@ -743,41 +743,65 @@ Deferred (explicit, not silent):
 
 ---
 
-## Phase 10 — Admin Portal (2 weeks)
+## Phase 10 — Admin Portal (2 weeks) — **shipped**
 
 **Goal:** React SPA for managing Velocity objects. Visual editor with live YAML preview.
 
-### Deliverables
+### Shipped
 
-**velocity-portal (React + Vite):**
-- Dark theme, monospace, amber accent
-- Three-panel layout
+`portal/` — React 19 + Vite 6 + TypeScript + Tailwind 3 SPA, served by nginx
+with same-origin proxy to `velocity-api`.
 
-**Views:**
-- Overview (counts, health, recent events)
-- Hierarchy browser
-- Schema list + detail
-- AuthStrategy list
-- RoleBinding management + grant form
-- ApiKey management + create form
-- Central logging (stream, pipeline, stats)
-- LogFilterPolicy + rule editor
-- LogRoutingPolicy + YAML
-- Audit log with filters
-- Health per schema
-- Metrics per schema
+**Layout:** dark theme, amber accent, monospace, three-panel shell (sidebar /
+main / context).
 
-**Visual object editor:**
-- Object type picker
-- Form-based, no raw YAML
-- Live YAML preview
-- Copy YAML / Copy command / Apply
-- Pre-populate from existing objects
+**Views backed by the API:**
+- Overview — schema count, registry ready badge, recent audit, schema list
+- Hierarchy browser — org → app → domain → object/version tree
+- Schema list + detail (detail links out to records / audit / `velocity get`)
+- Records list, JSON-body create / edit / soft-delete, query / search
+- Time machine — version timeline, diff viewer, restore-to-version
+- Audit log — filters (actor / schema / entity / op / outcome) + chain verify
+- Health — readyz probe + registered-schema table
+- Metrics — link-out to per-schema Grafana dashboards via portal config
+
+**CRD editors (form + live YAML preview + Copy YAML / Copy command):**
+- `SchemaDefinition` — full visual editor: identity, policy refs, fields with
+  per-field flags + sensitivity, CEL validation rule
+- `AuthStrategy` — kind picker (oidc / jwt / api_key / composite), revocation
+  fail-open toggle per ADR-003
+- `RoleBinding` — subjects + role + optional ABAC scope
+- `ApiKey` — namespaced scopes, expires-at; documents the one-shot reveal
+- `LogFilterPolicy`, `LogRoutingPolicy` — YAML rule blocks
+- Logging — pipeline diagram + links to the policy editors
+
+The portal does NOT proxy CRD writes; it generates a manifest you apply with
+`velocity apply -f -`. Listing existing CRDs requires `velocity get` /
+`kubectl get` because the API server has no admin CRD read endpoints today.
 
 **Deployment:**
-- Single Docker image (nginx + static build)
-- Helm chart
-- OIDC login via Velocity's OIDC server
+- `portal/Dockerfile` — node 22 build → nginx 1.27-alpine serve
+- Same-origin proxy of `/api`, `/auth`, `/version`, `/healthz`, `/readyz` to
+  `velocity-api`; nginx resolver reads `/etc/resolv.conf` so the image works
+  in Docker (127.0.0.11) and Kubernetes (cluster DNS) without recompilation
+- Runtime config served at `/config.json` from a ConfigMap (default OIDC
+  AuthStrategy, Grafana URL, environment banner)
+- Helm: added to `charts/velocity/` under `portal.enabled` with Deployment,
+  Service, ConfigMap, optional Ingress
+- CI: `build_portal` + `merge_portal` jobs in `.github/workflows/docker.yml`
+  publish `ghcr.io/<owner>/velocity-portal` as a multi-arch manifest on tag
+  pushes, mirroring the Rust binary release flow
+
+**Tests:** Vitest + jsdom — API client (fetch wrapper, error mapping, 401
+event dispatch, 204 handling, path round-trip) + YAML manifest-shape pins.
+
+### Deferred (out of scope for v1 portal)
+
+- AuthStrategy / RoleBinding / ApiKey / LogPolicy **list** views (no admin
+  read API exists; would either need new endpoints or a browser-side k8s API
+  client)
+- Live central log stream (no websocket endpoint on `velocity-api`)
+- Pre-populating editors from existing CRDs (depends on list endpoints above)
 
 ---
 
