@@ -101,15 +101,13 @@ jobs:
             psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
           done
 
-      # Belt-and-braces: build with --locked first so a drifted Cargo.lock
-      # fails loudly before tests run. `make test` itself doesn't pass
-      # --locked because local devs change Cargo.toml often and the lock
-      # auto-updates on `cargo build`; CI is the one place that should
-      # refuse to update it.
-      - run: cargo build --workspace --locked
-      # Run the same target devs run locally so "works on my machine" and
-      # "works in CI" stay aligned. See `make test` in Makefile.
-      - run: make test
+      # CARGO_TEST_ARGS=--locked makes `make test` pass --locked to
+      # `cargo test`, so a drifted Cargo.lock fails the test compile
+      # loudly. Replaces the separate `cargo build --workspace --locked`
+      # gate that used to live here — that step compiled ~10 binaries
+      # in dev profile that nothing else consumed, ~1-2 min of wasted
+      # work per run. The lock check is now implicit in the test compile.
+      - run: make test CARGO_TEST_ARGS=--locked
 
   audit:
     name: audit

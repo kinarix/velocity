@@ -96,8 +96,11 @@ jobs:
             psql -v ON_ERROR_STOP=1 -h localhost -p 5434 -U postgres -d velocity -f "$f"
           done
 
-      - run: cargo build --workspace --locked
-      - run: make test
+      # CARGO_TEST_ARGS=--locked makes `make test` pass --locked to
+      # `cargo test`, replacing the separate `cargo build --workspace
+      # --locked` gate. See the same step in ci.yml for the full
+      # rationale.
+      - run: make test CARGO_TEST_ARGS=--locked
 
   build:
     name: ${{ matrix.bin }} (${{ matrix.arch }})

@@ -155,9 +155,15 @@ build: ## cargo build --workspace
 	cargo build --workspace
 
 .PHONY: test
-test: ## cargo test --workspace
+test: ## cargo test --workspace (pass extra flags via CARGO_TEST_ARGS)
 	@$(MAKE) --no-print-directory clean-target-if-bloated
-	cargo test --workspace
+	cargo test --workspace $(CARGO_TEST_ARGS)
+
+# CARGO_TEST_ARGS lets CI tighten the test invocation without forcing
+# the same constraints on local dev. CI passes `CARGO_TEST_ARGS=--locked`
+# so a drifted Cargo.lock fails the test compile loudly; locally we
+# leave it empty so editing Cargo.toml auto-updates the lock on next
+# build instead of erroring out.
 
 # Threshold (KB) above which `make test` wipes target/ entirely.
 # 20 GiB = 20 * 1024 * 1024 KiB = 20971520.
