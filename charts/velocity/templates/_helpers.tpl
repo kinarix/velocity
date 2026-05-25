@@ -28,20 +28,76 @@
 {{- printf "%s-log-collector" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "velocity.portal.fullname" -}}
-{{- printf "%s-portal" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- define "velocity.api.fullname" -}}
+{{- printf "%s-api" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "velocity.portal.selectorLabels" -}}
+{{- define "velocity.api.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "velocity.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: portal
+app.kubernetes.io/component: api
 {{- end -}}
 
-{{- define "velocity.portal.image" -}}
+{{- define "velocity.api.image" -}}
 {{- $r := .Values.image.registry | trimSuffix "/" -}}
 {{- $repo := .Values.image.repository | trimSuffix "/" -}}
-{{- printf "%s/%s/%s:%s" $r $repo .Values.portal.image.name .Values.portal.image.tag -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.api.image.name .Values.api.image.tag -}}
+{{- end -}}
+
+{{/* ADR-011: operator-materialised data-API image. Config lives under
+     operator.dataApi so the operator controls the image it spawns. */}}
+{{- define "velocity.dataApi.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.operator.dataApi.image.name .Values.operator.dataApi.image.tag -}}
+{{- end -}}
+
+{{- define "velocity.search.fullname" -}}
+{{- printf "%s-search" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.search.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: search
+{{- end -}}
+
+{{- define "velocity.search.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.api.search.image.name .Values.api.search.image.tag -}}
+{{- end -}}
+
+{{- define "velocity.warmReader.fullname" -}}
+{{- printf "%s-warm-reader" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.warmReader.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: warm-reader
+{{- end -}}
+
+{{- define "velocity.warmReader.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.warmReader.image.name .Values.warmReader.image.tag -}}
+{{- end -}}
+
+{{- define "velocity.archiveWorker.fullname" -}}
+{{- printf "%s-archive-worker" (include "velocity.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "velocity.archiveWorker.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "velocity.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: archive-worker
+{{- end -}}
+
+{{- define "velocity.archiveWorker.image" -}}
+{{- $r := .Values.image.registry | trimSuffix "/" -}}
+{{- $repo := .Values.image.repository | trimSuffix "/" -}}
+{{- printf "%s/%s/%s:%s" $r $repo .Values.archiveWorker.image.name .Values.archiveWorker.image.tag -}}
 {{- end -}}
 
 {{- define "velocity.logProcessor.selectorLabels" -}}

@@ -1,0 +1,28 @@
+# LogRoutingPolicy declares destinations for filtered logs.
+# Destination types: loki | s3 | kafka. Velocity's log-processor fan-out is
+# resilient — a failed destination is retried with backoff per destination.
+apiVersion: velocity.sh/v1
+kind: LogRoutingPolicy
+metadata:
+  name: procurement-log-routing
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+spec:
+  destinations:
+    - name: central-loki
+      type: loki
+      url:  "http://loki.observability.svc:3100/loki/api/v1/push"
+      tenant: acme
+    - name: long-term-s3
+      type: s3
+      bucket: acme-velocity-logs
+      region: ap-south-1
+      prefix: "procurement/"
+      format: ndjson
+    - name: realtime-kafka
+      type: kafka
+      brokers: ["kafka.platform.svc:9092"]
+      topic:   "velocity.logs.procurement"

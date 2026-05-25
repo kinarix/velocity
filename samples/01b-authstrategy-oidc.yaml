@@ -1,0 +1,122 @@
+# Alternative AuthStrategy — OIDC authorization-code flow.
+#
+# Use this INSTEAD of (or alongside) 01-authstrategy.yaml when you want
+# users to log in interactively via an external IdP. The JWT strategy in
+# 01-* expects callers to already hold a token; this strategy drives the
+# redirect dance itself.
+#
+# The IdP must be registered with:
+#   - client_id           — matches spec.config.oidc.clientId
+#   - client_secret       — stored in the Secret below (NOT in this CRD)
+#   - redirect_uri        — EXACTLY matches spec.config.oidc.redirectUri
+#   - response_type=code
+#   - grant_type=authorization_code
+#   - PKCE (S256) — Velocity always sends it; IdP must support it
+#
+# After applying this strategy, the operator picks up the SecretRef and
+# injects its value into the API server pod as:
+#     VELOCITY_API_OIDC_CLIENT_SECRET_<NAMESPACE>_<NAME>
+# uppercased, hyphens → underscores. For local dev where the API runs
+# out-of-cluster (e.g. `cargo run`), set that env var yourself.
+#
+# The URLs and claim paths below are generic placeholders — substitute
+# the values from your IdP's `.well-known/openid-configuration` and any
+# claim-mapping rules you've configured. See `docs/oidc-setup.md` for
+# worked examples (Keycloak, Auth0, Okta, Google, Azure AD).
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oidc-client-secret
+  namespace: velocity
+type: Opaque
+stringData:
+  # The OAuth2 client secret the IdP issued when you registered
+  # `velocity-api` as a client. Rotate by updating this Secret and
+  # restarting the API pods.
+  client_secret: "REPLACE_ME_WITH_THE_VALUE_FROM_THE_IDP"
+---
+apiVersion: velocity.sh/v1
+kind: AuthStrategy
+metadata:
+  name: default
+  namespace: velocity
+spec:
+  type: oidc
+  config:
+    # ─── ID-token verification ─────────────────────────────────────────
+    # The OIDC flow uses JWKS to verify the ID token signature after the
+    # token exchange. `issuer` here MUST equal `spec.config.oidc.issuer`
+    # below — the API uses that to pick which IssuerConfig's JWKS to
+    # verify with.
+    issuers:
+      - issuer:   "https://idp.example.com"
+        jwksUrl:  "https://idp.example.com/.well-known/jwks.json"
+        audience: "velocity-api"
+        claims:
+          actorId: "$.sub"
+          email:    "$.email"
+          # The claim path depends on your IdP and any custom rules.
+          # Common defaults:
+          #   Keycloak  → $.realm_access.roles
+          #   Auth0     → $.permissions  (with RBAC enabled)
+          #   Okta      → $.groups       (added in claim mapping)
+          #   Azure AD  → $.roles        (app roles)
+          # Inspect a sample token at jwt.io to confirm.
+          roles:
+            path: "$.roles"
+            transform: static_append
+            values: [authenticated]
+          attributes:
+            store_id: "$.store_id"
+            region:   "$.region"
+
+    # ─── OIDC redirect-flow endpoints ─────────────────────────────────
+    # Two modes are supported:
+    #
+    #   1. PINNED (this block as written) — every endpoint is listed
+    #      explicitly. The API server never touches the IdP's discovery
+    #      doc at runtime, so a compromised `.well-known/openid-
+    #      configuration` cannot move the redirect target.
+    #
+    #   2. DISCOVERY — set `configUrl` to the IdP's
+    #      `.well-known/openid-configuration` URL and omit any endpoint
+    #      fields you want auto-populated. The API server fetches the
+    #      doc ONCE when the AuthStrategy is loaded into its registry
+    #      (a kube event), pins the values into memory, and never
+    #      refetches until you re-apply the CRD. So the endpoints are
+    #      still effectively pinned — they just got pinned by the
+    #      operator at apply time instead of by you in this file. See
+    #      `samples/01c-authstrategy-oidc-discovery.yaml` for that shape.
+    #
+    # Explicit fields always win over discovery, so you can use `configUrl`
+    # and still override a specific endpoint (e.g. a tenant-scoped
+    # userinfo URL) by listing it here.
+    oidc:
+      configUrl: "http://velocity.local:8080/.well-known/openid-configuration"
+      #authorizationEndpoint: "https://idp.example.com/oauth2/authorize"
+      ##tokenEndpoint:         "https://idp.example.com/oauth2/token"
+      #userinfoEndpoint:      "https://idp.example.com/oauth2/userinfo"
+      #clientId:              "velocity-api"
+      #clientSecretRef:
+      #  name: oidc-client-secret
+      #  key:  client_secret
+      ## MUST exactly match the redirect URI registered at the IdP.
+      ## The path is fixed: /auth/callback/<namespace>/<strategy-name>
+      #redirectUri:           "https://velocity.example.com/auth/callback/platform/oidc-default"
+      #scopes:
+      #  - openid              # always required
+      #  - profile
+      #  - email
+      #issuer:                "https://idp.example.com"
+      #sessionTtl:            28800   # 8h browser session
+
+    revocation:
+      backend:  redis
+      key:      "revoked_actors"
+      failOpen: false
+      ttl:      86400
+    cel:
+      maxExecutionMs: 10
+    ttlMax:    3600
+    clockSkew: 30

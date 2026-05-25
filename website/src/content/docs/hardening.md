@@ -584,7 +584,7 @@ Do not store secrets in ConfigMaps or hardcoded in manifests. Use:
 
 - Kubernetes Secrets (base64 encoded; at-rest encryption via KMS)
 - External Secrets Operator (fetch from AWS Secrets Manager, HashiCorp Vault, etc.)
-- Sealed Secrets (bitnami/sealed-secrets)
+- Sealed Secrets
 
 Example with External Secrets:
 

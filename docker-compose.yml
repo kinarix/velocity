@@ -48,25 +48,60 @@ services:
       retries: 10
 
   kafka:
-    image: bitnami/kafka:3.7
+    # Official Apache image. Differs from the (retired) bitnami image:
+    # env vars drop the `_CFG_` infix, CLUSTER_ID is required for KRaft,
+    # log dir is /var/lib/kafka/data, and INTER_BROKER_LISTENER_NAME must
+    # be explicit when multiple listeners are declared.
+    image: apache/kafka:3.7.0
     container_name: velocity-kafka
     restart: unless-stopped
     environment:
-      KAFKA_CFG_NODE_ID: "1"
-      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
-      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9094"
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9094"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      # Fixed cluster ID so volume restarts don't trigger a re-format.
+      # Base64 of a random UUID — opaque to Kafka, just must be stable.
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
     ports:
       - "9094:9092"
     volumes:
-      - ./data/kafka:/bitnami/kafka
+      - ./data/kafka:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-08-17T01-24-54Z
+    container_name: velocity-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER:     velocity
+      MINIO_ROOT_PASSWORD: velocity_dev
+    ports:
+      - "9000:9000"    # S3 API
+      - "9001:9001"    # console UI
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      # The minio image ships neither curl nor wget — only bash + mc. Use
+      # bash's /dev/tcp builtin to do a real HTTP GET against
+      # /minio/health/live and assert a 200 status line. `read` + `[[ ]]`
+      # are bash builtins, so we don't need head/grep (also absent).
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /minio/health/live HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -r line <&3 && [[ $$line == *'200 OK'* ]]"
       interval: 10s
       timeout: 5s
       retries: 10
@@ -84,7 +119,15 @@ services:
     volumes:
       - ./data/typesense:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8108/health | grep -q ok"]
+      # The typesense:0.25.2 image ships no wget/curl/nc — only bash. Use
+      # bash's /dev/tcp builtin to do a real HTTP GET against /health and
+      # grep the body for `ok`. Keeps the probe behavioural (not just
+      # "port is open") without adding tools to the image.
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/127.0.0.1/8108 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3"
       interval: 10s
       timeout: 5s
       retries: 10

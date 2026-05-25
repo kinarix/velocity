@@ -25,7 +25,7 @@ PSQL_SUPER_I   := $(COMPOSE) exec    -e PGPASSWORD=$(PG_SUPERPASS) postgres psql
 PSQL_API_I     := $(COMPOSE) exec    -e PGPASSWORD=$(PG_API_PASS)  postgres psql -U $(PG_API_USER)  -d $(PG_DB)
 PSQL_API       := $(COMPOSE) exec -T -e PGPASSWORD=$(PG_API_PASS)  postgres psql -U $(PG_API_USER)  -d $(PG_DB) -v ON_ERROR_STOP=1
 
-DATA_DIRS      := data/postgres data/redis data/kafka data/typesense
+DATA_DIRS      := data/postgres data/redis data/kafka data/typesense data/minio
 
 # --- Help ---
 .PHONY: help
@@ -122,7 +122,8 @@ migrate: wait-pg ## Apply platform.* migrations (numeric order)
 .PHONY: db-reset
 db-reset: ## Drop + recreate the velocity database
 	@$(COMPOSE) exec -T -e PGPASSWORD=$(PG_SUPERPASS) postgres psql -U $(PG_SUPERUSER) -d postgres -v ON_ERROR_STOP=1 \
-	  -c "DROP DATABASE IF EXISTS $(PG_DB) WITH (FORCE); CREATE DATABASE $(PG_DB);"
+	  -c "DROP DATABASE IF EXISTS $(PG_DB) WITH (FORCE)" \
+	  -c "CREATE DATABASE $(PG_DB)"
 	@$(MAKE) --no-print-directory db-bootstrap migrate
 
 .PHONY: db-url
@@ -222,17 +223,131 @@ operator-test: ## Run velocity-operator tests (incl. integration vs docker-compo
 	cargo test -p velocity-operator
 
 # --- End-to-end ---
+.PHONY: minio-bucket
+minio-bucket: ## Create the velocity-warm bucket on the local Minio (idempotent)
+	@docker run --rm --network host \
+	  -e MC_HOST_local=http://velocity:velocity_dev@localhost:9000 \
+	  minio/mc:latest \
+	  sh -c 'mc mb -p local/velocity-warm || true; mc ls local/velocity-warm >/dev/null && echo "→ bucket velocity-warm ready"'
+
 .PHONY: e2e
-e2e: ## Run Phase 0 end-to-end test against minikube (see tests/e2e/run.sh)
+e2e: ## Run Phase 0 acceptance suite against an up cluster (run `make k3d-up` first)
 	@bash tests/e2e/run.sh
 
 .PHONY: e2e-clean
-e2e-clean: ## Tear down everything `make e2e` created (helm release, namespaces, stray operator)
+e2e-clean: ## Tear down everything `make e2e` created in-cluster (helm release, namespaces)
 	-helm -n velocity-system uninstall velocity --ignore-not-found 2>/dev/null
 	-kubectl delete ns velocity-system --ignore-not-found --timeout=30s
 	-kubectl delete ns acme-supply-chain --ignore-not-found --timeout=30s
-	-pkill -f 'target/(debug|release)/velocity-operator' 2>/dev/null || true
 	-rm -rf data/webhook-tls
+
+# --- k3d / Helm ---
+# Orchestration lives in scripts/k3d-up.sh. These targets are thin wrappers.
+K3D_CLUSTER     ?= velocity
+HELM_RELEASE    ?= velocity
+HELM_NAMESPACE  ?= velocity-system
+IMAGE_TAG       ?= dev
+CHART_DIR       := charts/velocity
+HTTP_PORT       ?= 8080
+HTTPS_PORT      ?= 8443
+HOST            ?= velocity.local
+
+# Components that get rolled on `make k3d-redeploy`. Excludes log-collector
+# (DaemonSet) and log-processor (off by default in dev). The portal is
+# bundled into the api binary — no separate deployment.
+ROLLOUT_DEPLOYS := operator webhook api warm-reader archive-worker
+
+.PHONY: k3d-up
+k3d-up: ## Bring up everything: cluster (picker) + images + helm release (interactive)
+	@VELOCITY_RELEASE=$(HELM_RELEASE) \
+	 VELOCITY_NAMESPACE=$(HELM_NAMESPACE) \
+	 VELOCITY_IMAGE_TAG=$(IMAGE_TAG) \
+	 VELOCITY_HTTP_PORT=$(HTTP_PORT) \
+	 VELOCITY_HTTPS_PORT=$(HTTPS_PORT) \
+	 VELOCITY_HOST=$(HOST) \
+	 bash scripts/k3d-up.sh
+
+.PHONY: k3d-redeploy
+k3d-redeploy: ## Rebuild images, import into current k3d cluster, helm upgrade, restart pods
+	@ctx=$$(kubectl config current-context 2>/dev/null); \
+	 case "$$ctx" in \
+		 k3d-*) cluster=$${ctx#k3d-} ;; \
+		 *)     echo "error: current kubectl context '$$ctx' is not a k3d cluster" >&2; exit 1 ;; \
+	 esac; \
+	 echo "→ rebuilding images for cluster '$$cluster'"; \
+	 docker buildx bake --load default && \
+	 k3d image import \
+	     velocity-operator:$(IMAGE_TAG) \
+	     velocity-webhook:$(IMAGE_TAG) \
+	     velocity-platform-api:$(IMAGE_TAG) \
+	     velocity-data-api:$(IMAGE_TAG) \
+	     velocity-search:$(IMAGE_TAG) \
+	     velocity-warm-reader:$(IMAGE_TAG) \
+	     velocity-archive-worker:$(IMAGE_TAG) \
+	     -c "$$cluster" && \
+	 ca_bundle=$$(base64 < data/webhook-tls/tls.crt | tr -d '\n') && \
+	 helm upgrade --install $(HELM_RELEASE) $(CHART_DIR) \
+	     --namespace $(HELM_NAMESPACE) \
+	     --skip-crds \
+	     -f $(CHART_DIR)/values.yaml \
+	     -f $(CHART_DIR)/values-dev.yaml \
+	     --set fullnameOverride=$(HELM_RELEASE) \
+	     --set image.registry=docker.io \
+	     --set image.repository=library \
+	     --set image.pullPolicy=IfNotPresent \
+	     --set operator.image.tag=$(IMAGE_TAG) \
+	     --set webhook.image.tag=$(IMAGE_TAG) \
+	     --set webhook.tls.caBundle=$$ca_bundle \
+	     --set webhook.tls.existingSecret=$(HELM_RELEASE)-webhook-tls \
+	     --set api.image.tag=$(IMAGE_TAG) \
+	     --set api.ingress.hosts[0].host=$(HOST) \
+	     --set warmReader.image.tag=$(IMAGE_TAG) \
+	     --set archiveWorker.image.tag=$(IMAGE_TAG) \
+	     --wait --timeout 5m && \
+	 for d in $(ROLLOUT_DEPLOYS); do \
+	     kubectl -n $(HELM_NAMESPACE) rollout restart deploy/$(HELM_RELEASE)-$$d 2>/dev/null || true; \
+	 done
+
+.PHONY: k3d-clean
+k3d-clean: ## helm uninstall + delete namespace (keeps the cluster)
+	-helm -n $(HELM_NAMESPACE) uninstall $(HELM_RELEASE) --ignore-not-found 2>/dev/null
+	-kubectl delete ns $(HELM_NAMESPACE) --ignore-not-found --timeout=30s
+	@ctx=$$(kubectl config current-context 2>/dev/null); \
+	 case "$$ctx" in \
+		 k3d-*) cluster=$${ctx#k3d-}; echo "release uninstalled. cluster '$$cluster' kept — run 'k3d cluster delete $$cluster' to remove it." ;; \
+		 *)     echo "release uninstalled." ;; \
+	 esac
+
+.PHONY: k3d-logs
+k3d-logs: ## Tail aggregate velocity logs (use COMPONENT=api|portal|operator|webhook to scope)
+	@if [ -n "$(COMPONENT)" ]; then \
+	  kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/component=$(COMPONENT) -f --tail=100; \
+	else \
+	  kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/name=velocity -f --tail=100; \
+	fi
+
+.PHONY: k3d-status
+k3d-status: ## Show resources in $(HELM_NAMESPACE)
+	kubectl get all,ingress -n $(HELM_NAMESPACE)
+
+.PHONY: k3d-psql
+k3d-psql: ## Open psql against the docker-compose Postgres (in-cluster pods reach it via host.k3d.internal)
+	@$(PSQL_SUPER_I)
+
+.PHONY: k3d-shell
+k3d-shell: ## Shell into the platform-api pod
+	kubectl exec -it -n $(HELM_NAMESPACE) deploy/$(HELM_RELEASE)-api -- sh
+
+.PHONY: helm-lint
+helm-lint: ## helm lint $(CHART_DIR) with dev overlay
+	helm lint $(CHART_DIR) -f $(CHART_DIR)/values.yaml -f $(CHART_DIR)/values-dev.yaml
+
+.PHONY: helm-template
+helm-template: ## Render the chart with values-dev.yaml overlay
+	helm template $(HELM_RELEASE) $(CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		-f $(CHART_DIR)/values.yaml \
+		-f $(CHART_DIR)/values-dev.yaml
 
 # --- Release ---
 .PHONY: release

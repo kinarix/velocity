@@ -18,6 +18,7 @@ import { RoleBindingEditor } from "./pages/RoleBindingEditor";
 import { ApiKeyEditor } from "./pages/ApiKeyEditor";
 import { LogFilterEditor } from "./pages/LogFilterEditor";
 import { LogRoutingEditor } from "./pages/LogRoutingEditor";
+import { AdminTree } from "./pages/AdminTree";
 import { NotFound } from "./pages/NotFound";
 
 export const router = createBrowserRouter([
@@ -45,6 +46,8 @@ export const router = createBrowserRouter([
       { path: "api-keys/new", element: <ApiKeyEditor /> },
       { path: "log-filters/new", element: <LogFilterEditor /> },
       { path: "log-routing/new", element: <LogRoutingEditor /> },
+      { path: "admin", element: <AdminTree /> },
+      { path: "admin/:kind/:namespace/:name", element: <AdminTree /> },
       { path: "*", element: <NotFound /> },
     ],
   },

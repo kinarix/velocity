@@ -13,6 +13,14 @@ use velocity_archive_worker::worker::{run, WorkerConfig};
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().json().init();
 
+    // rustls 0.23 requires an explicit crypto provider before any TLS code
+    // runs. sqlx (via runtime-tokio-rustls) and the AWS clients used by
+    // object_store pull rustls in but don't pick a provider for us, so
+    // install aws-lc-rs here.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("rustls CryptoProvider already installed"))?;
+
     let pg_url = std::env::var("DATABASE_URL")
         .context("DATABASE_URL must be set (e.g. postgres://velocity_api@.../velocity)")?;
     let pool = PgPoolOptions::new()

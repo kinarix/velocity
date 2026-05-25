@@ -3,9 +3,27 @@
 > Each phase produces a working, testable increment.
 > v2 changes from v1: Phase 2 split into 2a/2b/2c. Phase 4 (Time Machine) moved before Phase 5 (Query). New Phase 4.5 (Operational tooling). Concrete acceptance criteria for Phase 10.
 
+## Implementation status (as of 2026-05-20)
+
+**Phases 0 through 10: shipped.** The codebase has full CRUD, all
+auth strategies (JWT/OIDC/API key/composite), advanced access control
+(7 layers including RLS + field masking + cross-schema RBAC), time
+machine with warm-tier export and query, archive lifecycle with purge,
+query DSL + 3-tier search with blue-green rebuild, audit chain with
+verifier, central log pipeline with anomaly detection, observability
+(SLO PrometheusRules + metrics), CLI with 18+ commands, and the React
+admin portal. See per-phase `— **shipped**` markers and the
+[Milestone Summary](#milestone-summary) table for evidence.
+
+**Phase 11 (hardening): planned.** Production-readiness work — HA
+failover drills, load testing, formal security audit, comprehensive
+runbooks beyond the two skeletons in `runbooks/` — has not started.
+Feature scope is complete; the gap is operational maturity, not
+functionality.
+
 ---
 
-## Pre-Phase — Architectural Decisions (1 week)
+## Pre-Phase — Architectural Decisions (1 week) — **shipped**
 
 **Goal:** Resolve the foundational decisions before code starts. Decisions are recorded as ADRs in `decisions.md`.
 
@@ -26,7 +44,7 @@ These five decisions cost hours now and save months later. Do not start Phase 0 
 
 ---
 
-## Phase 0 — Foundation (2 weeks)
+## Phase 0 — Foundation (2 weeks) — **shipped**
 
 **Goal:** Repository skeleton, CRD types, Postgres provisioning wired end-to-end. Proves operator ↔ Postgres works with non-superuser role (ADR-007).
 
@@ -38,8 +56,13 @@ These five decisions cost hours now and save months later. Do not start Phase 0 
 velocity/
 ├── crates/
 │   ├── velocity-types/
+│   ├── velocity-core/          # shared API library (auth, registry, config, …)
 │   ├── velocity-operator/
-│   ├── velocity-api/
+│   ├── velocity-data-api/      # data plane (links velocity-core)
+│   ├── velocity-platform-api/  # admin/UI + audit + SPA (links velocity-core)
+│   ├── velocity-search/        # Tier-3 search + CDC (links velocity-core)
+│   ├── velocity-warm-reader/
+│   ├── velocity-typesense/
 │   ├── velocity-log-processor/
 │   ├── velocity-log-collector/
 │   ├── velocity-cli/
@@ -93,7 +116,7 @@ velocity/
 
 ---
 
-## Phase 1 — Core CRUD (3 weeks)
+## Phase 1 — Core CRUD (3 weeks) — **shipped**
 
 **Goal:** Apply a `SchemaDefinition` → working REST API with CRUD, validation, soft delete, optimistic locking.
 
@@ -140,7 +163,7 @@ velocity/
 
 ---
 
-## Phase 2a — JWT + Basic Auth (2 weeks)
+## Phase 2a — JWT + Basic Auth (2 weeks) — **shipped**
 
 **Goal:** JWT authentication, route-level RBAC, RoleBinding (without scope filters). Unblocks Phase 3.
 
@@ -185,7 +208,7 @@ velocity/
 
 ---
 
-## Phase 2b — Advanced Access Control (2 weeks)
+## Phase 2b — Advanced Access Control (2 weeks) — **shipped**
 
 **Goal:** Field filtering, row filtering, ABAC (CEL), Postgres RLS.
 
@@ -199,7 +222,7 @@ velocity/
 **Layer 3: Cross-schema RBAC (review fix):**
 - Before adding joins/includes, verify identity has read on target schema
 - Test case: actor with `procurement-reader` cannot include `supplier` data
-- **Status: deferred to Phase 5.** The query engine does not yet parse `include[]` or build joins, so there is no code path that could leak cross-schema data. Implementing Layer 3 now would be a stub against an unused entry point. Phase 5's PR that adds include semantics MUST land the cross-schema RBAC check in the same commit (default-deny: actor without `read` on the referenced schema → 403 before SQL is built). The query module's `build_list` carries a TODO comment at the future include-parse site to ensure that PR cannot land without this gate.
+- **Status: landed with Phase 5.** Cross-schema include semantics shipped together with the RBAC gate: a query that references a target schema the actor does not hold `read` on returns `403 CROSS_SCHEMA_ACCESS_DENIED` before SQL is built. Error code is defined in `crates/velocity-core/src/error.rs`; covered by integration tests in `crates/velocity-data-api/tests/` (the data-plane query path).
 
 **Layer 4: Row filter:**
 - Inject scope from RoleBinding into every query (cannot be removed)
@@ -227,7 +250,7 @@ velocity/
 
 ---
 
-## Phase 2c — Additional Auth Strategies (1 week)
+## Phase 2c — Additional Auth Strategies (1 week) — **shipped**
 
 **Goal:** OIDC, API key, Composite strategies.
 
@@ -248,7 +271,7 @@ velocity/
 
 ---
 
-## Phase 3 — Time Machine (2 weeks)
+## Phase 3 — Time Machine (2 weeks) — **shipped**
 
 **Goal:** History tables, event log, point-in-time query, restore. (Moved before Query — review fix Ph2.)
 
@@ -288,7 +311,7 @@ velocity/
 
 ---
 
-## Phase 4 — Time Machine Tiering (1 week)
+## Phase 4 — Time Machine Tiering (1 week) — **shipped**
 
 **Goal:** Warm (S3 Parquet) tier with DuckDB queries. Cold tier interface (Glacier integration optional in this phase).
 
@@ -315,7 +338,7 @@ velocity/
 
 ---
 
-## Phase 4.5 — Operational Tooling (1 week)
+## Phase 4.5 — Operational Tooling (1 week) — **shipped**
 
 **Goal:** Operations team can manage Velocity in production. Drift detection, manual reconcile, status queries.
 
@@ -341,7 +364,7 @@ velocity/
 
 ---
 
-## Phase 5 — Query Engine & Search (2 weeks)
+## Phase 5 — Query Engine & Search (2 weeks) — **shipped**
 
 **Goal:** POST /query DSL, all three search tiers, cross-schema search.
 
@@ -392,7 +415,7 @@ provisioning, and blue-green collection swap on searchable-field change.
 
 ---
 
-## Phase 5d — Search Close-out (1 week)
+## Phase 5d — Search Close-out (1 week) — **shipped**
 
 **Goal:** Land the three Phase 5 deliverables that were intentionally
 deferred from 5a/5b/5c. After this phase, Phase 5's deliverables list
@@ -473,7 +496,7 @@ matches what's actually in the binary — no asterisks.
 
 ---
 
-## Phase 6 — Audit & Central Logging (2 weeks)
+## Phase 6 — Audit & Central Logging (2 weeks) — **shipped**
 
 **Goal:** Audit log chain working. LogFilterPolicy + LogRoutingPolicy operational. LogCollector shipping to Loki + S3.
 
@@ -521,7 +544,7 @@ matches what's actually in the binary — no asterisks.
 
 ---
 
-## Phase 7 — Observability (2 weeks)
+## Phase 7 — Observability (2 weeks) — **shipped**
 
 **Goal:** Prometheus metrics, OpenTelemetry traces, SLOs, auto-generated Grafana dashboards.
 
@@ -563,7 +586,7 @@ matches what's actually in the binary — no asterisks.
 
 ---
 
-## Phase 8 — Archive & Lifecycle (2 weeks)
+## Phase 8 — Archive & Lifecycle (2 weeks) — **shipped**
 
 **Goal:** ArchivePolicy working. Archive operator running on schedule. Purge lifecycle with approval.
 
@@ -704,7 +727,7 @@ Deferred (explicit, not silent):
 
 ---
 
-## Phase 9 — CLI (1 week)
+## Phase 9 — CLI (1 week) — **shipped**
 
 **Goal:** `velocity` binary distributed as single static binary.
 
@@ -805,7 +828,7 @@ event dispatch, 204 handling, path round-trip) + YAML manifest-shape pins.
 
 ---
 
-## Phase 11 — Hardening & Production Readiness (3 weeks)
+## Phase 11 — Hardening & Production Readiness (3 weeks) — **planned**
 
 **Goal:** Production-ready. Concrete acceptance criteria.
 
@@ -871,29 +894,312 @@ Failover under load:
 
 ---
 
+## Phase 12 — Per-Object Deployments, Anonymous Mode, UI Overhaul — **planned**
+
+> **Gated on [ADR-011](decisions.md#adr-011-dedicated-api-deployment-per-velocity-object)
+> being Accepted.** ADR-011 is currently *Proposed*; it carries five open
+> decisions (granularity, the platform/data API split, idle-pod cost,
+> connection pooling, routing). 12a does not start until those are
+> settled. 12b and 12c are independent of 12a and can proceed in
+> parallel once their own prerequisites are met.
+
+This phase is **three independent work-streams**, each with its own
+acceptance criteria so any one can be re-ordered or vetoed without
+re-cutting the others.
+
+### Phase 12a — Per-Velocity-Object API Deployments (control-plane re-architecture) — **in progress**
+
+> **Topology decision (2026-05-24, see [ADR-011](decisions.md) "Final service
+> topology"):** the data plane splits into separate binary crates over a
+> shared `velocity-api` library — `velocity-platform-api` (admin/UI/CRD-write),
+> `velocity-data-api` (per-domain CRUD/query/time-machine/archive, Postgres
+> only), and `velocity-search` (all search — per-schema/domain/cross-domain/
+> cross-org — plus the CDC outbox→Typesense workers and collection mgmt).
+> `velocity-warm-reader` already exists. `VELOCITY_API_MODE` is retired.
+> **Refactor sequence:** (1) ✅ shared server bootstrap extracted to
+> `velocity_api::server::bootstrap_common`, `main.rs` a thin consumer. (2) ✅
+> `velocity-platform-api` binary — admin/UI: `router::build_platform_api`
+> (index/version/platform-audit) + `platform_objects` admin CRD read/write/delete
+> (kube `DynamicObject` SSA, webhook in path, token-gated) + embedded UI. No
+> data CRUD. (3) ✅ `velocity-data-api` binary — `router::build_data_api`,
+> Postgres-only; shared-default (all-ns) or dedicated (scoped) by
+> `VELOCITY_API_NAMESPACE`. (4) ✅ `velocity-search` binary —
+> `router::build_search_api` (per-schema + cross-org) + CDC outbox→Typesense.
+> All four binaries compile clippy-clean; workspace green.
+>
+> **Step 5 — done.** Dockerfile builds all binaries via `BIN` (documented);
+> `velocity-api` is now **lib-only** (`[[bin]]` + `src/main.rs` removed); chart
+> repurposes the `api` Deployment to run `velocity-platform-api` and adds
+> `data-api-deployment.yaml` (shared-default, all-ns) + `search-deployment.yaml`
+> (+ services); `api-ingress.yaml` routes one host by longest-prefix
+> (`/search`→search, `/api/platform`→platform, `/api`→data, `/`→platform UI);
+> `velocity-search` mounts under `/search` natively (auth `schema_path_from_uri`
+> strips the prefix); operator dedicated orchestration (`operator.dataApi.enabled`)
+> uses the computed `velocity-data-api` image; `docker.yml` matrix builds the
+> three binaries (portal jobs gated off — SPA embedded in platform-api). Helm
+> renders clean (default + orchestration-enabled); workspace clippy clean; 358
+> lib tests pass.
+>
+> **Step 4b — done (link-level isolation via Cargo feature, not relocation).**
+> Rather than physically move 50 KB of hot-path code across crates (high
+> breakage risk), search is gated behind a `search` cargo feature on the
+> `velocity-api` lib (`default = ["search"]`, `velocity-typesense` optional).
+> Gated: `handlers::search`/`cross_search` + `SearchRequest`, `cdc`,
+> `typesense`, `AppState.typesense` + `with_typesense`, `router::build_search_api`,
+> and the search-route handlers in `build`/`build_data_api` (which resolve to
+> `platform_only` when off). `velocity-data-api` and `velocity-platform-api`
+> depend with `default-features = false`; `velocity-search` keeps it on. Since
+> the Dockerfile builds per-binary (`cargo build --bin ${BIN}`), the
+> data-API/platform-API images never compile search or the Typesense client in
+> — link-level isolation in the deployed artifact. Verified: lib compiles +
+> clippy clean both feature sets; 358 tests (search on) / 356 (off);
+> `velocity-data-api` builds with no Typesense in its graph. (`platform_objects`
+> admin code already lives in the platform-api crate.) Shared-mode domains →
+> shared default `velocity-data-api`; platform-API does no data CRUD
+> (ADR-011 "Final service topology").
+
+> **Step 6 — done (2026-05-25): physical relocation + crate rename, superseding
+> the Step-4b feature flag.** The shared library was renamed `velocity-api` →
+> **`velocity-core`**, and the tier-specific code was physically moved out of it
+> into the binary crates (each now lib+bin):
+> - `velocity-search` owns `cdc` + `typesense` + the search handlers +
+>   `build_search_api` (+ `SearchState`). The `search` Cargo feature is
+>   **deleted** — isolation is now structural (a crate boundary), not a flag.
+> - `velocity-data-api` owns the data plane: `handlers` (CRUD), `dsl`, `tiering`,
+>   `time_machine`, `archive_handlers`, `event_log`, `idempotency`, `session`,
+>   `build_tiered_reader`, the data router (+ `DataState`).
+> - `velocity-platform-api` owns `platform_handlers` + `audit_query` +
+>   `static_files` (the SPA, now embedded from `crates/velocity-platform-api/static/`)
+>   + `build_platform_api` (+ `PlatformState`).
+> - `velocity-core` is the pure shared foundation: auth (+handlers/informer),
+>   `SchemaRegistry`, config, `cursor`, audit-write, the schema/access model
+>   (validate/field_filter/masking/policy/row_filter/rbac/query), `handler_util`,
+>   health, metrics, `server` bootstrap, and `build_auth`. `CursorSigner` split
+>   into its own `cursor` module; shared handler helpers (`resolve_schema`,
+>   `audit_if_denied`, …) lifted into `handler_util` with state-free signatures.
+> `cargo tree -e normal` confirms no tier links another tier; `velocity-typesense`
+> is linked only by `velocity-search`. Integration tests moved with their code.
+> Clippy `-D warnings` clean; lib tests core 274 / data-api 65 / search 1 /
+> platform-api 22. The Postgres role `velocity_api` and `VELOCITY_API_*` env
+> prefix are unchanged (only the crate path `velocity_api::` → `velocity_core::`).
+
+> Landed (compiling, clippy-clean, unit-tested): `DomainSpec.deployment`
+> block + `DomainStatus.dataApiDeployment` (`velocity-types`, CRDs
+> regenerated); the `VELOCITY_API_MODE=platform|data` split
+> (`config.rs`, `router::build_data_api`, `main.rs`) where data mode scopes
+> the informer to one namespace and answers `PLATFORM_ONLY` on
+> cross-schema/platform routes; the operator **workload orchestrator**
+> (`workload.rs`) that server-side-applies a Deployment + Service + HPA
+> (`minReplicas≥1`) + per-domain Ingress path, owner-ref'd to the Domain for
+> GC, wired into the `Domain` reconciler; operator config
+> (`VELOCITY_OPERATOR_DATA_API_*`) + RBAC (deployments/services/HPA/ingresses)
+> + chart wiring (`operator.dataApi.*`).
+>
+> **Env-secret projection + per-domain DB credentials — landed.** The
+> operator mints a per-domain LOGIN role `{schema}_api` (NOSUPERUSER,
+> NOBYPASSRLS, member of reader/writer/admin) via
+> `provisioner::ensure_data_api_login_role`, and projects the data-API env
+> Secret into each domain namespace (`workload::project_env_secret`): it reads
+> the chart's source Secret (`data-api-env-secret.yaml`), reuses-or-mints the
+> password (never rotates under a running pod), and writes an owner-ref'd
+> Secret the Deployment consumes via `envFrom`. Unit-tested (SQL builder +
+> hex-password validator); chart renders verified.
+>
+> **Deferred within 12a (not yet built):**
+>
+> **(1) PgBouncer — PARKED (2026-05-24).** Connection pooling in front of CNPG
+> is deliberately deferred, not in progress. Rationale and the design to pick
+> up later: because per-domain roles (`{schema}_api`) are **minted at runtime**
+> by the operator, a static `userlist.txt` won't work — PgBouncer must use
+> `auth_type = scram-sha-256` + `auth_query` against a `SECURITY DEFINER`
+> lookup function over `pg_shadow`. That function (and the `pgbouncer_auth`
+> role) must be created by a **superuser at CNPG bootstrap**
+> (`initdb.postInitApplicationSQL`), since the operator connects as a
+> non-superuser (ADR-007) and cannot grant itself `pg_shadow` access. Plan
+> when resumed: chart pieces (Deployment + Service + ConfigMap, disabled by
+> default) + a bootstrap-SQL artifact for ops + flip the data-API source
+> secret's `VELOCITY_API_PG_HOST`/`PORT` to the PgBouncer service (`:6432`).
+> Until then, data-API pods connect directly to Postgres; this only matters
+> under real connection-fan-out load.
+>
+> **(2) KEDA traffic-scaling** — a CPU-target HPA is the always-available
+> baseline today; the KEDA `ScaledObject` (Prometheus RPS trigger) is a
+> follow-up.
+>
+> **(3)** the cluster integration test (apply dedicated Domain → Deployment
+> created → CRUD via domain path → cross-search 404 → delete Domain → GC).
+
+
+**Goal:** The operator materialises a dedicated **data-API** Deployment
+per Velocity object (a `SchemaDefinition` + its related CRDs). A shared
+**platform-API** retains the ADR-001/006 registry for cross-schema and
+platform concerns. See ADR-011 for the full analysis.
+
+**Decisions to lock first (ADR-011):** granularity (per-Domain
+recommended vs per-SchemaDefinition vs opt-in hybrid); platform/data
+split; min-replicas vs scale-to-zero; PgBouncer; routing strategy.
+
+**Deliverables:**
+
+- **`SchemaDefinition` (and/or `Domain`) gains a `deployment` block** in
+  `velocity-types`: `mode` (`shared` | `dedicated`), replica bounds,
+  resource requests/limits, scale-to-zero toggle. Regenerate CRDs.
+- **Workload-orchestrator controller** in `velocity-operator`: on
+  reconcile, owns (with owner references + GC) a Deployment + Service +
+  HPA + ConfigMap + Secret + ingress route per Velocity object. Rolling
+  update on spec change; DDL migration sequenced against rollout
+  (migrate-then-rollout for additive; breaking ops stay gated by the
+  existing annotation). Reconcile-storm damping extended from DB
+  provisioning to pod rollout (jittered cascade).
+- **`velocity-api` mode switch**: `--single-schema <path>` (data-API,
+  schema injected at boot, no registry/router dynamism) vs platform mode
+  (keeps informer + `ArcSwap`).
+- **platform-API deployment** owning cross-schema search, cross-schema
+  query `include[]` + Layer-3 RBAC gate, `/api/platform/*` audit, drift,
+  aggregate health, and the admin-read/UI backend (shared with 12c).
+- **PgBouncer** (transaction pooling) in front of CNPG; per-pod pool
+  ceilings; operator startup verifies pooled connectivity.
+- **Operator RBAC** expanded (create/patch/delete Deployments, Services,
+  Ingresses/HTTPRoutes, HPAs); generated routes collision-checked.
+
+**Acceptance criteria:**
+- Apply a `SchemaDefinition` → operator creates its data-API Deployment +
+  Service + route; CRUD works end-to-end against that route.
+- Delete the `SchemaDefinition` → its Deployment/Service/route are GC'd.
+- Crash/panic in one schema's pod → other schemas' traffic unaffected.
+- Cross-schema search and `include[]` joins still work via platform-API.
+- Connection count under load stays within CNPG `max_connections`
+  (PgBouncer verified).
+- Schema spec change → rolling update with zero dropped requests.
+
+### Phase 12b — Anonymous / Auth-Disabled Mode (test-mode) — **shipped (data-plane); integration test pending**
+
+> Landed: `VELOCITY_API_AUTH_MODE` (`config.rs`, default `enforced`), the
+> middleware bypass injecting `Identity::anonymous()` before strategy
+> resolution (`auth/middleware.rs`), loud signalling (per-process WARN,
+> startup banner, `/readyz` banner, `velocity_auth_anonymous_mode` gauge),
+> and Helm wiring (`api.auth.mode`). Unit tests cover config parsing and the
+> bypass/enforced/non-api-route behaviour. **Pending:** the DB-backed
+> integration test (anonymous request → audit row `actor=anonymous` → chain
+> verifies) and operator plumbing of the flag onto per-domain data-API pods
+> (lands with 12a).
+
+
+**Goal:** A platform-wide switch to run all services with authentication
+bypassed, so functionality can be exercised before auth is re-enabled.
+**This is a bypass, not a removal** — identity, audit chain (ADR-005),
+and RLS context (ADR-007) stay intact.
+
+**Deliverables:**
+- Operator/platform flag `auth.mode: anonymous | enforced` (default
+  `enforced`), threaded to every service via config.
+- Auth middleware in `velocity-api`: when anonymous, inject a fixed
+  `Identity { actor_id: "anonymous", roles: [], attributes: {},
+  strategy: "none", issuer: "anonymous" }` and skip verification — no
+  code path makes a local decision (ADR-003 discipline).
+- `SET LOCAL app.current_user = 'anonymous'` and
+  `platform.audit_insert(... 'anonymous' ...)` continue to fire, so the
+  chain and RLS context are never undefined.
+- Loud signalling: WARN log on every request, a banner in `/readyz`
+  output and the UI, and a metric `velocity_auth_anonymous_mode`.
+- Inter-service tokens (warm-reader, log-processor) likewise bypassable
+  under the same flag.
+
+**Acceptance criteria:**
+- With `auth.mode: anonymous`, an unauthenticated request to any data
+  endpoint succeeds and produces an audit row with `actor = anonymous`.
+- Audit chain verifies clean in anonymous mode.
+- Flipping back to `enforced` restores 401 on unauthenticated requests
+  with no other change.
+- Anonymous mode is impossible to enable silently (banner + metric +
+  WARN present whenever active).
+
+### Phase 12c — UI / Information-Architecture Overhaul
+
+**Goal:** Replace the Phase 10 portal's view-centric layout with an
+**object-centric tree UI** where every Velocity capability is
+configurable. **This supersedes the Phase 10 portal scope.** Served by
+platform-API (12a), not the standalone nginx portal, which is retired.
+
+**Prerequisite — admin-read endpoints (currently deferred):** Phase 10's
+"Deferred" list records that no admin CRD-read API exists. 12c must add,
+on platform-API: list/get for `SchemaDefinition`, `AuthStrategy`,
+`RoleBinding`, `ApiKey`, `ArchivePolicy`, `LogFilterPolicy`,
+`LogRoutingPolicy`, and the hierarchy (`Organisation`/`Application`/
+`Domain`), plus the CRD OpenAPI schema (proxied from kube-apiserver
+`/openapi/v3/apis/velocity.sh/v1`) to drive the YAML editor.
+
+**Deliverables:**
+- **Left-hand tree panel**: `Org → App → Domain → Object/Version`, plus
+  org-level objects (AuthStrategy, RoleBinding, ApiKey, ArchivePolicy,
+  Log policies) as sibling branches. Selecting a node opens that object's
+  detail UI in the main panel.
+- **Every capability configurable from the UI** — schema fields & flags,
+  auth strategy, role bindings, archive/log policies, search tier, SLOs,
+  time-machine, deployment block (12a) — each as a structured form.
+- **"Edit as YAML" action** on every object: opens a **CRD-schema-aware
+  YAML editor** (Monaco + the CRD OpenAPI schema for validation,
+  completion, and hover docs). Form ↔ YAML round-trip; "Apply" either
+  generates a manifest for `velocity apply -f -` (gitops) or POSTs to a
+  platform-API write endpoint (decision in 12a/12c).
+- Retire `portal/` standalone Dockerfile/nginx + `portal-*.yaml` Helm
+  templates (the in-flight working-tree change is folded in here).
+- **Dev live-reload mode**: the UI runs under the Vite dev server
+  (HMR/live-reload) with its API calls proxied to a running platform-API
+  at `velocity.local:8080` (Vite `server.proxy` for `/api`, `/auth`,
+  `/version`, `/healthz`, `/readyz`; `velocity.local` resolved via
+  `/etc/hosts` or the dev ingress). Same UI bundle builds for the
+  served-by-platform-API production path — the only difference is dev
+  server + proxy target, configured by env (`VITE_API_BASE` /
+  proxy target), no code fork.
+
+**Acceptance criteria:**
+- Tree renders the live hierarchy from admin-read endpoints; selecting an
+  object opens its editor.
+- Creating/editing any supported CRD through a form produces a manifest
+  identical (modulo ordering) to hand-written YAML.
+- "Edit as YAML" validates against the CRD OpenAPI schema — an invalid
+  field is flagged inline before apply.
+- All Phase 10 portal views remain reachable within the new IA.
+
+### CLI repositioning (cross-cutting)
+
+The `velocity` CLI is repositioned as the **headless / gitops** surface:
+`apply`, `get`, `diff` remain the gitops substrate (CI, `kubectl`-style
+flows); interactive configuration moves to the UI (12c). No feature is
+removed; the CLI is no longer the primary interactive path. Documented in
+`design.md`/`architecture.md` on ADR-011 acceptance.
+
+---
+
 ## Milestone Summary
 
-| Phase | Duration | Cumulative | Milestone |
-|-------|----------|------------|-----------|
-| Pre-Phase | 1 week | 1 week | ADRs decided |
-| 0 | 2 weeks | 3 weeks | CRDs + Postgres provisioning |
-| 1 | 3 weeks | 6 weeks | SchemaDefinition → working CRUD |
-| 2a | 2 weeks | 8 weeks | JWT + route RBAC |
-| 2b | 2 weeks | 10 weeks | All 7 access control layers |
-| 2c | 1 week | 11 weeks | OIDC + API key + composite |
-| 3 | 2 weeks | 13 weeks | Time machine hot tier |
-| 4 | 1 week | 14 weeks | Time machine warm tier |
-| 4.5 | 1 week | 15 weeks | Operational tooling |
-| 5 | 2 weeks | 17 weeks | Query DSL + 3 search tiers (happy path) |
-| 5d | 1 week | 18 weeks | Search close-out (weights, eager provision, blue-green) |
-| 6 | 2 weeks | 20 weeks | Audit + central logging |
-| 7 | 2 weeks | 22 weeks | Observability |
-| 8 | 2 weeks | 24 weeks | Archive + version lifecycle |
-| 9 | 1 week | 25 weeks | CLI |
-| 10 | 2 weeks | 27 weeks | Portal |
-| 11 | 3 weeks | 30 weeks | Production hardening |
+| Phase | Status | Duration | Cumulative | Milestone |
+|-------|--------|----------|------------|-----------|
+| Pre-Phase | shipped | 1 week | 1 week | ADRs decided |
+| 0 | shipped | 2 weeks | 3 weeks | CRDs + Postgres provisioning |
+| 1 | shipped | 3 weeks | 6 weeks | SchemaDefinition → working CRUD |
+| 2a | shipped | 2 weeks | 8 weeks | JWT + route RBAC |
+| 2b | shipped | 2 weeks | 10 weeks | All 7 access control layers |
+| 2c | shipped | 1 week | 11 weeks | OIDC + API key + composite |
+| 3 | shipped | 2 weeks | 13 weeks | Time machine hot tier |
+| 4 | shipped | 1 week | 14 weeks | Time machine warm tier |
+| 4.5 | shipped | 1 week | 15 weeks | Operational tooling |
+| 5 | shipped | 2 weeks | 17 weeks | Query DSL + 3 search tiers (happy path) |
+| 5d | shipped | 1 week | 18 weeks | Search close-out (weights, eager provision, blue-green) |
+| 6 | shipped | 2 weeks | 20 weeks | Audit + central logging |
+| 7 | shipped | 2 weeks | 22 weeks | Observability |
+| 8 | shipped | 2 weeks | 24 weeks | Archive + version lifecycle |
+| 9 | shipped | 1 week | 25 weeks | CLI |
+| 10 | shipped | 2 weeks | 27 weeks | Portal |
+| 11 | planned | 3 weeks | 30 weeks | Production hardening |
+| 12a | in progress | 3 weeks | 33 weeks | Per-domain data-API + platform split (core landed; PgBouncer/secret-distribution/KEDA pending) |
+| 12b | in progress | 1 week | 34 weeks | Anonymous / auth-disabled test-mode (data-plane shipped) |
+| 12c | planned | 3 weeks | 37 weeks | Tree-panel UI overhaul + admin-read endpoints + YAML editor |
 
 **Total: ~30 weeks** (~7 months) for a small team (2-3 engineers). Solo: roughly double.
+
+**Where we are:** through Phase 10 (≈27 of 30 weeks complete). Remaining work is Phase 11 only.
 
 ---
 

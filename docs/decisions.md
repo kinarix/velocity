@@ -460,3 +460,308 @@ The hierarchy implies multi-tenancy (multiple orgs in one deployment) but the mo
 - The platform must support both modes at the operator level (configurable)
 - Cross-org refs need explicit rejection in the validating webhook
 - Documentation must cover both modes
+
+---
+
+## ADR-011: Dedicated API Deployment per Velocity Object
+
+**Status:** Proposed
+**Date:** 2026-05-24
+**Supersedes (on acceptance):** revises ADR-001 and ADR-006; touches ADR-007.
+
+> This ADR is **Proposed**, not Accepted. It records the analysis of a
+> requested re-architecture and the decisions that must be made before
+> any code lands. ADR-001 (informer per replica), ADR-006 (arc_swap
+> registry), and ADR-007 (DB connection role) remain authoritative until
+> this ADR is Accepted. Phase 12 in [`phases.md`](phases.md) is the
+> delivery vehicle.
+
+### Context
+
+Today Velocity runs **one** `velocity-api` Deployment. Each replica runs
+a kube informer that builds an in-memory `ArcSwap<RegistryInner>`
+holding *every* `ResolvedSchema` in the cluster (ADR-001 + ADR-006). The
+Axum router is static; handlers extract the `org/app/domain/object/version`
+path from the URL and resolve it against the registry on every request.
+One fleet, scaled by HPA + KEDA on aggregate load, serves all schemas.
+
+The proposed change: treat a `SchemaDefinition` **plus its related CRDs**
+(the `AuthStrategy` it references, its `RoleBinding`s, `ArchivePolicy`,
+`LogFilterPolicy`, …) as a single **Velocity object**, and have the
+operator **provision a dedicated API Deployment per Velocity object on
+the fly**. One API deployment serves exactly one schema.
+
+This inverts the platform's central data-plane decision. It is a move
+from a *shared, dynamically-routed data plane* to a *control-plane that
+materialises one workload per schema* — the operator stops being only a
+Postgres/Typesense provisioner and becomes a **workload orchestrator**.
+
+### What the proposed model buys
+
+- **Blast-radius isolation.** A poison schema, a runaway CEL rule, a
+  memory leak, or a panic affects only that schema's pod — not all
+  traffic. Noisy-neighbour isolation is structural, not best-effort.
+- **Independent scaling.** A hot schema scales on its own HPA/KEDA curve;
+  today a single hot schema forces the whole fleet to scale.
+- **Independent rollout / versioning.** Different schemas can run
+  different API binary versions — canary a platform upgrade on one
+  schema before the rest.
+- **Tighter least-privilege.** A per-schema pod can be handed only its
+  own per-domain DB role credentials and its own Typesense scoped key. A
+  compromised pod sees one schema's data, not the catalogue.
+- **Simpler data-plane code.** The dynamic registry, the informer-fed
+  `ArcSwap`, and path-parameter schema resolution largely disappear from
+  the data API — routing is fixed to one schema, resolved once at boot.
+- **Natural per-schema accounting** (chargeback, quota, metrics).
+
+### What it costs — and the four things the request under-specifies
+
+**1. "One per schema" is ambiguous. This is the headline decision.**
+"Postgres schema" in this codebase already means *domain*
+(`pg_schema_name(org, app, domain)`), and the namespace is
+`{org}-{app}-{domain}`. So "one deployment per schema" has three
+readings with very different blast radius and cost:
+
+| Granularity | One deployment per… | Count (moderate deploy) | Isolation | In-process cross-schema |
+|-------------|---------------------|--------------------------|-----------|--------------------------|
+| **per-SchemaDefinition** (literal) | object × version | hundreds | finest | none |
+| **per-Domain** (recommended) | `{org}-{app}-{domain}` | tens | strong | works *within* a domain |
+| per-App / per-Org | app or org | few | coarse | works across app/org |
+
+Per-Domain aligns with **every isolation boundary that already exists**:
+the Postgres schema, the per-domain roles (ADR-007), the Kafka topic
+(ADR-008), the namespace, and the multi-tenancy model (ADR-010, which
+already forbids cross-*org* refs). A per-domain pod serves all its
+`SchemaDefinition`s in one process, so cross-schema joins *inside a
+domain* — the common case — need no RPC. The request says "schema";
+this ADR's recommendation is **per-Domain**, with per-SchemaDefinition
+available as an opt-in (`spec.deployment.scope: domain`) for domains that need
+maximal isolation. **Decision required.**
+
+**2. This does not eliminate the shared tier — it splits the data plane in two.**
+Several features cannot live in a single-schema pod, because no such pod
+sees more than one schema:
+
+- Cross-schema search — `POST /api/{org}/search` over the unified
+  per-org Typesense collection.
+- Cross-schema query `include[]` joins and the Layer-3 cross-schema RBAC
+  gate (`CROSS_SCHEMA_ACCESS_DENIED`).
+- Platform endpoints — `GET /api/platform/audit`, `/audit/verify`,
+  drift, aggregate health.
+- The admin-read endpoints the new UI needs (see §UI).
+
+The honest target architecture is therefore **two tiers**:
+
+- **platform-API** — a *shared* deployment that keeps the ADR-001
+  informer + ADR-006 `ArcSwap` registry of all schemas. Owns
+  cross-schema search, cross-schema query, platform/audit endpoints,
+  admin-read/CRD-listing endpoints, and the UI's backend.
+- **data-API** — the per-{schema|domain} deployments the operator
+  materialises. Each owns CRUD + single-schema query/search + time
+  machine + archive for its own schema(s).
+
+The request as written omits this split; naming it is part of the
+analysis. ADR-001/006 are **not retired** — they move to the
+platform-API.
+
+**3. Postgres connection fan-out is the cost ceiling.**
+Today: ~1 Deployment × N replicas × pool_size ≈ tens of connections.
+Per-SchemaDefinition with 100 schemas × min 2 replicas (HA) × pool 10 =
+**~2 000 connections** against a CNPG `max_connections` of ~100–200.
+This makes **PgBouncer (transaction pooling) a hard prerequisite, not an
+option**, and even then idle pools waste server-side memory. Per-Domain
+is roughly 50× cheaper on connection count and is the main quantitative
+argument for that granularity. Idle-pod cost compounds it: per-object,
+hundreds of pods sit at ≥1 replica even at zero traffic unless we adopt
+**scale-to-zero** (KEDA/Knative), which trades idle cost for cold-start
+latency on first request.
+
+**4. The operator becomes a workload controller.**
+It must now own — with owner references and garbage collection — a
+Deployment + Service + HPA + ConfigMap + Secret + ingress route per
+Velocity object; do rolling updates on spec change; sequence DDL
+migration against pod rollout (migrate-then-rollout for additive,
+gated for breaking); and damp reconcile storms (a parent Org/App policy
+change cascades to many simultaneous rollouts — the existing jittered
+cascade in CLAUDE.md must extend to pod rollouts). Operator RBAC expands
+from "Postgres + CRD status" to "create/patch/delete Deployments,
+Services, Ingresses, HPAs." Ingress route count grows with schema count;
+host- or path-based routing (or Gateway API `HTTPRoute` per object) must
+be generated and kept collision-free.
+
+### Decisions required before acceptance
+
+1. **Granularity** — per-Domain (recommended) vs per-SchemaDefinition
+   (literal) vs opt-in hybrid via `spec.deployment.scope`.
+2. **Cross-schema / platform tier** — confirm the platform-API +
+   data-API split; platform-API retains ADR-001/006.
+3. **Idle cost** — min-replicas (always-on, simpler) vs scale-to-zero
+   (KEDA/Knative, cold starts).
+4. **Connection pooling** — adopt PgBouncer transaction pooling as a
+   platform prerequisite; set per-pod pool ceilings.
+5. **Routing** — Ingress-per-object vs shared Ingress with generated
+   paths vs Gateway API `HTTPRoute`.
+
+### Interaction with the other requested changes
+
+- **Anonymous auth mode** (Phase 12b) is *not* "remove auth." ADR-005's
+  `platform.audit_insert(p_actor TEXT, …)` and ADR-007's
+  `SET LOCAL app.current_user` both require an identity. Anonymous mode
+  must inject a fixed `Identity { actor_id: "anonymous", roles: [],
+  strategy: "none" }` and skip verification — a *bypass*, not a
+  *removal*. Audit chain and RLS context stay intact. Gated by an
+  operator/platform flag, off by default, loud in logs and `/readyz`.
+- **UI** (Phase 12c) needs admin-read endpoints to list CRDs — the
+  Phase 10 "Deferred" list already records that *no admin read API
+  exists*. The tree panel (Org → App → Objects + org-level objects) and
+  the CRD-schema-aware "Edit as YAML" editor depend on (a) new
+  admin-read endpoints on platform-API, and (b) the CRD OpenAPI schema
+  from kube-apiserver (`/openapi/v3/apis/velocity.sh/v1`). Both are real
+  work, not free.
+- **Portal in flight.** The portal→API static-serving change currently
+  in the working tree predates this UI vision. The new requirements
+  **supersede** the Phase 10 portal scope; the new UI is served by
+  platform-API and the standalone nginx portal is retired.
+- **CLI** is demoted to headless/gitops use — feature parity is no
+  longer required for interactive flows, but `apply`/`get`/`diff` remain
+  the gitops substrate.
+
+### Recommendation
+
+Accept the **two-tier split** (platform-API shared + data-API
+materialised) at **per-Domain** granularity, with per-SchemaDefinition
+as opt-in, **PgBouncer mandatory**, **min-replicas** first (defer
+scale-to-zero), and **shared Ingress with operator-generated paths**.
+This delivers the isolation the request wants while keeping connection
+fan-out and operator complexity bounded, and it preserves ADR-001/006 in
+the one place they still make sense.
+
+### Consequences (if accepted)
+
+- ADR-001 and ADR-006 are revised to scope to platform-API; the data-API
+  gets its single schema injected at boot (no per-pod informer needed
+  for per-SchemaDefinition mode; a narrow per-domain informer for
+  per-Domain mode).
+- ADR-007 is unchanged in substance (roles, `SET LOCAL ROLE`,
+  `NOBYPASSRLS`) but pool sizing moves behind PgBouncer.
+- `velocity-types` gains a `deployment` block on `SchemaDefinition`
+  (and/or `Domain`); the operator gains a workload-orchestration
+  controller; `velocity-api` gains a `--single-schema`/platform mode
+  switch.
+- `design.md` and `architecture.md` are rewritten only **after** this
+  ADR is Accepted and the five decisions are settled.
+
+### Decisions settled during implementation (2026-05-24)
+
+The five open decisions were resolved as: **per-Domain** granularity
+(per-SchemaDefinition deferred as opt-in); **PgBouncer** adopted; **min
+replicas** via `minReplicaCount ≥ 1` (no scale-to-zero); **shared host with
+operator-generated per-domain Ingress paths**; platform/data split confirmed.
+Three further decisions surfaced while building Phase 12a:
+
+- **UI writes through the platform-API** (not gitops-only): platform-API
+  gains authenticated CRD create/update/delete endpoints that apply to kube
+  with the validating webhook still in the path.
+- **Separate binary crates for the two tiers** (revises the original
+  "same binary, mode switch" note). The shared data-plane code stays in the
+  `velocity-api` **library** crate; two thin binary crates depend on it:
+  `velocity-data-api` (per-domain data plane) and `velocity-platform-api`
+  (the library + admin/UI/cross-domain/CRD-write surface). The admin write
+  handlers (`platform_objects`, CRD-write, OpenAPI proxy) live in the
+  platform-api crate, so the **data-API binary never contains admin-write
+  code** — making the least-privilege claim structural, not just a router
+  that declines to mount routes. `VELOCITY_API_MODE` is retired in favour of
+  the binary you run.
+
+  **Responsibility boundary (cross-domain, not cross-schema):** a data-API
+  serves everything scoped to its single domain — CRUD, query *including
+  joins between schemas in the same domain*, time machine, archive — because
+  its namespaced informer holds all the domain's SchemaDefinitions in-process.
+  The platform-API owns only what spans domains/orgs: cross-domain
+  `include[]`, platform audit, admin reads/writes, and the UI.
+
+### Final service topology (2026-05-24)
+
+The data/control plane decomposes into these crates/services (the operator
+and validating webhook are the control plane; everything below is built on
+the shared `velocity-api` **library** crate of common handlers/registry/auth):
+
+| Service (binary crate) | Owns | Scope |
+|---|---|---|
+| `velocity-platform-api` | admin/UI backend: CRD read **and write** (webhook in path), OpenAPI proxy, hierarchy reads | shared, always-on |
+| `velocity-data-api` | data plane only: CRUD, query DSL (Tier-1 filters + Tier-2 Postgres FTS), time machine, archive — **no Typesense, no admin** | per-domain, on-demand (operator-materialised) |
+| `velocity-search` | **all** search: per-schema, per-domain, cross-domain, cross-org; owns the `/search` + `/api/{org}/search` endpoints, the CDC outbox→Typesense workers, and Typesense collection/alias management | shared, always-on |
+| `velocity-warm-reader` (exists) | warm-tier time-machine reads (DataFusion over S3 Parquet) | shared |
+
+Consequences of pulling search out:
+- `velocity-search` runs a full informer-fed registry (it must resolve any
+  schema the caller may search) + the auth middleware (to identify the caller
+  and apply per-schema read RBAC before searching) + the Typesense client.
+- The CDC outbox→Typesense workers move out of `velocity-api` into
+  `velocity-search`; the data-API write path still inserts the outbox row in
+  the same transaction (ADR-002 unchanged) — `velocity-search` drains it.
+- The data-API binary contains no Typesense client and no admin code: its
+  attack surface and dependency footprint shrink to Postgres + kube informer.
+- Tier-3→Tier-2 search fallback (ADR-003) lives in `velocity-search`, which
+  therefore also holds a Postgres connection for the FTS fallback path.
+- `VELOCITY_API_MODE` is retired; the running binary determines the role.
+
+**Data-API scope is operator-managed, never global.**
+The platform-API does **no** data CRUD. By default (`spec.deployment.scope:
+app`, the effective default when unset on both Application and Domain), the
+operator materialises one **app-scoped `velocity-data-api`** pod per
+`{org}/{app}` in a new `{org}-{app}-shared` namespace, watching all of that
+app's domain namespaces via a label selector. A domain with `deployment.scope:
+domain` additionally gets its own namespace-scoped `velocity-data-api` in
+`{org}-{app}-{domain}` whose operator-generated Ingress path
+(`/api/{org}/{app}/{domain}`) overrides the app pod for that domain. Same
+binary either way — only the `VELOCITY_API_NAMESPACE` vs
+`VELOCITY_API_LABEL_SELECTOR` scope differs. No global shared pod; all data-API
+pods are operator-materialised on demand.
+- **The operator projects the data-API env Secret** into each dedicated
+  domain's (dynamically-created) namespace. It reads a source Secret in its
+  own/system namespace (`VELOCITY_OPERATOR_DATA_API_ENV_SOURCE_SECRET`) and
+  applies an owner-ref'd copy named `VELOCITY_OPERATOR_DATA_API_ENV_SECRET`
+  into the domain namespace, because Helm secrets land in the release
+  namespace but domain namespaces are created on demand.
+- **The operator mints per-domain Postgres credentials.** Rather than every
+  data-API sharing one `velocity_api` password, the operator provisions a
+  per-domain LOGIN role `{schema}_api` (`NOSUPERUSER`, `NOBYPASSRLS`, member
+  of the domain's reader/writer/admin roles) and carries its operator-owned
+  password in the projected env Secret. This realises the ADR's
+  least-privilege benefit at the DB layer: a compromised data-API pod can
+  authenticate only as its own domain's role. The data-API connects as
+  `{schema}_api` and `SET LOCAL ROLE`s into the domain roles per request
+  (ADR-007 unchanged). Password is owned by the operator and re-asserted
+  idempotently each reconcile (read-existing-or-generate, never rotated
+  underneath a running pod without intent).
+
+**Boot model (answering a design question raised during 12a):** at a fresh
+boot with no Domains, **zero data-API pods exist**. Always-on at boot:
+the operator, the validating webhook, and **one shared platform-API** (which
+serves the UI, admin read/write endpoints, cross-schema search, and platform
+audit — and is how the first Org/App/Domain is created). Per-domain data-API
+pods are materialised on demand when an Application is applied (app-scope) or
+when a Domain with `deployment.scope: domain` is applied, and GC'd when the
+owning resource is deleted.
+
+**Revision (2026-05-25) — crate cleanup: shared lib renamed + tier code
+physically relocated.** This ADR's "shared `velocity-api` library crate" was
+renamed **`velocity-core`**, and the tier-specific code was moved out of it
+into the binary crates (each now lib+bin), so isolation is structural rather
+than a feature flag:
+
+- `velocity-search` now physically owns `cdc` + `typesense` + the search
+  handlers; the earlier `search` Cargo feature on the shared lib is **removed**.
+- `velocity-data-api` owns the data plane (`handlers`/`dsl`/`tiering`/
+  `time_machine`/`archive_handlers`/`event_log`/`idempotency`/`session`).
+- `velocity-platform-api` owns `platform_handlers` + `audit_query` +
+  `static_files` (the embedded SPA) + the platform router.
+- `velocity-core` is the pure shared foundation (auth, `SchemaRegistry`,
+  config, audit-write, the schema/access model, `handler_util`, `cursor`,
+  `server` bootstrap, `build_auth`). Each tier defines its own state struct
+  (`DataState` / `PlatformState` / `SearchState`).
+
+`cargo tree -e normal` confirms no tier links another tier. The Postgres
+role `velocity_api` and the `VELOCITY_API_*` env prefix are intentionally
+unchanged — only the Rust crate path `velocity_api::` became `velocity_core::`.

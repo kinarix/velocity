@@ -1,0 +1,18 @@
+{{- if .Values.warmReader.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "velocity.warmReader.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: warm-reader
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "velocity.warmReader.selectorLabels" . | nindent 4 }}
+{{- end -}}

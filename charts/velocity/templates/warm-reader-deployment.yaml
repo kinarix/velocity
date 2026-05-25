@@ -1,0 +1,92 @@
+{{- if .Values.warmReader.enabled -}}
+{{- $tokenSecret := default (printf "%s-token" (include "velocity.warmReader.fullname" .)) .Values.warmReader.tokenSecret.existingSecret -}}
+{{- $osSecret := default (printf "%s-object-store" (include "velocity.fullname" .)) .Values.objectStore.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.warmReader.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: warm-reader
+spec:
+  replicas: {{ .Values.warmReader.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "velocity.warmReader.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.warmReader.selectorLabels" . | nindent 8 }}
+      {{- with .Values.warmReader.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.warmReader.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: warm-reader
+          image: {{ include "velocity.warmReader.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.warmReader.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_WARM_READER_STORAGE_URL
+              value: {{ printf "s3://%s/" .Values.objectStore.bucket | quote }}
+            - name: VELOCITY_WARM_READER_BIND_ADDR
+              value: "0.0.0.0:9090"
+            - name: VELOCITY_WARM_READER_HEALTH_ADDR
+              value: "0.0.0.0:9091"
+            - name: VELOCITY_WARM_READER_PRETTY_LOGS
+              value: {{ .Values.warmReader.logging.pretty | quote }}
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_warm_reader=%s" .Values.warmReader.logging.level .Values.warmReader.logging.level | quote }}
+            - name: VELOCITY_WARM_READER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $tokenSecret }}
+                  key: service_token
+            # object_store crate honours these AWS_* env vars for s3:// URLs.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ $osSecret }}, key: access_key_id } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $osSecret }}, key: secret_access_key } }
+            - name: AWS_ENDPOINT_URL
+              value: {{ printf "http://%s:%v" (default .Values.globalHost .Values.objectStore.host) .Values.objectStore.port | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            - name: AWS_ALLOW_HTTP
+              value: "true"
+            {{- with .Values.warmReader.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 9091
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.warmReader.resources | nindent 12 }}
+{{- end -}}

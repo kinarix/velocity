@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 export function LogFilterEditor() {
   const [name, setName] = useState("redact-pii");
@@ -40,6 +41,7 @@ export function LogFilterEditor() {
       <SplitEditor
         filename={`${name}.logfilter.yaml`}
         value={value}
+        onApply={() => applyObject("LogFilterPolicy", namespace, name, value as KubeObject)}
         form={
           <div className="space-y-3 text-xs">
             <div>

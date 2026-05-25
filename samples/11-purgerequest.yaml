@@ -1,0 +1,28 @@
+# PurgeRequest is an OPERATIONAL resource — apply on demand, NOT as part of
+# the initial provisioning flow. Use it to permanently delete a tranche of
+# rows (compliance request, GDPR erasure, accidental load cleanup, etc.).
+#
+# The operator validates the request, writes a snapshot to the archive
+# bucket, then hard-deletes the matching rows from the hot table.
+# Irreversible — read the runbook before applying.
+apiVersion: velocity.sh/v1
+kind: PurgeRequest
+metadata:
+  name: purchase-order-purge-2026q1
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+spec:
+  target:
+    schema:  purchase-order
+    version: v1
+  filter:
+    field: status
+    op:    eq
+    value: cancelled
+  reason: "Quarterly compliance purge — cancelled POs older than 1y"
+  ticketRef: "SEC-1042"
+  approvedBy: ops-lead@acme.com
+  dryRun: true            # set false to actually delete; dryRun produces a count + sample

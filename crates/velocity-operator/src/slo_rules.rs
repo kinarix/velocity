@@ -38,7 +38,6 @@ use serde::{Deserialize, Serialize};
 use velocity_types::crds::schema::SloSpec;
 use velocity_types::crds::SchemaDefinition;
 
-const CONFIGMAP_NAMESPACE: &str = "velocity-system";
 const CONFIGMAP_NAME: &str = "velocity-slo-rules";
 const CONFIGMAP_KEY: &str = "slo-rules.yaml";
 const MANAGER: &str = "velocity-operator";
@@ -49,16 +48,18 @@ const MANAGER: &str = "velocity-operator";
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Run forever. Errors are logged + skipped; the next tick re-tries.
-pub async fn run(kube: Client) {
+/// `namespace` is the operator's own namespace — that's where the
+/// rendered ConfigMap lands.
+pub async fn run(kube: Client, namespace: String) {
     tracing::info!(
         interval_secs = SWEEP_INTERVAL.as_secs(),
-        cm_namespace = CONFIGMAP_NAMESPACE,
+        cm_namespace = %namespace,
         cm_name = CONFIGMAP_NAME,
         "SLO rules sweeper started"
     );
     loop {
         tokio::time::sleep(SWEEP_INTERVAL).await;
-        match sweep_once(&kube).await {
+        match sweep_once(&kube, &namespace).await {
             Ok(n) => tracing::debug!(rules = n, "SLO rules bundle applied"),
             Err(e) => {
                 tracing::warn!(error = %e, "SLO rules sweep failed; retrying next interval");
@@ -69,7 +70,7 @@ pub async fn run(kube: Client) {
 
 /// One sweep tick. Returns the total number of rules in the bundle so
 /// a future metric or alert can fire when SLO coverage suddenly drops.
-pub async fn sweep_once(kube: &Client) -> Result<usize, kube::Error> {
+pub async fn sweep_once(kube: &Client, namespace: &str) -> Result<usize, kube::Error> {
     let schemas: Api<SchemaDefinition> = Api::all(kube.clone());
     let list = schemas.list(&Default::default()).await?;
     let bundle = render_bundle(&list.items);
@@ -78,7 +79,7 @@ pub async fn sweep_once(kube: &Client) -> Result<usize, kube::Error> {
         tracing::error!(error = %e, "SLO rules YAML serialize failed; shipping empty");
         String::new()
     });
-    apply_configmap(kube, &yaml).await?;
+    apply_configmap(kube, namespace, &yaml).await?;
     Ok(total_rules)
 }
 
@@ -229,15 +230,15 @@ fn render_slo_rules(schema_label: &str, slo: &SloSpec, ns: &str, name: &str) -> 
     out
 }
 
-async fn apply_configmap(kube: &Client, yaml: &str) -> Result<(), kube::Error> {
-    let api: Api<ConfigMap> = Api::namespaced(kube.clone(), CONFIGMAP_NAMESPACE);
+async fn apply_configmap(kube: &Client, namespace: &str, yaml: &str) -> Result<(), kube::Error> {
+    let api: Api<ConfigMap> = Api::namespaced(kube.clone(), namespace);
     let mut data = BTreeMap::new();
     data.insert(CONFIGMAP_KEY.to_string(), yaml.to_string());
 
     let cm = ConfigMap {
         metadata: ObjectMeta {
             name: Some(CONFIGMAP_NAME.to_string()),
-            namespace: Some(CONFIGMAP_NAMESPACE.to_string()),
+            namespace: Some(namespace.to_string()),
             labels: Some(BTreeMap::from([
                 ("app.kubernetes.io/managed-by".to_string(), MANAGER.to_string()),
                 ("app.kubernetes.io/component".to_string(), "slo-rules".to_string()),

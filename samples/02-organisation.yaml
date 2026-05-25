@@ -1,0 +1,21 @@
+# Top of the hierarchy. Defines org-wide defaults (auth, retention, quotas).
+# Children (Application/Domain/SchemaDefinition) inherit these unless they
+# override explicitly.
+apiVersion: velocity.sh/v1
+kind: Organisation
+metadata:
+  name: acme
+  namespace: platform
+spec:
+  displayName: "Acme Corp"
+  tenancyMode: single        # single | multi-tenant (ADR-010)
+  defaultAuthStrategy:
+    name: jwt-internal
+    namespace: platform
+  defaultPolicies:
+    audit:       strict
+    retention:   7years
+    timeMachine: true
+  adminRoles: [platform-admin]
+  resourceQuotas:
+    maxApplications: 50

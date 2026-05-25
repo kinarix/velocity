@@ -277,11 +277,11 @@ spec:
   config:
     issuers:
       - issuer:   "https://auth.acme.com"
-        jwks_url: "https://auth.acme.com/.well-known/jwks.json"
+        jwksUrl:  "https://auth.acme.com/.well-known/jwks.json"
         audience: "velocity-api"
         claims:
-          actor_id: "$.sub"
-          email:    "$.email"
+          actorId: "$.sub"
+          email:   "$.email"
           roles:
             path: "$.roles"
             transform: static_append

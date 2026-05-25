@@ -1,0 +1,24 @@
+# ApiKey issues a long-lived credential for a service actor. The operator
+# generates a 256-bit secret on creation, writes its SHA256 to status.keyHash,
+# and stores the plaintext in a one-shot Secret referenced by status.secretRef
+# (readable ONCE). After that, only the hash remains.
+#
+# Key format: vel_{env}_{32 bytes base64}.
+# To retrieve the plaintext after apply, see samples/README.md.
+apiVersion: velocity.sh/v1
+kind: ApiKey
+metadata:
+  name: erp-sync-key
+  namespace: acme-supply-chain-procurement
+spec:
+  actor:     erp-sync-service
+  actorType: service
+  scopes:
+    - schema:     purchase-order
+      version:    v1
+      operations: [create, update]
+      fields:
+        write: [po_number, supplier_code, status, unit_price]
+  ipAllowlist:
+    - 10.0.0.0/8
+  expiry: "2027-01-01"

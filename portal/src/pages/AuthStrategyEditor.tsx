@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 type Kind = "jwt" | "oidc" | "api_key" | "composite";
 
@@ -49,6 +50,7 @@ export function AuthStrategyEditor() {
       <SplitEditor
         filename={`${name}.authstrategy.yaml`}
         value={value}
+        onApply={() => applyObject("AuthStrategy", namespace, name, value as KubeObject)}
         form={
           <div className="space-y-3 text-xs">
             <div>

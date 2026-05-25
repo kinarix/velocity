@@ -29,10 +29,6 @@ use crate::kube_helpers::build_client;
 /// here so a chart-side rename only needs one CLI patch.
 const COMPONENT_LABEL: &str = "app.kubernetes.io/component";
 
-/// Default install namespace per the Helm chart's `release.namespace`.
-/// Overridable via `--namespace`.
-const DEFAULT_NAMESPACE: &str = "velocity-system";
-
 #[derive(Debug, Args)]
 pub(crate) struct LogsArgs {
     /// Component name. Matched against the
@@ -42,10 +38,12 @@ pub(crate) struct LogsArgs {
     /// CLI rebuild.
     pub component: String,
 
-    /// Namespace to look in. Defaults to `velocity-system` — the
-    /// chart's release namespace.
-    #[arg(long, short = 'n', default_value = DEFAULT_NAMESPACE)]
-    pub namespace: String,
+    /// Namespace to look in. When unset, falls back to the namespace
+    /// from the current kubeconfig context (kubectl-style: that's
+    /// usually `default` unless you've run `kubectl config set-context
+    /// --current --namespace=…`). Pass `-n` to override per-invocation.
+    #[arg(long, short = 'n')]
+    pub namespace: Option<String>,
 
     /// Stream logs continuously, the way `kubectl logs -f` does. Ctrl-C
     /// to stop. Without --follow we emit whatever's currently buffered
@@ -84,24 +82,27 @@ pub(crate) struct LogsArgs {
 
 pub(crate) async fn run(args: LogsArgs, kubeconfig: Option<&str>) -> Result<()> {
     let client = build_client(kubeconfig).await?;
-    let pods: Api<Pod> = Api::namespaced(client, &args.namespace);
+    // kube-rs threads the kubeconfig's current-context namespace through
+    // `Client::default_namespace()`; honour that when the user didn't
+    // pass `-n`. Matches `kubectl logs` UX.
+    let namespace =
+        args.namespace.clone().unwrap_or_else(|| client.default_namespace().to_string());
+    let pods: Api<Pod> = Api::namespaced(client, &namespace);
 
     let selector = format!("{COMPONENT_LABEL}={}", args.component);
-    let pod_list =
-        pods.list(&ListParams::default().labels(&selector)).await.with_context(|| {
-            format!("listing pods in namespace {} (selector: {selector})", args.namespace)
-        })?;
+    let pod_list = pods.list(&ListParams::default().labels(&selector)).await.with_context(
+        || format!("listing pods in namespace {namespace} (selector: {selector})"),
+    )?;
 
     let matched: Vec<String> =
         pod_list.items.iter().filter_map(|p| p.metadata.name.clone()).collect();
 
     if matched.is_empty() {
         return Err(anyhow!(
-            "no pods found with {COMPONENT_LABEL}={} in namespace {} — \
+            "no pods found with {COMPONENT_LABEL}={} in namespace {namespace} — \
              check that the chart is installed and the component name \
              is one of: operator, webhook, log-processor, log-collector",
             args.component,
-            args.namespace,
         ));
     }
 
@@ -240,7 +241,7 @@ mod tests {
     fn defaults_match_doc() {
         let a = parse(&["operator"]);
         assert_eq!(a.component, "operator");
-        assert_eq!(a.namespace, DEFAULT_NAMESPACE);
+        assert!(a.namespace.is_none(), "no --namespace → resolved at runtime from kubeconfig");
         assert!(!a.follow);
         assert!(a.tail.is_none());
         assert!(!a.previous);
@@ -257,8 +258,8 @@ mod tests {
 
     #[test]
     fn namespace_short_and_long() {
-        assert_eq!(parse(&["operator", "-n", "other"]).namespace, "other");
-        assert_eq!(parse(&["operator", "--namespace", "ns2"]).namespace, "ns2");
+        assert_eq!(parse(&["operator", "-n", "other"]).namespace.as_deref(), Some("other"));
+        assert_eq!(parse(&["operator", "--namespace", "ns2"]).namespace.as_deref(), Some("ns2"));
     }
 
     #[test]

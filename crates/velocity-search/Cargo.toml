@@ -1,0 +1,47 @@
+[package]
+name        = "velocity-search"
+description = "Search tier: all Tier-3 Typesense search (per-schema/domain/cross-domain) + CDC outbox→Typesense."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+publish.workspace      = true
+
+[lib]
+name = "velocity_search"
+path = "src/lib.rs"
+
+[[bin]]
+name = "velocity-search"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+velocity-core       = { path = "../velocity-core" }
+velocity-types     = { workspace = true }
+velocity-typesense = { workspace = true }
+
+tokio      = { workspace = true }
+axum       = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+tower      = { workspace = true }
+tower-http = { workspace = true }
+sqlx       = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+# phase5c CDC e2e: provisions tables via the operator + drives the
+# data-plane insert path, then runs one CDC pass against live Typesense.
+velocity-operator = { workspace = true }
+velocity-data-api = { path = "../velocity-data-api" }
+reqwest           = { workspace = true }
+uuid              = { workspace = true }
+rustls            = { version = "0.23", features = ["aws-lc-rs"] }

@@ -74,6 +74,11 @@ pub struct AuthStrategyConfig {
 #[serde(rename_all = "camelCase")]
 pub struct IssuerConfig {
     pub issuer: String,
+    /// JWKS endpoint URL. Required for JWT strategies. For OIDC strategies
+    /// the API server fills this from the discovery document at strategy
+    /// load time when [`OidcConfig::config_url`] is set and this is empty,
+    /// so users with a discovery URL can omit it.
+    #[serde(default)]
     pub jwks_url: String,
     #[serde(default)]
     pub audience: Option<String>,
@@ -103,19 +108,50 @@ pub struct ClaimMapping {
 
 /// OIDC authorization-code flow configuration.
 ///
-/// Endpoints are explicit (rather than via OIDC discovery) so a misconfigured
-/// IdP can't change the redirect target at runtime. `client_secret_ref` names
-/// a Kubernetes Secret holding the OAuth2 client secret — never inlined.
+/// Two operating modes:
+///
+/// * **Pinned (default).** Specify `authorization_endpoint`, `token_endpoint`,
+///   `issuer`, and `issuers[].jwks_url` explicitly. The API server never
+///   contacts the IdP's discovery doc — a compromised
+///   `.well-known/openid-configuration` cannot move the redirect target.
+/// * **Discovery.** Set `config_url` to the IdP's
+///   `.well-known/openid-configuration`. The API server fetches it once
+///   when the `AuthStrategy` is loaded into the registry and uses it to
+///   fill in any endpoint fields you left unset. Discovery happens at
+///   apply time (a Kubernetes event), not on every request, so the
+///   endpoints are still effectively pinned for the lifetime of the
+///   `AuthStrategy` revision. Explicit fields always win over discovery —
+///   you can mix and match (e.g. discover everything except the userinfo
+///   endpoint, which you override to a tenant-specific URL).
+///
+/// `client_secret_ref` names a Kubernetes Secret holding the OAuth2 client
+/// secret — never inlined into the CRD.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcConfig {
+    /// OIDC discovery URL — usually `https://<idp>/.well-known/openid-configuration`.
+    /// When set, the API server fetches this document once at strategy
+    /// load time and uses it to populate any endpoint fields below (and
+    /// the matching `issuers[].jwks_url`) that you left unset. Explicit
+    /// values in the CRD always win. If discovery fails at load time and
+    /// any required endpoint is still unset, the strategy is rejected and
+    /// will not be registered — fail-closed.
+    #[serde(default)]
+    pub config_url: Option<String>,
     /// IdP authorization endpoint — the user-agent is redirected here.
+    /// Required unless [`Self::config_url`] is set and discovery returns
+    /// an `authorization_endpoint`.
+    #[serde(default)]
     pub authorization_endpoint: String,
-    /// IdP token endpoint — back-channel exchange of the authorization code.
+    /// IdP token endpoint — back-channel exchange of the authorization
+    /// code. Required unless [`Self::config_url`] is set and discovery
+    /// returns a `token_endpoint`.
+    #[serde(default)]
     pub token_endpoint: String,
     /// IdP userinfo endpoint — optional; when set, the callback fetches
     /// additional claims after token exchange. The middleware merges them
-    /// over ID-token claims (later wins) before claim mapping runs.
+    /// over ID-token claims (later wins) before claim mapping runs. May
+    /// also be populated from discovery's `userinfo_endpoint`.
     #[serde(default)]
     pub userinfo_endpoint: Option<String>,
     /// OAuth2 client id registered with the IdP.
@@ -132,10 +168,36 @@ pub struct OidcConfig {
     pub scopes: Vec<String>,
     /// Issuer string expected on the ID token — must match one of
     /// [`AuthStrategyConfig::issuers`]. Selects which JWKS to verify with.
+    /// May be populated from discovery's `issuer` claim when
+    /// [`Self::config_url`] is set.
+    #[serde(default)]
     pub issuer: String,
     /// Browser-session lifetime in seconds. Defaults to 8 hours.
     #[serde(default)]
     pub session_ttl: Option<u32>,
+}
+
+impl OidcConfig {
+    /// True when at least one endpoint field is unset AND `config_url` is
+    /// set — the API server needs to fetch discovery to make the strategy
+    /// usable. When `config_url` is unset, missing endpoint fields are a
+    /// hard config error caught at strategy load time.
+    pub fn needs_discovery(&self) -> bool {
+        self.config_url.is_some()
+            && (self.authorization_endpoint.is_empty()
+                || self.token_endpoint.is_empty()
+                || self.issuer.is_empty()
+                || self.userinfo_endpoint.is_none())
+    }
+
+    /// True when every endpoint required by the OIDC redirect flow is
+    /// populated. Callers use this after merging discovery to decide
+    /// whether the strategy is fit to register.
+    pub fn endpoints_complete(&self) -> bool {
+        !self.authorization_endpoint.is_empty()
+            && !self.token_endpoint.is_empty()
+            && !self.issuer.is_empty()
+    }
 }
 
 /// Reference to a `kind: Secret` in the same namespace, with a specific
@@ -289,6 +351,65 @@ config:
         let rev = cfg.revocation.as_ref().unwrap();
         assert!(!rev.fail_open, "ADR-003 default must be fail-closed");
         assert_eq!(cfg.cel.as_ref().unwrap().max_execution_ms, 10);
+    }
+
+    #[test]
+    fn oidc_config_url_only_parses_with_empty_endpoints() {
+        let yaml = r#"
+type: oidc
+config:
+  issuers:
+    - issuer: "https://idp.example.com"
+      audience: "velocity-api"
+      claims:
+        actorId: "$.sub"
+  oidc:
+    configUrl: "https://idp.example.com/.well-known/openid-configuration"
+    clientId: "velocity-api"
+    clientSecretRef:
+      name: oidc-client-secret
+      key: client_secret
+    redirectUri: "https://velocity.example.com/auth/callback/platform/oidc-default"
+    scopes: [openid, profile, email]
+"#;
+        let spec: AuthStrategySpec = serde_yaml::from_str(yaml).unwrap();
+        let oidc = spec.config.oidc.as_ref().unwrap();
+        assert_eq!(
+            oidc.config_url.as_deref(),
+            Some("https://idp.example.com/.well-known/openid-configuration")
+        );
+        assert_eq!(oidc.authorization_endpoint, "");
+        assert_eq!(oidc.token_endpoint, "");
+        assert_eq!(oidc.issuer, "");
+        assert!(oidc.needs_discovery());
+        assert!(!oidc.endpoints_complete());
+        // The lone issuer also relies on discovery for jwks_url.
+        assert_eq!(spec.config.issuers[0].jwks_url, "");
+    }
+
+    #[test]
+    fn oidc_explicit_endpoints_dont_need_discovery() {
+        let yaml = r#"
+type: oidc
+config:
+  issuers:
+    - issuer: "https://idp.example.com"
+      jwksUrl: "https://idp.example.com/.well-known/jwks.json"
+      audience: "velocity-api"
+      claims: { actorId: "$.sub" }
+  oidc:
+    authorizationEndpoint: "https://idp.example.com/oauth2/authorize"
+    tokenEndpoint: "https://idp.example.com/oauth2/token"
+    userinfoEndpoint: "https://idp.example.com/oauth2/userinfo"
+    clientId: "velocity-api"
+    clientSecretRef: { name: s, key: client_secret }
+    redirectUri: "https://velocity.example.com/auth/callback/platform/oidc-default"
+    issuer: "https://idp.example.com"
+"#;
+        let spec: AuthStrategySpec = serde_yaml::from_str(yaml).unwrap();
+        let oidc = spec.config.oidc.as_ref().unwrap();
+        assert!(!oidc.needs_discovery());
+        assert!(oidc.endpoints_complete());
     }
 
     #[test]

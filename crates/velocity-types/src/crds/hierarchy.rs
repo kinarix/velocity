@@ -103,6 +103,11 @@ pub struct ApplicationSpec {
     pub resource_quotas: Option<ResourceQuotas>,
     #[serde(default)]
     pub database_quota: Option<DatabaseQuota>,
+    /// Default data-API scope for domains in this application.
+    /// Domains may override with their own `spec.deployment.scope`.
+    /// Absent → `App` scope.
+    #[serde(default)]
+    pub deployment: Option<DeploymentConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -111,6 +116,9 @@ pub struct ApplicationStatus {
     pub phase: Option<ReconcilePhase>,
     pub domains: Option<u32>,
     pub schemas: Option<u32>,
+    /// Name of the operator-managed app-scoped data-API Deployment, set when
+    /// an app-scoped data-API has been materialised.
+    pub data_api_deployment: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -145,6 +153,77 @@ pub struct DomainSpec {
     pub access: DomainAccess,
     #[serde(default)]
     pub database_quota: Option<DatabaseQuota>,
+    /// ADR-011: data-API scope override for this domain.
+    /// Absent → inherits the Application's `spec.deployment.scope`, or `app`
+    /// if the Application also omits it.
+    /// `scope: domain` → the operator materialises a per-domain data-API
+    /// Deployment in this domain's namespace.
+    #[serde(default)]
+    pub deployment: Option<DeploymentConfig>,
+}
+
+/// API deployment configuration — appears on both `ApplicationSpec` and
+/// `DomainSpec`. `scope` controls whether a shared app-scoped or a dedicated
+/// domain-scoped data-API is materialised by the operator (ADR-011).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentConfig {
+    #[serde(default)]
+    pub scope: DeploymentScope,
+    /// Minimum replicas (KEDA `minReplicaCount`). Default 1 — never
+    /// scale to zero, so a domain's first request is never cold.
+    #[serde(default)]
+    pub min_replicas: Option<u32>,
+    /// Maximum replicas (KEDA/HPA ceiling). Default 10.
+    #[serde(default)]
+    pub max_replicas: Option<u32>,
+    /// Pod resource requests/limits for the data-API container.
+    #[serde(default)]
+    pub resources: Option<DeploymentResources>,
+}
+
+/// `app` → one operator-managed data-API pod per `{org}/{app}`, serving all
+/// of that app's domains via label selector. `domain` → one pod per
+/// `{org}/{app}/{domain}`, watching only that namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentScope {
+    #[default]
+    App,
+    Domain,
+}
+
+/// Returns the effective `DeploymentScope` for a domain, applying the
+/// domain-level override when present, then the app-level default, then `App`.
+pub fn effective_scope(
+    app: Option<&DeploymentConfig>,
+    domain: Option<&DeploymentConfig>,
+) -> DeploymentScope {
+    domain
+        .map(|d| d.scope)
+        .or_else(|| app.map(|a| a.scope))
+        .unwrap_or(DeploymentScope::App)
+}
+
+/// Kubernetes resource requests/limits, mirrored as plain strings so the
+/// operator can drop them straight into the pod template (e.g. `"250m"`,
+/// `"256Mi"`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentResources {
+    #[serde(default)]
+    pub requests: Option<ResourceQuantities>,
+    #[serde(default)]
+    pub limits: Option<ResourceQuantities>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceQuantities {
+    #[serde(default)]
+    pub cpu: Option<String>,
+    #[serde(default)]
+    pub memory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -164,6 +243,9 @@ pub struct DomainStatus {
     #[serde(default)]
     pub pg_roles: Vec<String>,
     pub schemas: Option<u32>,
+    /// Name of the operator-managed data-API Deployment, set when
+    /// `spec.deployment.scope == domain`. Absent when served by an app-scoped pod.
+    pub data_api_deployment: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -217,5 +299,64 @@ databaseQuota:
             serde_yaml::to_string(&TenancyMode::MultiTenant).unwrap().trim(),
             "multi-tenant"
         );
+    }
+
+    #[test]
+    fn deployment_scope_serializes_lowercase() {
+        assert_eq!(serde_yaml::to_string(&DeploymentScope::App).unwrap().trim(), "app");
+        assert_eq!(serde_yaml::to_string(&DeploymentScope::Domain).unwrap().trim(), "domain");
+    }
+
+    #[test]
+    fn effective_scope_both_none_returns_app() {
+        assert_eq!(effective_scope(None, None), DeploymentScope::App);
+    }
+
+    #[test]
+    fn effective_scope_app_only_returns_app_scope() {
+        let app_cfg = DeploymentConfig { scope: DeploymentScope::Domain, ..Default::default() };
+        assert_eq!(effective_scope(Some(&app_cfg), None), DeploymentScope::Domain);
+    }
+
+    #[test]
+    fn effective_scope_domain_only_returns_domain_scope() {
+        let domain_cfg = DeploymentConfig { scope: DeploymentScope::Domain, ..Default::default() };
+        assert_eq!(effective_scope(None, Some(&domain_cfg)), DeploymentScope::Domain);
+    }
+
+    #[test]
+    fn effective_scope_domain_overrides_app() {
+        let app_cfg = DeploymentConfig { scope: DeploymentScope::App, ..Default::default() };
+        let domain_cfg = DeploymentConfig { scope: DeploymentScope::Domain, ..Default::default() };
+        assert_eq!(effective_scope(Some(&app_cfg), Some(&domain_cfg)), DeploymentScope::Domain);
+    }
+
+    #[test]
+    fn domain_deployment_scope_round_trip() {
+        let yaml = r#"
+app: supply-chain
+displayName: Procurement
+access:
+  defaultRole: procurement-reader
+  adminRole: procurement-admin
+deployment:
+  scope: domain
+  minReplicas: 2
+"#;
+        let spec: DomainSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.deployment.as_ref().unwrap().scope, DeploymentScope::Domain);
+        assert_eq!(spec.deployment.as_ref().unwrap().min_replicas, Some(2));
+    }
+
+    #[test]
+    fn application_deployment_scope_round_trip() {
+        let yaml = r#"
+org: acme
+displayName: Supply Chain
+deployment:
+  scope: app
+"#;
+        let spec: ApplicationSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.deployment.as_ref().unwrap().scope, DeploymentScope::App);
     }
 }

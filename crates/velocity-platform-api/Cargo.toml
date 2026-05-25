@@ -1,0 +1,51 @@
+[package]
+name        = "velocity-platform-api"
+description = "Admin/UI backend: CRD read+write (webhook in path), OpenAPI, hierarchy, platform audit, UI."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+publish.workspace      = true
+
+[lib]
+name = "velocity_platform_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "velocity-platform-api"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Phase 12a link-level isolation (ADR-011): search/CDC/Typesense physically
+# live in the `velocity-search` crate, so the admin/UI tier never links them.
+velocity-core = { path = "../velocity-core" }
+
+tokio       = { workspace = true }
+axum        = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+tower       = { workspace = true }
+tower-http  = { workspace = true }
+kube        = { workspace = true }
+sqlx        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+subtle      = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+# Portal SPA — bundled into the platform-api binary via rust-embed; mime_guess
+# maps file extensions to Content-Type headers. See `src/static_files.rs`.
+rust-embed  = { workspace = true }
+mime_guess  = { workspace = true }
+
+[dev-dependencies]
+velocity-types = { workspace = true }
+tower          = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+rustls         = { version = "0.23", features = ["aws-lc-rs"] }

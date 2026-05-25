@@ -31,7 +31,7 @@ pub enum LayoutError {
 
 /// Minimum + maximum segments accepted in a `schema_org` path. The
 /// API writes 5-segment values (`org/app/domain/object/version`) via
-/// `velocity_api::registry::registry_key`. We accept 3 too because
+/// `velocity_core::registry::registry_key`. We accept 3 too because
 /// historical fixtures + a few operator tests use the 3-segment form
 /// (`org/app/domain`) and there's no harm in allowing it — the on-disk
 /// key uses the raw path either way.
@@ -41,7 +41,7 @@ const MAX_SEGMENTS: usize = 5;
 /// Validate a `schema_org` of the form `org/app/domain[/object/version]`.
 /// Each segment must match `[a-z0-9_-]+`. This is the same surface the
 /// operator uses for k8s namespace derivation and Postgres schema
-/// sanitization, and matches what `velocity_api::registry::registry_key`
+/// sanitization, and matches what `velocity_core::registry::registry_key`
 /// emits.
 pub fn validate_path(path: &str) -> Result<(), LayoutError> {
     let parts: Vec<&str> = path.split('/').collect();

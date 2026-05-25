@@ -39,7 +39,7 @@ spec:
             {{- toYaml .Values.operator.containerSecurityContext | nindent 12 }}
           env:
             - name: VELOCITY_OPERATOR_PG_HOST
-              value: {{ .Values.operator.database.host | quote }}
+              value: {{ default .Values.globalHost .Values.operator.database.host | quote }}
             - name: VELOCITY_OPERATOR_PG_PORT
               value: {{ .Values.operator.database.port | quote }}
             - name: VELOCITY_OPERATOR_PG_USER
@@ -55,10 +55,44 @@ spec:
               value: {{ .Values.operator.leaderElection.enabled | quote }}
             - name: VELOCITY_OPERATOR_NAMESPACE
               value: {{ default .Release.Namespace .Values.operator.leaderElection.namespace }}
+            # The operator's own pod namespace — used as the target for
+            # cluster-wide ConfigMaps it writes (SLO rules, log policy
+            # bundle). Sourced from the downward API so a re-namespaced
+            # release lands its artefacts in the right place without
+            # rebuilding the binary.
+            - name: VELOCITY_OPERATOR_SYSTEM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: VELOCITY_OPERATOR_LOG_PRETTY
               value: {{ .Values.operator.logging.pretty | quote }}
             - name: RUST_LOG
               value: {{ printf "%s,velocity_operator=%s" .Values.operator.logging.level .Values.operator.logging.level | quote }}
+            {{- with .Values.operator.dataApi }}
+            {{- if .enabled }}
+            # Phase 12a (ADR-011): enable the per-domain data-API workload
+            # orchestrator. Disabled → dedicated Domains reconcile DB state but
+            # spawn no Deployment (traffic stays on the shared default data-API).
+            - name: VELOCITY_OPERATOR_DATA_API_IMAGE
+              value: {{ include "velocity.dataApi.image" $ | quote }}
+            {{- if .envSecret }}
+            - name: VELOCITY_OPERATOR_DATA_API_ENV_SECRET
+              value: {{ .envSecret | quote }}
+            {{- end }}
+            {{- if .envSourceSecret }}
+            - name: VELOCITY_OPERATOR_DATA_API_ENV_SOURCE_SECRET
+              value: {{ .envSourceSecret | quote }}
+            {{- end }}
+            {{- if .ingressHost }}
+            - name: VELOCITY_OPERATOR_DATA_API_INGRESS_HOST
+              value: {{ .ingressHost | quote }}
+            {{- end }}
+            {{- if eq (.authMode | default "enforced") "anonymous" }}
+            - name: VELOCITY_OPERATOR_DATA_API_AUTH_MODE
+              value: "anonymous"
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.operator.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -67,15 +101,19 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            - name: metrics
-              containerPort: 9000
+            # Single Axum server hosts /healthz, /readyz, and /metrics —
+            # see crates/velocity-operator/src/health.rs. Default bind is
+            # 0.0.0.0:8081 (VELOCITY_OPERATOR_HEALTH_ADDR overrides).
+            - name: health
+              containerPort: 8081
               protocol: TCP
           readinessProbe:
-            tcpSocket: { port: metrics }
+            # /readyz flips to 200 once the first informer sync completes.
+            httpGet: { path: /readyz, port: health }
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            tcpSocket: { port: metrics }
+            httpGet: { path: /healthz, port: health }
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:

@@ -42,6 +42,37 @@ pub struct Context {
     /// avoid spawning a duplicate, or cancel the running one when
     /// the user has applied a newer-yet spec.
     pub rebuilds: Arc<RebuildRegistry>,
+    /// Phase 12a (ADR-011): settings for materialising per-domain data-API
+    /// Deployments. `None` when `VELOCITY_OPERATOR_DATA_API_IMAGE` is unset —
+    /// the workload orchestrator is then disabled and a `dedicated` Domain
+    /// reconciles its Postgres state but creates no Deployment (logged).
+    pub data_api: Option<DataApiSettings>,
+}
+
+/// Inputs the workload orchestrator needs to build a data-API Deployment.
+#[derive(Clone, Debug)]
+pub struct DataApiSettings {
+    /// Container image for the data-API (the same `velocity-api` binary,
+    /// run with `VELOCITY_API_MODE=data`).
+    pub image: String,
+    /// Propagate the Phase 12b anonymous auth bypass onto the data-API pod.
+    pub anonymous_auth: bool,
+    /// Shared Ingress host under which per-domain paths are generated
+    /// (`/api/{org}/{app}/{domain}`). `None` → the operator creates the
+    /// Deployment, Service and HPA but no Ingress (e.g. routing managed
+    /// externally).
+    pub ingress_host: Option<String>,
+    /// Name of the Secret the operator *creates* in each domain namespace
+    /// (referenced by the data-API Deployment's `envFrom`). The operator
+    /// fills it with the source-secret env plus the per-domain minted DB
+    /// credential. `None` → no projection (pod runs without DB env).
+    pub env_secret: Option<String>,
+    /// Name of the source Secret (in `system_namespace`) holding the shared
+    /// `VELOCITY_API_*` env (`PG_HOST`/`PORT`/`DB`, cursor key, …) the
+    /// operator copies into each domain namespace.
+    pub env_source_secret: Option<String>,
+    /// The operator's own namespace, where the source Secret lives.
+    pub system_namespace: String,
 }
 
 impl Context {
@@ -56,7 +87,14 @@ impl Context {
             redis: None,
             typesense: None,
             rebuilds: Arc::new(RebuildRegistry::new()),
+            data_api: None,
         }
+    }
+
+    /// Builder-style: enable the Phase 12a workload orchestrator.
+    pub fn with_data_api(mut self, settings: DataApiSettings) -> Self {
+        self.data_api = Some(settings);
+        self
     }
 
     /// Builder-style: install the Redis revocation publisher.

@@ -51,6 +51,65 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              deployment:
+                description: |-
+                  ADR-011: data-API scope override for this domain.
+                  Absent → inherits the Application's `spec.deployment.scope`, or `app`
+                  if the Application also omits it.
+                  `scope: domain` → the operator materialises a per-domain data-API
+                  Deployment in this domain's namespace.
+                nullable: true
+                properties:
+                  maxReplicas:
+                    description: Maximum replicas (KEDA/HPA ceiling). Default 10.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  minReplicas:
+                    description: |-
+                      Minimum replicas (KEDA `minReplicaCount`). Default 1 — never
+                      scale to zero, so a domain's first request is never cold.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  resources:
+                    description: Pod resource requests/limits for the data-API container.
+                    nullable: true
+                    properties:
+                      limits:
+                        nullable: true
+                        properties:
+                          cpu:
+                            nullable: true
+                            type: string
+                          memory:
+                            nullable: true
+                            type: string
+                        type: object
+                      requests:
+                        nullable: true
+                        properties:
+                          cpu:
+                            nullable: true
+                            type: string
+                          memory:
+                            nullable: true
+                            type: string
+                        type: object
+                    type: object
+                  scope:
+                    default: app
+                    description: |-
+                      `app` → one operator-managed data-API pod per `{org}/{app}`, serving all
+                      of that app's domains via label selector. `domain` → one pod per
+                      `{org}/{app}/{domain}`, watching only that namespace.
+                    enum:
+                    - app
+                    - domain
+                    type: string
+                type: object
               displayName:
                 type: string
             required:
@@ -84,6 +143,12 @@ spec:
                   - type
                   type: object
                 type: array
+              dataApiDeployment:
+                description: |-
+                  Name of the operator-managed data-API Deployment, set when
+                  `spec.deployment.scope == domain`. Absent when served by an app-scoped pod.
+                nullable: true
+                type: string
               pgRoles:
                 default: []
                 description: Postgres roles created for this domain.

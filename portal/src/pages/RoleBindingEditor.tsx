@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 export function RoleBindingEditor() {
   const [name, setName] = useState("ravi-procurement-reader");
@@ -50,6 +51,7 @@ export function RoleBindingEditor() {
       <SplitEditor
         filename={`${name}.rolebinding.yaml`}
         value={value}
+        onApply={() => applyObject("RoleBinding", namespace, name, value as KubeObject)}
         form={
           <div className="space-y-3 text-xs">
             <div>

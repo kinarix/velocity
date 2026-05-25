@@ -4,7 +4,6 @@ data/
 .github/
 docs/
 runbooks/
-portal/
 charts/
 crds/
 db/
@@ -13,3 +12,13 @@ Makefile
 *.md
 NOTICE
 LICENSE
+# Portal sources are now consumed by the root Dockerfile's
+# `portal-builder` stage — keep them in the context but exclude the
+# Node + Vite outputs to keep the image small / fast.
+portal/node_modules/
+portal/dist/
+portal/.vite/
+portal/coverage/
+portal/Dockerfile
+portal/nginx.conf.template
+portal/.dockerignore

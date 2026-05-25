@@ -176,6 +176,7 @@ mod tests {
             health_addr: "0.0.0.0:8081".into(),
             requeue_after: std::time::Duration::from_secs(300),
             watch_namespace: None,
+            system_namespace: "default".into(),
             leader_election: false,
             pretty_logs: false,
             redis_url: None,
@@ -184,6 +185,11 @@ mod tests {
             typesense_url: None,
             typesense_api_key: None,
             alert_webhook_url: None,
+            data_api_image: None,
+            data_api_env_secret: None,
+            data_api_anonymous_auth: false,
+            data_api_ingress_host: None,
+            data_api_env_source_secret: None,
         }
     }
 

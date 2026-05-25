@@ -110,6 +110,20 @@ async fn main() -> Result<()> {
     if let Some(ts) = typesense {
         ctx_inner = ctx_inner.with_typesense(ts);
     }
+    // Phase 12a: enable the data-API workload orchestrator only when an image
+    // is configured. Without it, dedicated Domains reconcile DB state but
+    // create no Deployment (logged in the Domain reconciler).
+    if let Some(image) = cfg.data_api_image.clone() {
+        tracing::info!(%image, "data-API workload orchestrator enabled");
+        ctx_inner = ctx_inner.with_data_api(velocity_operator::context::DataApiSettings {
+            image,
+            anonymous_auth: cfg.data_api_anonymous_auth,
+            ingress_host: cfg.data_api_ingress_host.clone(),
+            env_secret: cfg.data_api_env_secret.clone(),
+            env_source_secret: cfg.data_api_env_source_secret.clone(),
+            system_namespace: cfg.system_namespace.clone(),
+        });
+    }
     let ctx = Arc::new(ctx_inner);
 
     // Health server.
@@ -179,16 +193,20 @@ async fn main() -> Result<()> {
     // The processor polls the file every 30s; aligning the sweep to
     // the same cadence keeps observed-policy lag bounded by one tick.
     let log_policy_kube = ctx.kube.clone();
-    let _log_policy_handle =
-        tokio::spawn(async move { velocity_operator::log_policy::run(log_policy_kube).await });
+    let log_policy_ns = cfg.system_namespace.clone();
+    let _log_policy_handle = tokio::spawn(async move {
+        velocity_operator::log_policy::run(log_policy_kube, log_policy_ns).await
+    });
 
     // Phase 7 slice 2 — sweep all SchemaDefinitions for
     // observability.slos and render PrometheusRule-shaped YAML into
-    // velocity-system/velocity-slo-rules. Failure-tolerant: a sweep
+    // <system_namespace>/velocity-slo-rules. Failure-tolerant: a sweep
     // tick that can't reach the API server logs and retries.
     let slo_rules_kube = ctx.kube.clone();
-    let _slo_rules_handle =
-        tokio::spawn(async move { velocity_operator::slo_rules::run(slo_rules_kube).await });
+    let slo_rules_ns = cfg.system_namespace.clone();
+    let _slo_rules_handle = tokio::spawn(async move {
+        velocity_operator::slo_rules::run(slo_rules_kube, slo_rules_ns).await
+    });
 
     // Hourly drift sweep (Phase 4.5). Compares declared SchemaDefinition
     // CRDs against `pg_class` and increments

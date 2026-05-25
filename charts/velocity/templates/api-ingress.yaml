@@ -1,0 +1,55 @@
+{{- if and .Values.api.enabled .Values.api.ingress.enabled -}}
+{{- /*
+  Phase 12b (ADR-011) routing on a single host (longest-prefix wins):
+    /search        → velocity-search      (all Tier-3 search + CDC)
+    /api/platform  → velocity-platform-api (admin + audit)
+    /              → velocity-platform-api (UI, /auth, /version)
+  Data-API paths (/api/{org}/{app}/{domain} or /api/{org}/{app}) are served
+  by operator-materialised Ingress rules in each domain or shared namespace.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "velocity.api.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.api.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.api.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.api.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.api.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- if and $.Values.api.search.enabled }}
+          - path: /search
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "velocity.search.fullname" $ }}
+                port: { number: {{ $.Values.api.service.port }} }
+          {{- end }}
+          - path: /api/platform
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "velocity.api.fullname" $ }}
+                port: { number: {{ $.Values.api.service.port }} }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "velocity.api.fullname" $ }}
+                port: { number: {{ $.Values.api.service.port }} }
+    {{- end }}
+{{- end -}}

@@ -1,0 +1,20 @@
+# Domain triggers postgres schema + per-domain role provisioning by the operator.
+# This is the resource exercised by `make e2e`. The namespace MUST equal
+# `{org}-{app}-{domain}`; the webhook will reject mismatches.
+apiVersion: velocity.sh/v1
+kind: Domain
+metadata:
+  name: procurement
+  namespace: acme-supply-chain
+  labels:
+    velocity.sh/org: acme
+    velocity.sh/app: supply-chain
+spec:
+  app: supply-chain
+  displayName: "Procurement"
+  access:
+    defaultRole: procurement-reader
+    adminRole:   procurement-admin
+  databaseQuota:
+    poolSize:       20
+    coldTablespace: true

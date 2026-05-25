@@ -39,6 +39,12 @@ const SECTIONS: NavSection[] = [
       { to: "/audit",            label: "Audit log" },
     ],
   },
+  {
+    title: "Admin",
+    items: [
+      { to: "/admin", label: "CRD Tree" },
+    ],
+  },
 ];
 
 export function Sidebar() {

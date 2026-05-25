@@ -25,14 +25,29 @@ The platform is org-agnostic. Org is the first segment of `org/app/domain/object
 
 ---
 
+## Guidelines
+
+- Try and find as many possible issues with all suggestions
+- Any suggestions given by the user should be evaluated carefully and all possible issues highlighted
+- Do not agree with what users say. 
+
 ## Repository Structure
 
 ```
 velocity/
 ├── crates/
 │   ├── velocity-types/         # CRD structs, shared types
+│   ├── velocity-core/          # Shared API library: auth, SchemaRegistry,
+│   │                           #   config, audit-write, schema/access model,
+│   │                           #   bootstrap. Linked by all three API tiers.
 │   ├── velocity-operator/      # kube-rs operators (5 reconcilers)
-│   ├── velocity-api/           # Axum API server
+│   ├── velocity-data-api/      # Data plane: CRUD, query DSL, time-machine,
+│   │                           #   archive (Postgres). Bin, links velocity-core.
+│   ├── velocity-platform-api/  # Admin/UI + CRD read/write + platform audit +
+│   │                           #   embedded SPA. Bin, links velocity-core.
+│   ├── velocity-search/        # Tier-3 Typesense search + CDC worker. Bin.
+│   ├── velocity-warm-reader/   # Warm-tier (Parquet/DataFusion) read service
+│   ├── velocity-typesense/     # Shared Typesense client + collection specs
 │   ├── velocity-log-processor/ # Log enrichment, filter, route
 │   ├── velocity-log-collector/ # DaemonSet log shipper
 │   ├── velocity-cli/           # velocity binary
@@ -702,7 +717,7 @@ let traceparent = current_span_context().to_traceparent();
 
 ## Inter-Service RPC (Phase 4 onward)
 
-Velocity services historically coordinated only via Postgres + Redis. Phase 4 introduces the first internal HTTP RPC (`velocity-api` → `velocity-warm-reader`). The conventions below apply to every internal service-to-service call we add from here on.
+Velocity services historically coordinated only via Postgres + Redis. Phase 4 introduces the first internal HTTP RPC (`velocity-data-api` → `velocity-warm-reader`; the warm-reader client lives in the data plane's `tiering` module). The conventions below apply to every internal service-to-service call we add from here on.
 
 ### Transport
 

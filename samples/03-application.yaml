@@ -1,0 +1,27 @@
+# Application sits inside an Organisation. Carries its own resource quotas
+# and (optionally) its own AuthStrategy override.
+apiVersion: velocity.sh/v1
+kind: Application
+metadata:
+  name: supply-chain
+  namespace: acme-platform
+  labels:
+    velocity.sh/org: acme
+spec:
+  org:         acme
+  displayName: "Supply Chain"
+  owner:       ops-lead@acme.com
+  team:        supply-chain-engineering
+  authStrategy:
+    name: jwt-internal
+    namespace: platform
+  resourceQuotas:
+    maxSchemas:           50
+    maxVersionsPerSchema: 3
+    maxFieldsPerSchema:   100
+    maxRecordsPerSchema:  500000000
+    maxStorageGb:         1000
+    requestsPerSecond:    5000
+  databaseQuota:
+    poolSize:     40
+    readReplicas: 2

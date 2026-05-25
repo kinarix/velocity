@@ -1,0 +1,23 @@
+# Namespaces for the acme/supply-chain/procurement hierarchy.
+# Per the validating webhook: namespace name MUST equal `{org}-{app}-{domain}`
+# (or `{org}-{app}` for an Application, or `{org}-platform` for org-scoped
+# resources). The `platform` namespace holds cluster-wide refs like AuthStrategy.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acme-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acme-supply-chain
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acme-supply-chain-procurement

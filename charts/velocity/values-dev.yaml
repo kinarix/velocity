@@ -1,27 +1,92 @@
-# Dev overrides — for minikube + local docker-compose Postgres.
-# Usage: helm install velocity charts/velocity -f charts/velocity/values-dev.yaml
+# Dev overrides — for local k3d + docker-compose Postgres/Redis/Typesense/Minio.
+# Usage:
+#   make k3d-up
+# or manually:
+#   helm install velocity charts/velocity \
+#     -f charts/velocity/values.yaml \
+#     -f charts/velocity/values-dev.yaml \
+#     --set webhook.tls.caBundle=$(base64 < data/webhook-tls/tls.crt | tr -d '\n')
 
+# In-cluster pods reach the host's docker-compose stack via host.k3d.internal.
+globalHost: "host.k3d.internal"
+
+###############################################################################
+# Operator
+###############################################################################
 operator:
   replicaCount: 1
   logging:
     pretty: true
     level: "debug"
   database:
-    # docker-compose Postgres on the host, reachable from minikube via host.minikube.internal.
-    host: "host.minikube.internal"
+    host: "host.k3d.internal"
+    port: 5434
+    user: "velocity_operator"
+    db:   "velocity"
+    password: "velocity_operator_dev"
+
+###############################################################################
+# API (serves the bundled portal SPA at /)
+###############################################################################
+api:
+  replicaCount: 1
+  logging:
+    pretty: true
+    level: "debug"
+  database:
+    host: "host.k3d.internal"
+    port: 5434
+    user: "velocity_api"
+    db:   "velocity"
+    password: "velocity_api_dev"
+  redis:
+    host: "host.k3d.internal"
+    port: 6380
+  typesense:
+    host: "host.k3d.internal"
+    port: 8108
+  ingress:
+    enabled: true
+    className: "traefik"   # k3d ships traefik as the default ingress controller
+    hosts:
+      - host: velocity.local
+        path: /
+        pathType: Prefix
+    tls: []
+
+###############################################################################
+# Archive worker
+###############################################################################
+archiveWorker:
+  database:
+    host: "host.k3d.internal"
     port: 5434
     user: "velocity_api"
     db:   "velocity"
     password: "velocity_api_dev"
 
+###############################################################################
+# Webhook
+###############################################################################
 webhook:
   replicaCount: 1
-  failurePolicy: "Ignore"   # dev — don't wedge the cluster if webhook crashes
+  # Dev — keep dataIntegrity strict (the e2e suite validates this), but let the
+  # declarative-policy webhook fail open so a webhook crash doesn't wedge edits.
+  failurePolicies:
+    dataIntegrity: "Fail"
+    declarative: "Ignore"
   logging:
     pretty: true
     level: "debug"
   tls:
-    # Dev uses a self-signed cert baked into a Secret by `make webhook-dev-cert`.
     source: "secret"
     existingSecret: "velocity-webhook-tls"
-    caBundle: ""   # populated by `make webhook-dev-cert`
+    caBundle: ""   # populated by scripts/k3d-up.sh via --set
+
+###############################################################################
+# Log pipeline — off by default in dev to keep `make k3d-up` light
+###############################################################################
+logProcessor:
+  enabled: false
+logCollector:
+  enabled: false

@@ -1,0 +1,86 @@
+{{- if .Values.archiveWorker.enabled -}}
+{{- $dbSecret := default (printf "%s-db" (include "velocity.archiveWorker.fullname" .)) .Values.archiveWorker.database.existingSecret -}}
+{{- $osSecret := default (printf "%s-object-store" (include "velocity.fullname" .)) .Values.objectStore.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.archiveWorker.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: archive-worker
+spec:
+  replicas: {{ .Values.archiveWorker.replicaCount }}
+  strategy:
+    type: Recreate          # single-tenant of a job — no rolling
+  selector:
+    matchLabels:
+      {{- include "velocity.archiveWorker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.archiveWorker.selectorLabels" . | nindent 8 }}
+      {{- with .Values.archiveWorker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.archiveWorker.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: archive-worker
+          image: {{ include "velocity.archiveWorker.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.archiveWorker.containerSecurityContext | nindent 12 }}
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s@%s:%v/%s"
+                .Values.archiveWorker.database.user
+                (default .Values.globalHost .Values.archiveWorker.database.host)
+                .Values.archiveWorker.database.port
+                .Values.archiveWorker.database.db | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ .Values.archiveWorker.database.passwordKey }}
+            # `DATABASE_URL` doesn't carry the password; sqlx reads it from
+            # PGPASSWORD when present.
+            - name: ARCHIVE_TICK_INTERVAL_SECS
+              value: {{ .Values.archiveWorker.tickIntervalSecs | quote }}
+            - name: ARCHIVE_MIN_RUN_INTERVAL_SECS
+              value: {{ .Values.archiveWorker.minRunIntervalSecs | quote }}
+            - name: ARCHIVE_DEFAULT_BATCH_SIZE
+              value: {{ .Values.archiveWorker.defaultBatchSize | quote }}
+            - name: ARCHIVE_DEFAULT_MAX_DURATION_SECS
+              value: {{ .Values.archiveWorker.defaultMaxDurationSecs | quote }}
+            - name: ARCHIVE_S3_BUCKET
+              value: {{ .Values.objectStore.bucket | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ $osSecret }}, key: access_key_id } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $osSecret }}, key: secret_access_key } }
+            - name: AWS_ENDPOINT_URL
+              value: {{ printf "http://%s:%v" (default .Values.globalHost .Values.objectStore.host) .Values.objectStore.port | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            - name: AWS_ALLOW_HTTP
+              value: "true"
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_archive_worker=%s" .Values.archiveWorker.logging.level .Values.archiveWorker.logging.level | quote }}
+            {{- with .Values.archiveWorker.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # The archive worker is a headless poller (see worker::run in
+          # crates/velocity-archive-worker/src/worker.rs) — it doesn't
+          # bind any HTTP port. Process liveness is sufficient: if the
+          # worker panics, the container exits and the kubelet restarts
+          # it. No tcpSocket/httpGet probe would land on a real listener.
+          resources:
+            {{- toYaml .Values.archiveWorker.resources | nindent 12 }}
+{{- end -}}

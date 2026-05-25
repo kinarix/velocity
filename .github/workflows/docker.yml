@@ -120,7 +120,11 @@ jobs:
       fail-fast: false
       matrix:
         bin:
-          - velocity-api
+          # Phase 12a (ADR-011): the old velocity-api binary was split into
+          # three over the velocity-api library.
+          - velocity-platform-api
+          - velocity-data-api
+          - velocity-search
           - velocity-operator
           - velocity-webhook
           - velocity-archive-worker
@@ -236,7 +240,11 @@ jobs:
       fail-fast: false
       matrix:
         bin:
-          - velocity-api
+          # Phase 12a (ADR-011): the old velocity-api binary was split into
+          # three over the velocity-api library.
+          - velocity-platform-api
+          - velocity-data-api
+          - velocity-search
           - velocity-operator
           - velocity-webhook
           - velocity-archive-worker
@@ -314,6 +322,11 @@ jobs:
   # and `merge` above so caching / digest plumbing stays familiar.
   # ─────────────────────────────────────────────────────────────────────
   build_portal:
+    # DISABLED (Phase 12a/12c, ADR-011): the standalone nginx portal image is
+    # retired — the SPA is now embedded into and served by velocity-platform-api
+    # (portal/Dockerfile + nginx.conf were removed). Kept here, gated off, until
+    # the portal image references are fully purged.
+    if: false
     name: velocity-portal (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -391,6 +404,9 @@ jobs:
           retention-days: 1
 
   merge_portal:
+    # DISABLED (Phase 12a/12c) — see build_portal. The SPA ships inside
+    # velocity-platform-api now; no standalone portal manifest.
+    if: false
     name: manifest (velocity-portal)
     needs: [build_portal, test]
     runs-on: ubuntu-latest

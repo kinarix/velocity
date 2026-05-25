@@ -51,6 +51,63 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              deployment:
+                description: |-
+                  Default data-API scope for domains in this application.
+                  Domains may override with their own `spec.deployment.scope`.
+                  Absent → `App` scope.
+                nullable: true
+                properties:
+                  maxReplicas:
+                    description: Maximum replicas (KEDA/HPA ceiling). Default 10.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  minReplicas:
+                    description: |-
+                      Minimum replicas (KEDA `minReplicaCount`). Default 1 — never
+                      scale to zero, so a domain's first request is never cold.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  resources:
+                    description: Pod resource requests/limits for the data-API container.
+                    nullable: true
+                    properties:
+                      limits:
+                        nullable: true
+                        properties:
+                          cpu:
+                            nullable: true
+                            type: string
+                          memory:
+                            nullable: true
+                            type: string
+                        type: object
+                      requests:
+                        nullable: true
+                        properties:
+                          cpu:
+                            nullable: true
+                            type: string
+                          memory:
+                            nullable: true
+                            type: string
+                        type: object
+                    type: object
+                  scope:
+                    default: app
+                    description: |-
+                      `app` → one operator-managed data-API pod per `{org}/{app}`, serving all
+                      of that app's domains via label selector. `domain` → one pod per
+                      `{org}/{app}/{domain}`, watching only that namespace.
+                    enum:
+                    - app
+                    - domain
+                    type: string
+                type: object
               displayName:
                 type: string
               org:
@@ -130,6 +187,12 @@ spec:
                   - type
                   type: object
                 type: array
+              dataApiDeployment:
+                description: |-
+                  Name of the operator-managed app-scoped data-API Deployment, set when
+                  an app-scoped data-API has been materialised.
+                nullable: true
+                type: string
               domains:
                 format: uint32
                 minimum: 0.0

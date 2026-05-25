@@ -228,6 +228,27 @@ impl PostgresProvisioner {
         )
         .await?;
 
+        // 5. If the app-level data-API role already exists (Application
+        //    reconciled before this Domain), grant the new domain roles to it
+        //    now so app-scoped pods can immediately `SET LOCAL ROLE` into them.
+        //    If the app role doesn't exist yet, `ensure_app_data_api_login_role`
+        //    dynamically picks up all existing domain roles at Application-
+        //    reconcile time — this resolves the chicken-and-egg ordering.
+        let app_role = format!("{org_id}_{app_id}_api");
+        exec(
+            &mut tx,
+            &format!(
+                "DO $$ BEGIN \
+                   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{app_role}') THEN \
+                     GRANT {reader} TO {app_role}; \
+                     GRANT {writer} TO {app_role}; \
+                     GRANT {admin} TO {app_role}; \
+                   END IF; \
+                 END $$;"
+            ),
+        )
+        .await?;
+
         tx.commit().await?;
 
         Ok(ProvisionedDomain { pg_schema: schema, pg_roles: vec![reader, writer, admin] })
@@ -575,6 +596,153 @@ async fn create_role_if_absent(
     Ok(())
 }
 
+impl PostgresProvisioner {
+    /// Provision (idempotently) the per-domain data-API LOGIN role and set its
+    /// password. Returns the role name (`{schema}_api`). Shares the
+    /// `sync_domain` advisory lock so role creation can't race schema/role
+    /// provisioning. See [`build_data_api_login_sql`].
+    pub async fn ensure_data_api_login_role(
+        &self,
+        schema: &str,
+        password: &str,
+    ) -> Result<String, ProvisionError> {
+        let stmts = build_data_api_login_sql(schema, password)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
+            .execute(&mut *tx)
+            .await?;
+        for s in &stmts {
+            sqlx::query(s).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        let role = format!("{schema}_api");
+        tracing::info!(%role, "data-API login role ensured");
+        Ok(role)
+    }
+
+    /// Provision (idempotently) the app-level data-API LOGIN role
+    /// (`{org}_{app}_api`) and set its password. Returns the role name.
+    ///
+    /// The role is granted membership in every existing domain role for this
+    /// app (`{org}_{app}_{domain}_{reader|writer|admin}`) via a dynamic DO
+    /// loop so an app-scoped data-API pod can `SET LOCAL ROLE` per request
+    /// (ADR-007). Domain roles created after this call are picked up by the
+    /// conditional grant at the end of [`sync_domain`].
+    pub async fn ensure_app_data_api_login_role(
+        &self,
+        org: &str,
+        app: &str,
+        password: &str,
+    ) -> Result<String, ProvisionError> {
+        let org_id = validate_ident(&sanitize(org))?;
+        let app_id = validate_ident(&sanitize(app))?;
+        let stmts = build_app_data_api_login_sql(&org_id, &app_id, password)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7610358901234567890)")
+            .execute(&mut *tx)
+            .await?;
+        for s in &stmts {
+            sqlx::query(s).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        let role = format!("{org_id}_{app_id}_api");
+        tracing::info!(%role, "app data-API login role ensured");
+        Ok(role)
+    }
+}
+
+/// Hex-secret validator (Phase 12a). The data-API role password is embedded
+/// as a SQL string literal in `ALTER ROLE … PASSWORD '…'`, so its charset
+/// MUST be airtight — no quotes, backslashes, or whitespace. The operator
+/// only ever generates lowercase hex, so we enforce exactly that here as a
+/// defence-in-depth check before the value reaches DDL.
+pub fn validate_hex_secret(s: &str) -> Result<(), ProvisionError> {
+    let ok = (32..=128).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(ProvisionError::InvalidIdentifier { ident: "<data-api-password>".into() })
+    }
+}
+
+/// Build the DDL for a per-domain data-API LOGIN role (Phase 12a / ADR-011).
+///
+/// `schema` is the already-sanitised `{org}_{app}_{domain}`. The role is
+/// `{schema}_api`: `LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, and a member of the
+/// domain's reader/writer/admin roles so a data-API pod connecting as it can
+/// `SET LOCAL ROLE {schema}_writer` per request (ADR-007). Idempotent — the
+/// operator owns the password (stored in the projected Secret) and passes the
+/// same value every reconcile, so re-asserting it is a no-op.
+pub fn build_data_api_login_sql(
+    schema: &str,
+    password: &str,
+) -> Result<Vec<String>, ProvisionError> {
+    let schema = validate_ident(schema)?;
+    validate_hex_secret(password)?;
+    let role = validate_ident(&format!("{schema}_api"))?;
+    let reader = format!("{schema}_reader");
+    let writer = format!("{schema}_writer");
+    let admin = format!("{schema}_admin");
+    Ok(vec![
+        format!(
+            "DO $$ BEGIN \
+               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN \
+                 CREATE ROLE {role} LOGIN NOSUPERUSER NOBYPASSRLS; \
+               END IF; \
+             END $$;"
+        ),
+        format!("ALTER ROLE {role} WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '{password}'"),
+        format!("GRANT {reader} TO {role}"),
+        format!("GRANT {writer} TO {role}"),
+        format!("GRANT {admin} TO {role}"),
+    ])
+}
+
+/// Build the DDL for the app-level data-API LOGIN role (`{org_id}_{app_id}_api`).
+///
+/// `org_id` and `app_id` must already be sanitised and validated identifiers.
+/// The role is granted membership in every existing domain role for this app
+/// (`{org_id}_{app_id}_{dom}_{reader|writer|admin}`) via a PL/pgSQL loop so
+/// app-scoped pods can immediately `SET LOCAL ROLE` per request (ADR-007).
+///
+/// Safety: `org_id`/`app_id` pass through [`validate_ident`] before reaching
+/// this function. The roles being iterated come from `pg_roles` (system
+/// catalog, not user input), so the dynamic `EXECUTE` is injection-free.
+pub fn build_app_data_api_login_sql(
+    org_id: &str,
+    app_id: &str,
+    password: &str,
+) -> Result<Vec<String>, ProvisionError> {
+    let org_id = validate_ident(org_id)?;
+    let app_id = validate_ident(app_id)?;
+    validate_hex_secret(password)?;
+    let role = validate_ident(&format!("{org_id}_{app_id}_api"))?;
+    Ok(vec![
+        format!(
+            "DO $$ BEGIN \
+               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN \
+                 CREATE ROLE {role} LOGIN NOSUPERUSER NOBYPASSRLS; \
+               END IF; \
+             END $$;"
+        ),
+        format!("ALTER ROLE {role} WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '{password}'"),
+        // Grant all existing domain roles for this app so the pod can SET LOCAL ROLE.
+        // The regex anchors on the validated org/app prefix so only this app's roles match.
+        format!(
+            "DO $$ DECLARE r TEXT; BEGIN \
+               FOR r IN \
+                 SELECT rolname FROM pg_roles \
+                 WHERE rolname LIKE '{org_id}_{app_id}_%' \
+                   AND rolname ~ '^{org_id}_{app_id}_[a-z0-9_]+_(reader|writer|admin)$' \
+               LOOP \
+                 EXECUTE 'GRANT ' || quote_ident(r) || ' TO {role}'; \
+               END LOOP; \
+             END $$;"
+        ),
+    ])
+}
+
 /// Whitelist: only allow `[a-z0-9_]`, 1-63 chars (Postgres' identifier cap).
 /// Names go straight into DDL strings, so this MUST be airtight.
 pub fn validate_ident(s: &str) -> Result<String, ProvisionError> {
@@ -594,6 +762,31 @@ pub fn validate_ident(s: &str) -> Result<String, ProvisionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_api_login_sql_is_well_formed_and_grants_domain_roles() {
+        let pw = "0123456789abcdef0123456789abcdef"; // 32 hex
+        let stmts = build_data_api_login_sql("acme_supply_procurement", pw).unwrap();
+        // CREATE-if-absent, ALTER password, three GRANTs.
+        assert_eq!(stmts.len(), 5);
+        assert!(stmts[0].contains("CREATE ROLE acme_supply_procurement_api LOGIN"));
+        assert!(stmts[1].contains("NOBYPASSRLS PASSWORD '0123456789abcdef0123456789abcdef'"));
+        assert!(stmts[2].contains("GRANT acme_supply_procurement_reader TO acme_supply_procurement_api"));
+        assert!(stmts[3].contains("GRANT acme_supply_procurement_writer TO"));
+        assert!(stmts[4].contains("GRANT acme_supply_procurement_admin TO"));
+    }
+
+    #[test]
+    fn data_api_login_sql_rejects_bad_schema_and_password() {
+        let good_pw = "0123456789abcdef0123456789abcdef";
+        // bad schema (uppercase / injection) is rejected
+        assert!(build_data_api_login_sql("Bad", good_pw).is_err());
+        assert!(build_data_api_login_sql("x'; DROP ROLE y; --", good_pw).is_err());
+        // password with a quote or non-hex char is rejected before reaching DDL
+        assert!(build_data_api_login_sql("acme_x_y", "abc'def").is_err());
+        assert!(build_data_api_login_sql("acme_x_y", "tooshort").is_err());
+        assert!(build_data_api_login_sql("acme_x_y", "ABCDEF0123456789ABCDEF0123456789").is_err()); // uppercase hex
+    }
 
     #[test]
     fn ident_rejects_bad_input() {
@@ -681,5 +874,49 @@ mod tests {
         let cols = vec![col("id", "uuid", true)];
         let ddl = build_archive_mirror_ddl("s", "t", &cols);
         assert!(ddl.contains("IF NOT EXISTS"));
+    }
+
+    // ── app-level login role ─────────────────────────────────────────────────
+
+    const PW32: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn app_login_sql_shape_and_role_name() {
+        let stmts = build_app_data_api_login_sql("acme", "supply", PW32).unwrap();
+        // CREATE-if-absent, ALTER password, dynamic domain-role grant loop.
+        assert_eq!(stmts.len(), 3);
+        assert!(stmts[0].contains("CREATE ROLE acme_supply_api LOGIN"));
+        assert!(stmts[1].contains("NOBYPASSRLS PASSWORD '0123456789abcdef0123456789abcdef'"));
+    }
+
+    #[test]
+    fn app_login_sql_dynamic_loop_scoped_to_org_app() {
+        let stmts = build_app_data_api_login_sql("acme", "supply", PW32).unwrap();
+        let loop_stmt = &stmts[2];
+        // Pattern must be anchored to this app's prefix so it can't escape into another org/app.
+        assert!(loop_stmt.contains("LIKE 'acme_supply_%'"), "got: {loop_stmt}");
+        assert!(loop_stmt.contains("~ '^acme_supply_"), "got: {loop_stmt}");
+        assert!(loop_stmt.contains("(reader|writer|admin)$'"), "got: {loop_stmt}");
+        // Dynamic EXECUTE must use quote_ident for safety.
+        assert!(loop_stmt.contains("quote_ident"), "got: {loop_stmt}");
+    }
+
+    #[test]
+    fn app_login_sql_rejects_bad_inputs() {
+        // Bad org (uppercase)
+        assert!(build_app_data_api_login_sql("Acme", "supply", PW32).is_err());
+        // Bad app (dash)
+        assert!(build_app_data_api_login_sql("acme", "supply-chain", PW32).is_err());
+        // Bad password (non-hex)
+        assert!(build_app_data_api_login_sql("acme", "supply", "abc'def").is_err());
+        // Password too short
+        assert!(build_app_data_api_login_sql("acme", "supply", "abc").is_err());
+    }
+
+    #[test]
+    fn app_login_sql_role_name_is_login_nobypassrls() {
+        let stmts = build_app_data_api_login_sql("acme", "supply", PW32).unwrap();
+        assert!(stmts[0].contains("LOGIN NOSUPERUSER NOBYPASSRLS"));
+        assert!(stmts[1].contains("WITH LOGIN NOSUPERUSER NOBYPASSRLS"));
     }
 }

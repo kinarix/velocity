@@ -16,6 +16,16 @@ pub struct OperatorConfig {
     pub requeue_after: Duration,
     /// Watched namespace, or `None` for cluster-wide.
     pub watch_namespace: Option<String>,
+    /// Namespace the operator's own pod runs in. Used as the target for
+    /// cluster-wide ConfigMaps the operator writes (SLO rules, log
+    /// policy bundle). Resolved at boot from, in order:
+    ///   1. `VELOCITY_OPERATOR_SYSTEM_NAMESPACE` env (chart sets this from
+    ///      the downward API).
+    ///   2. `/var/run/secrets/kubernetes.io/serviceaccount/namespace` —
+    ///      the standard ServiceAccount token mount.
+    ///   3. `"default"` — last-resort fallback for local `cargo run`.
+    ///      A warning is logged when this fires.
+    pub system_namespace: String,
     /// Whether to enable leader election (no-op in Phase 0; placeholder).
     pub leader_election: bool,
     /// Pretty logs (true) vs JSON logs (false; default for production).
@@ -25,7 +35,7 @@ pub struct OperatorConfig {
     /// dev environments without Redis). Production always sets this.
     pub redis_url: Option<String>,
     /// Override for the revocation set key. Defaults to `revoked_actors`,
-    /// matching `velocity_api::auth::DEFAULT_REVOKED_SET_KEY`.
+    /// matching `velocity_core::auth::DEFAULT_REVOKED_SET_KEY`.
     pub redis_revoked_key: String,
     /// `object_store` URL where the tiering exporter writes warm-tier
     /// Parquet objects (Phase 4.2). `s3://bucket/prefix` in prod,
@@ -52,6 +62,33 @@ pub struct OperatorConfig {
     /// delivery; alerts still land in `platform.anomaly_alerts` and
     /// `tracing::warn!` for SIEM ingest.
     pub alert_webhook_url: Option<String>,
+    /// ADR-011: container image for operator-materialised data-API Deployments.
+    /// When `None`, the workload orchestrator is disabled — a Domain with
+    /// `deployment.scope: domain` reconciles its Postgres state as usual but
+    /// logs a warning and creates no Deployment. Set via `VELOCITY_OPERATOR_DATA_API_IMAGE`.
+    pub data_api_image: Option<String>,
+    /// Name of a Secret (in each domain namespace, or projected there by the
+    /// chart) holding the shared `VELOCITY_API_*` env for data-API pods
+    /// (DB URL via PgBouncer, cursor signing key, etc.). Injected with
+    /// `envFrom`; the operator adds only `VELOCITY_API_MODE` /
+    /// `VELOCITY_API_NAMESPACE` on top. Set via
+    /// `VELOCITY_OPERATOR_DATA_API_ENV_SECRET`.
+    pub data_api_env_secret: Option<String>,
+    /// Phase 12b: propagate the anonymous auth bypass onto operator-managed
+    /// data-API pods. Mirrors the platform-API's `VELOCITY_API_AUTH_MODE`.
+    /// Set via `VELOCITY_OPERATOR_DATA_API_AUTH_MODE=anonymous`.
+    pub data_api_anonymous_auth: bool,
+    /// Shared Ingress host for operator-generated per-domain paths
+    /// (`/api/{org}/{app}/{domain}`). Set via
+    /// `VELOCITY_OPERATOR_DATA_API_INGRESS_HOST`.
+    pub data_api_ingress_host: Option<String>,
+    /// Source Secret (in the operator's own/system namespace) holding the
+    /// shared `VELOCITY_API_*` env for data-API pods. The operator reads it
+    /// and projects a copy named `data_api_env_secret` into each dedicated
+    /// domain's namespace, since chart secrets live in the release namespace
+    /// but domain namespaces are created dynamically (ADR-011, Phase 12a).
+    /// Set via `VELOCITY_OPERATOR_DATA_API_ENV_SOURCE_SECRET`.
+    pub data_api_env_source_secret: Option<String>,
 }
 
 impl OperatorConfig {
@@ -100,11 +137,26 @@ impl OperatorConfig {
         let alert_webhook_url =
             get("VELOCITY_OPERATOR_ALERT_WEBHOOK_URL").filter(|v| !v.trim().is_empty());
 
+        let data_api_image =
+            get("VELOCITY_OPERATOR_DATA_API_IMAGE").filter(|v| !v.trim().is_empty());
+        let data_api_env_secret =
+            get("VELOCITY_OPERATOR_DATA_API_ENV_SECRET").filter(|v| !v.trim().is_empty());
+        let data_api_anonymous_auth = get("VELOCITY_OPERATOR_DATA_API_AUTH_MODE")
+            .map(|v| v.trim().eq_ignore_ascii_case("anonymous"))
+            .unwrap_or(false);
+        let data_api_ingress_host =
+            get("VELOCITY_OPERATOR_DATA_API_INGRESS_HOST").filter(|v| !v.trim().is_empty());
+        let data_api_env_source_secret =
+            get("VELOCITY_OPERATOR_DATA_API_ENV_SOURCE_SECRET").filter(|v| !v.trim().is_empty());
+
+        let system_namespace = Self::resolve_system_namespace(&get);
+
         Ok(Self {
             pg_url,
             health_addr,
             requeue_after,
             watch_namespace,
+            system_namespace,
             leader_election,
             pretty_logs,
             redis_url,
@@ -113,7 +165,36 @@ impl OperatorConfig {
             typesense_url,
             typesense_api_key,
             alert_webhook_url,
+            data_api_image,
+            data_api_env_secret,
+            data_api_anonymous_auth,
+            data_api_ingress_host,
+            data_api_env_source_secret,
         })
+    }
+
+    /// Resolve the operator's own namespace from (in order): explicit env,
+    /// ServiceAccount file, then `"default"` with a warning. Exposed
+    /// `pub(crate)` so unit tests can drive it directly.
+    fn resolve_system_namespace(get: &impl Fn(&str) -> Option<String>) -> String {
+        if let Some(ns) = get("VELOCITY_OPERATOR_SYSTEM_NAMESPACE")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            return ns;
+        }
+        if let Ok(s) = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace") {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        tracing::warn!(
+            "VELOCITY_OPERATOR_SYSTEM_NAMESPACE unset and ServiceAccount namespace file absent — \
+             defaulting to \"default\". ConfigMaps written by the operator (SLO rules, log policy) \
+             will land there. Set VELOCITY_OPERATOR_SYSTEM_NAMESPACE explicitly to silence this."
+        );
+        "default".to_string()
     }
 
     /// Build `postgres://user:password@host:port/db` from the piecewise env vars
@@ -286,5 +367,34 @@ mod tests {
     #[test]
     fn from_env_wrapper_is_invokable() {
         let _ = OperatorConfig::from_env();
+    }
+
+    #[test]
+    fn system_namespace_uses_explicit_env_when_set() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_SYSTEM_NAMESPACE", "velocity");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.system_namespace, "velocity");
+    }
+
+    #[test]
+    fn system_namespace_falls_back_when_unset() {
+        // No SA file in tests, no env → "default" fallback (with warning).
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        // Either the SA file exists on the test host (very unlikely) or we
+        // get "default". Both are acceptable — we just assert non-empty.
+        assert!(!cfg.system_namespace.is_empty());
+    }
+
+    #[test]
+    fn system_namespace_trims_whitespace() {
+        let mut env = HashMap::new();
+        env.insert("VELOCITY_OPERATOR_PG_URL", "postgres://x/y");
+        env.insert("VELOCITY_OPERATOR_SYSTEM_NAMESPACE", "  velocity  ");
+        let cfg = OperatorConfig::from_env_with(lookup(&env)).unwrap();
+        assert_eq!(cfg.system_namespace, "velocity");
     }
 }

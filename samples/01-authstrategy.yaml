@@ -1,0 +1,34 @@
+# AuthStrategy must exist before any resource references it (Organisation's
+# defaultAuthStrategy, Application's authStrategy, SchemaDefinition's
+# auth.strategyRef). The validating webhook rejects refs to missing strategies.
+apiVersion: velocity.sh/v1
+kind: AuthStrategy
+metadata:
+  name: jwt-internal
+  namespace: platform
+spec:
+  type: jwt
+  config:
+    issuers:
+      - issuer:   "https://auth.acme.com"
+        jwksUrl:  "https://auth.acme.com/.well-known/jwks.json"
+        audience: "velocity-api"
+        claims:
+          actorId: "$.sub"
+          email:    "$.email"
+          roles:
+            path: "$.roles"
+            transform: static_append
+            values: [authenticated]
+          attributes:
+            store_id: "$.attributes.store_id"
+            region:   "$.attributes.region"
+    revocation:
+      backend:  redis
+      key:      "revoked_actors"
+      failOpen: false        # ADR-003 — default deny on Redis failure
+      ttl:      86400
+    cel:
+      maxExecutionMs: 10
+    ttlMax:    3600
+    clockSkew: 30

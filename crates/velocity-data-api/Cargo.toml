@@ -1,0 +1,71 @@
+[package]
+name        = "velocity-data-api"
+description = "Per-domain data-plane API (CRUD, query, time-machine, archive). Postgres only."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+publish.workspace      = true
+
+[lib]
+name = "velocity_data_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "velocity-data-api"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Phase 12a link-level isolation (ADR-011): search/CDC/Typesense physically
+# live in the `velocity-search` crate, so this binary never links them.
+velocity-core   = { path = "../velocity-core" }
+velocity-types = { workspace = true }
+
+tokio       = { workspace = true }
+axum        = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+tower       = { workspace = true }
+tower-http  = { workspace = true }
+sqlx        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+async-trait = { workspace = true }
+futures     = { workspace = true }
+dashmap     = { workspace = true }
+base64      = { workspace = true }
+hex         = { workspace = true }
+sha2        = { workspace = true }
+thiserror   = { workspace = true }
+json-patch  = { workspace = true }
+reqwest     = { workspace = true }
+
+[dev-dependencies]
+velocity-operator    = { workspace = true }
+velocity-warm-reader = { workspace = true }
+jsonwebtoken         = { workspace = true }
+tracing-subscriber   = { workspace = true }
+tokio                = { workspace = true, features = ["test-util", "macros"] }
+tower                = { workspace = true, features = ["util"] }
+http-body-util       = "0.1"
+rsa                  = "0.9"
+rand                 = { workspace = true }
+uuid                 = { workspace = true }
+serde_json           = { workspace = true }
+chrono               = { workspace = true }
+rustls               = { version = "0.23", features = ["aws-lc-rs"] }
+# phase4_warm_tier_e2e writes parquet + drives a DataFusion SessionContext
+arrow                = { workspace = true }
+parquet              = { workspace = true, features = ["async", "object_store"] }
+object_store         = { workspace = true }
+datafusion           = { workspace = true }
+url                  = { workspace = true }
+tempfile             = "3"

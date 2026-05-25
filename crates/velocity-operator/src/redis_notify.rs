@@ -1,7 +1,7 @@
 //! Operator-side Redis publisher for actor revocations.
 //!
 //! The API reads the same Redis set via
-//! [`velocity_api::auth::RedisRevocationChecker`]. We share only the key
+//! [`velocity_core::auth::RedisRevocationChecker`]. We share only the key
 //! name (`revoked_actors` by default) — no shared crate dependency, so the
 //! operator can run against a Redis that has *no* API connected yet.
 //!
@@ -16,7 +16,7 @@
 use redis::{aio::ConnectionManager, AsyncCommands, Client};
 use thiserror::Error;
 
-/// Same default as `velocity_api::auth::DEFAULT_REVOKED_SET_KEY`. Pinned
+/// Same default as `velocity_core::auth::DEFAULT_REVOKED_SET_KEY`. Pinned
 /// here to avoid the operator depending on `velocity-api`.
 pub const DEFAULT_REVOKED_SET_KEY: &str = "revoked_actors";
 

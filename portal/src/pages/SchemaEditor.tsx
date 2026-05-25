@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 type FieldKind =
   | "string"
@@ -125,6 +126,7 @@ export function SchemaEditor() {
       <SplitEditor
         filename={`${object}.${version}.yaml`}
         value={value}
+        onApply={() => applyObject("SchemaDefinition", `${org}-${app}-${domain}`, object, value as KubeObject)}
         form={
           <div className="space-y-4 text-xs">
             <section>

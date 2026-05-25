@@ -1,0 +1,75 @@
+# Minimal AuthStrategy — OIDC using the IdP's discovery document.
+#
+# Equivalent to `01b-authstrategy-oidc.yaml` but only lists the fields
+# Velocity cannot infer from the IdP's `.well-known/openid-configuration`:
+#
+#   - clientId / clientSecretRef  (Velocity-specific registration data)
+#   - redirectUri                  (must match what's registered at the IdP)
+#   - scopes                       (what the API asks for)
+#   - issuers[].audience + claims  (claim mapping is policy, not metadata)
+#
+# Everything else — authorizationEndpoint, tokenEndpoint, userinfoEndpoint,
+# issuer, jwksUrl — is fetched from the discovery URL ONCE at the moment
+# the API server's auth informer picks up this AuthStrategy. The resolved
+# endpoints are pinned in memory after that; the discovery URL is not
+# re-fetched on every request. Re-apply the CRD (or `kubectl annotate` it)
+# to force a re-resolve.
+#
+# Trade-off vs. the pinned form (01b): one HTTP round-trip to the IdP at
+# strategy-load time, in exchange for not having to copy/paste URLs that
+# the IdP already publishes. The redirect target is still pinned for the
+# lifetime of the apply, so a discovery doc that flips later cannot move
+# users to a different login screen until you re-apply.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oidc-client-secret
+  namespace: velocity
+type: Opaque
+stringData:
+  client_secret: "REPLACE_ME_WITH_THE_VALUE_FROM_THE_IDP"
+---
+apiVersion: velocity.sh/v1
+kind: AuthStrategy
+metadata:
+  name: oidc-discovery
+  namespace: platform
+spec:
+  type: oidc
+  config:
+    # Claim mapping still has to be written by you — Velocity has no way
+    # to infer what your IdP's roles claim is called or which scope your
+    # API expects. With a single issuer entry + `configUrl` set, the API
+    # server fills in both `issuer` and `jwksUrl` from the discovery doc
+    # at strategy-load time; you can omit them here.
+    issuers:
+      - # issuer: left blank — filled from the discovery doc's `issuer`
+        #   claim (single-entry shortcut). Set it explicitly when you
+        #   need to lock the strategy to a specific issuer string and
+        #   guard against an IdP discovery doc change.
+        # jwksUrl: omitted — filled from the discovery doc's `jwks_uri`.
+        audience: "velocity-api"
+        claims:
+          actorId:    "$.sub"
+          actorType:  "human"
+          roles:      "$.realm_access.roles"
+          attributes:
+            email:    "$.email"
+            store_id: "$.store_id"
+
+    oidc:
+      # The ONLY URL you must provide. Everything else under `oidc:`
+      # except the client/redirect bits is optional and filled from this.
+      configUrl: "https://idp.example.com/.well-known/openid-configuration"
+
+      clientId: "velocity-api"
+      clientSecretRef:
+        name: oidc-client-secret
+        key:  client_secret
+      redirectUri: "https://velocity.example.com/auth/callback/platform/oidc-discovery"
+      scopes:
+        - openid
+        - profile
+        - email
+      # sessionTtl: 28800   # optional, defaults to 8h

@@ -1,0 +1,31 @@
+# LogFilterPolicy controls which log lines reach the routing layer.
+# Rules evaluate in priority order; first match wins. Action: keep | drop |
+# sample | redact.
+apiVersion: velocity.sh/v1
+kind: LogFilterPolicy
+metadata:
+  name: procurement-log-filter
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+spec:
+  rules:
+    - name: drop-readiness-probes
+      priority: 10
+      action:   drop
+      when:
+        path: "/readyz"
+    - name: redact-pii
+      priority: 20
+      action:   redact
+      when:
+        sensitivity: pii
+      fields: [email, phone, address]
+    - name: sample-noisy-info
+      priority: 30
+      action:    sample
+      sampleRate: 0.1
+      when:
+        level: info

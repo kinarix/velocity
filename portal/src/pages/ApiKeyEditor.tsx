@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 export function ApiKeyEditor() {
   const [name, setName] = useState("ingest-key");
@@ -53,6 +54,7 @@ export function ApiKeyEditor() {
       <SplitEditor
         filename={`${name}.apikey.yaml`}
         value={value}
+        onApply={() => applyObject("ApiKey", namespace, name, value as KubeObject)}
         form={
           <div className="space-y-3 text-xs">
             <div>

@@ -1,0 +1,157 @@
+{{- if .Values.api.enabled -}}
+{{- $dbSecret := default (printf "%s-db" (include "velocity.api.fullname" .)) .Values.api.database.existingSecret -}}
+{{- $apiSecret := default (printf "%s-secrets" (include "velocity.api.fullname" .)) .Values.api.secrets.existingSecret -}}
+{{- $tsSecret := default (printf "%s-typesense" (include "velocity.api.fullname" .)) .Values.api.typesense.existingSecret -}}
+{{- $wrSecret := default (printf "%s-warm-reader" (include "velocity.api.fullname" .)) .Values.api.warmReader.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "velocity.api.fullname" . }}
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "velocity.api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "velocity.api.selectorLabels" . | nindent 8 }}
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "velocity.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.api.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "velocity.api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.api.containerSecurityContext | nindent 12 }}
+          env:
+            - name: VELOCITY_API_PG_HOST
+              value: {{ default .Values.globalHost .Values.api.database.host | quote }}
+            - name: VELOCITY_API_PG_PORT
+              value: {{ .Values.api.database.port | quote }}
+            - name: VELOCITY_API_PG_USER
+              value: {{ .Values.api.database.user | quote }}
+            - name: VELOCITY_API_PG_DB
+              value: {{ .Values.api.database.db | quote }}
+            - name: VELOCITY_API_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ .Values.api.database.passwordKey }}
+            - name: VELOCITY_API_PG_POOL_MAX
+              value: {{ .Values.api.database.poolMax | quote }}
+            - name: VELOCITY_API_BIND_ADDR
+              value: "0.0.0.0:8080"
+            - name: VELOCITY_API_HEALTH_ADDR
+              value: "0.0.0.0:8081"
+            {{- if eq (.Values.api.auth).mode "anonymous" }}
+            # Phase 12b: TEST MODE — authentication bypassed (actor=anonymous).
+            # Never set this in production values.
+            - name: VELOCITY_API_AUTH_MODE
+              value: "anonymous"
+            {{- end }}
+            - name: VELOCITY_API_PRETTY_LOGS
+              value: {{ .Values.api.logging.pretty | quote }}
+            - name: RUST_LOG
+              value: {{ printf "%s,velocity_core=%s,velocity_platform_api=%s" .Values.api.logging.level .Values.api.logging.level .Values.api.logging.level | quote }}
+            - name: VELOCITY_API_CURSOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $apiSecret }}
+                  key: cursor_signing_key
+            - name: VELOCITY_API_PLATFORM_AUDIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $apiSecret }}
+                  key: platform_audit_token
+            {{- if .Values.api.redis.enabled }}
+            - name: VELOCITY_API_REDIS_URL
+              value: {{ printf "redis://%s:%v" (default .Values.globalHost .Values.api.redis.host) .Values.api.redis.port | quote }}
+            {{- end }}
+            {{- if .Values.api.typesense.enabled }}
+            - name: VELOCITY_API_TYPESENSE_URL
+              value: {{ printf "http://%s:%v" (default .Values.globalHost .Values.api.typesense.host) .Values.api.typesense.port | quote }}
+            - name: VELOCITY_API_TYPESENSE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $tsSecret }}
+                  key: api_key
+            {{- end }}
+            {{- if .Values.api.warmReader.enabled }}
+            - name: VELOCITY_API_WARM_READER_URL
+              value: {{ .Values.api.warmReader.url | quote }}
+            - name: VELOCITY_API_WARM_READER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $wrSecret }}
+                  key: service_token
+            - name: VELOCITY_API_WARM_READER_TIMEOUT_MS
+              value: {{ .Values.api.warmReader.timeoutMs | quote }}
+            {{- end }}
+            # Portal runtime knobs — surfaced to the SPA via /config.json.
+            # The bundled SPA reads these at boot; absent values are
+            # omitted from the document so the SPA falls back to its
+            # built-in defaults.
+            {{- with .Values.api.portal.defaultAuthStrategy }}
+            - name: VELOCITY_API_PORTAL_DEFAULT_AUTH_STRATEGY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.portal.grafanaUrl }}
+            - name: VELOCITY_API_PORTAL_GRAFANA_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.portal.environment }}
+            - name: VELOCITY_API_PORTAL_ENVIRONMENT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.api.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end -}}

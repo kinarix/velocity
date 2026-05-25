@@ -1,0 +1,32 @@
+# RoleBinding maps an actor (user or service) to one or more roles declared
+# in a SchemaDefinition.access.roles[] block. Optional scopes narrow which
+# schemas/versions/operations the actor is allowed to touch.
+apiVersion: velocity.sh/v1
+kind: RoleBinding
+metadata:
+  name: ravi-procurement-writer
+  namespace: acme-supply-chain-procurement
+spec:
+  actorId: ravi.kumar
+  roles:
+    - procurement-writer
+  scopes:
+    - schema:     purchase-order
+      version:    v1
+      operations: [create, read, update]
+      attributes:
+        region: west       # only rows matching identity.attributes.region=west
+  grantedBy: ops-lead@acme.com
+---
+# Service-account style binding for a back-office sync job.
+apiVersion: velocity.sh/v1
+kind: RoleBinding
+metadata:
+  name: erp-sync-procurement-writer
+  namespace: acme-supply-chain-procurement
+spec:
+  actorId: erp-sync-service
+  roles:
+    - procurement-writer
+  expiresAt: "2027-01-01T00:00:00Z"
+  grantedBy: ops-lead@acme.com

@@ -26,6 +26,7 @@ pub mod search_rebuild;
 pub mod slo_rules;
 pub mod startup;
 pub mod tiering;
+pub mod workload;
 
 pub use config::OperatorConfig;
 pub use context::Context;

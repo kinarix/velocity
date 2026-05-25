@@ -61,10 +61,10 @@ The whole platform sits on three load-bearing decisions:
                        provisions │ owns
                                   ▼
 ┌─────────────────────────── Data plane ──────────────────────────────────┐
-│   velocity-api  (Axum; informer-fed SchemaRegistry; /readyz gated)      │
+│   platform-api · data-api · search  (Axum tiers over velocity-core)     │
 │       ↑                                                                  │
 │       │  generic CRUD + DSL query + search + audit + time-machine        │
-│       │  (single set of handlers, no per-schema code)                    │
+│       │  (one handler set in velocity-core; tiers select their slice)    │
 │       ▼                                                                  │
 │   ┌────────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐           │
 │   │ Postgres   │  │  Redis   │  │ Typesense │  │   Kafka    │           │
@@ -90,7 +90,10 @@ The whole platform sits on three load-bearing decisions:
 | CRD types | `velocity-types` | library | All CRD structs, `generate-crds` binary, common types (`Condition`, `ReconcilePhase`, `Identity`, fail-mode matrix) | 0 |
 | Operator | `velocity-operator` | Deployment (HA, leader-elected) | Reconcilers for Org/App/Domain, SchemaDefinition, ArchivePolicy, PurgeRequest, RoleBinding, LogFilterPolicy, LogRoutingPolicy. Postgres provisioning (hot + archive schemas, roles, RLS). Typesense provisioning + blue-green collection swap. SLO → PrometheusRule sweep. Hourly drift sweep. | 0–8 |
 | Validating webhook | `velocity-webhook` | Deployment (3 replicas) | Last line of defence on CRD applies: namespace match, CEL safety, quota, cross-domain refs, per-CRD invariants | 1 |
-| API | `velocity-api` | Deployment (HPA + KEDA) | Generic CRUD, DSL query, FTS, Typesense search, audit read/verify, time-machine endpoints, archive endpoints, idempotency, RBAC layers 1–7, CDC worker (per Tier-3 schema), Prometheus metrics middleware | 1–8 |
+| API core | `velocity-core` | library | Shared foundation linked by all three API tiers: auth (JWT/OIDC/API-key + middleware), informer-fed `SchemaRegistry`, config, the schema + access model (validation, RBAC layers 1–7, row/field filters, masking, policy), audit-write, cursor signer, `/auth/*` router, bootstrap | 1–12 |
+| Data API | `velocity-data-api` | Deployment (HPA + KEDA) | Generic CRUD, DSL query, Tier-2 FTS, time-machine endpoints, archive endpoints, idempotency, Prometheus metrics middleware. Postgres only. | 1–8 |
+| Platform API | `velocity-platform-api` | Deployment | Admin CRD read/write (webhook in path), platform audit read/verify, registry index + build info, embedded portal SPA | 6–12 |
+| Search API | `velocity-search` | Deployment (HPA + KEDA) | Tier-3 Typesense search (per-schema + per-org cross-domain), CDC outbox→Typesense worker | 5–8 |
 | Archive worker | `velocity-archive-worker` | Deployment | Single-tx `archive_batch` / `purge_batch` primitives, S3 Parquet destination, tick loop driven by ArchivePolicy spec | 8 |
 | Warm-tier reader | `velocity-warm-reader` | Deployment | DataFusion over S3 Parquet for time-machine reads outside the 90-day hot window; HTTP RPC behind a bearer token | 4 |
 | Log processor | `velocity-log-processor` | Deployment | Enrichment (velocity.{org,app,domain,schema} labels), filter rules (keep / drop / sample / redact), routing to Loki / S3 / Kafka | 6b |

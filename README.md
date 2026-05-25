@@ -18,8 +18,14 @@ automatically. See [`docs/architecture.md`](docs/architecture.md) (TBD) and
 ```
 crates/
   velocity-types/         CRD structs + ResolvedSchema + fail-mode matrix
+  velocity-core/          Shared API library: auth, SchemaRegistry, config,
+                          audit-write, schema/access model, bootstrap
   velocity-operator/      kube-rs reconcilers (Org/App/Domain in Phase 0)
-  velocity-api/           Axum API server (Phase 2+)
+  velocity-data-api/      Data plane: CRUD/query/time-machine/archive (links core)
+  velocity-platform-api/  Admin/UI + CRD read-write + platform audit + SPA (links core)
+  velocity-search/        Tier-3 Typesense search + CDC worker (links core)
+  velocity-warm-reader/   Warm-tier Parquet/DataFusion read service (Phase 4+)
+  velocity-typesense/     Shared Typesense client + collection specs
   velocity-webhook/       ValidatingWebhook server
   velocity-cli/           `velocity` binary (Phase 1+)
   velocity-archive-worker/ batch archive worker (Phase 4+)
@@ -38,7 +44,7 @@ runbooks/                 Operational runbooks (per `docs/operations.md`)
 
 ## Quick start (local dev)
 
-Prereqs: Docker, Rust 1.83+, kubectl, helm, minikube, openssl.
+Prereqs: Docker, Rust 1.83+, kubectl, helm, k3d, openssl.
 
 ### 1. Start the data plane
 
@@ -74,23 +80,38 @@ make operator         # cargo run -p velocity-operator against docker-compose Po
 The startup gate verifies `velocity_api` is `NOBYPASSRLS` and that
 `platform.audit_insert` is installed before doing anything else.
 
-### 4. End-to-end on minikube (Phase 0 acceptance)
+### 4. Full stack in k3d (portal + Phase 0 acceptance)
 
 ```bash
-minikube start
-make e2e
+make k3d-up           # picker → pick existing cluster or create new; builds + helm installs
+echo '127.0.0.1 velocity.local' | sudo tee -a /etc/hosts   # one-time
+open http://velocity.local:8080/
+make e2e              # Phase 0 acceptance suite against the up cluster
 ```
 
-`make e2e` builds the webhook image into minikube's daemon, helm-installs
-the chart, runs the operator on the host against docker-compose Postgres,
-applies a `Domain`, and verifies the four Phase 0 acceptance checks:
+`make k3d-up` builds every velocity image via `docker buildx bake`, imports
+them into the k3d cluster, applies the CRDs, generates webhook TLS, and
+helm-installs the chart with the dev overlay. Portal nginx + ingress is on
+by default, so the SPA is reachable at `http://velocity.local:8080/` via
+the k3d traefik load balancer.
+
+`make e2e` runs the Phase 0 acceptance suite against the running release:
 
 1. Webhook denies a namespace mismatch.
 2. Webhook admits a well-formed Domain.
 3. Operator provisions the per-domain Postgres schema.
 4. `Domain.status.phase` reaches `Ready`.
 
-The script tears down the resources it creates on exit.
+Operational helpers:
+
+```bash
+make k3d-logs                 # tail aggregate velocity logs
+make k3d-logs COMPONENT=api   # scope to one component
+make k3d-status               # kubectl get all,ingress in velocity-system
+make k3d-redeploy             # rebuild images, import, helm upgrade, roll pods
+make k3d-clean                # helm uninstall + delete namespace (keep cluster)
+k3d cluster delete velocity   # tear the cluster down entirely
+```
 
 ---
 

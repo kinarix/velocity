@@ -4,6 +4,13 @@
 nameOverride: ""
 fullnameOverride: ""
 
+# Host on which the docker-compose infra stack (Postgres, Redis, Kafka,
+# Typesense, Minio) is reachable from inside the cluster. Used as the default
+# fallback when an individual service's per-stanza host is not set. The local
+# e2e flow sets this to `host.k3d.internal`. In production, leave empty and
+# set each service's `database.host` / equivalent explicitly.
+globalHost: ""
+
 # CRDs ship under charts/velocity/crds/ and are installed by Helm at `helm install`
 # time. They are NOT removed on `helm uninstall` and NOT updated on `helm upgrade`
 # (Helm's documented behaviour). Manage upgrades with `kubectl apply -f charts/velocity/crds/`
@@ -39,6 +46,27 @@ operator:
     capabilities: { drop: ["ALL"] }
   env: []
   envFrom: []
+  # ADR-011: data-API workload orchestrator.
+  # When disabled, a Domain with deployment.scope=domain still provisions
+  # Postgres but spawns no API pod. When enabled, the operator materialises
+  # app-scoped and domain-scoped velocity-data-api Deployments on demand.
+  dataApi:
+    enabled: true
+    image:
+      name: velocity-data-api
+      tag: "0.1.0"
+    # Name of the Secret the operator CREATES in each domain namespace and
+    # the data-API pod injects with envFrom (operator fills DB creds + env).
+    envSecret: "velocity-data-api-env"
+    # Source Secret (in the operator/release namespace) holding the shared
+    # VELOCITY_API_* env (PG host/port/db, cursor key, …) the operator copies
+    # into each domain namespace. Rendered by the data-api-env-secret template.
+    envSourceSecret: "velocity-data-api-env-source"
+    # Shared Ingress host for generated per-domain paths
+    # (/api/{org}/{app}/{domain}). Empty → no Ingress is created.
+    ingressHost: ""
+    # enforced | anonymous — mirrors api.auth.mode onto data-API pods.
+    authMode: enforced
   # Database connection — operator must use a NOBYPASSRLS role (ADR-007).
   database:
     # Either set databaseUrl OR (host, port, user, password, db).
@@ -58,6 +86,189 @@ operator:
   logging:
     pretty: false
     level: "info"
+
+###############################################################################
+# API tier (Phase 12a / ADR-011 split into three binaries over the
+# velocity-core library). The `api.*` block below is SHARED config (DB, redis,
+# typesense, warmReader, auth, logging, portal, resources, secrets); the two
+# static services pick the subset they need:
+#   * the `api` Deployment runs velocity-platform-api  (UI + admin + audit)
+#   * api.search   → velocity-search    (all Tier-3 search + CDC)
+# Data-API pods (velocity-data-api) are operator-materialised per App/Domain.
+###############################################################################
+api:
+  enabled: true
+  replicaCount: 1
+  image:
+    name: velocity-platform-api
+    tag: "0.1.0"
+  # Search tier: all Tier-3 search + CDC outbox→Typesense. Reachable under the
+  # `/search` ingress prefix.
+  search:
+    enabled: true
+    replicaCount: 1
+    image:
+      name: velocity-search
+      tag: "0.1.0"
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  env: []
+  envFrom: []
+  # Phase 12b: data-plane authentication mode.
+  #   enforced  — every /api/{schema} request is authenticated (default).
+  #   anonymous — TEST MODE: auth bypassed, requests run as actor=anonymous.
+  #               Audit chain + RLS context stay intact. NEVER use in prod.
+  auth:
+    mode: enforced
+  # Database connection — API uses velocity_api (NOBYPASSRLS).
+  database:
+    host: ""              # fallback to globalHost
+    port: 5434            # docker-compose maps 5432 -> 5434 on host
+    user: "velocity_api"
+    db:   "velocity"
+    password: ""          # if set, rendered into a chart-owned Secret
+    existingSecret: ""    # else, point at an externally-managed Secret
+    passwordKey: "password"
+    poolMax: 16
+  # CURSOR_SIGNING_KEY + PLATFORM_AUDIT_TOKEN. Auto-generated on first install
+  # (api-secret.yaml looks up the existing Secret on upgrade so values don't churn).
+  secrets:
+    existingSecret: ""
+  redis:
+    enabled: true
+    host: ""              # fallback to globalHost
+    port: 6380            # docker-compose maps 6379 -> 6380 on host
+  typesense:
+    enabled: true
+    host: ""              # fallback to globalHost
+    port: 8108
+    apiKey: "dev-typesense-key"   # matches docker-compose TYPESENSE_API_KEY
+    existingSecret: ""    # set to BYO-Secret name to skip the auto-rendered one
+  warmReader:
+    enabled: true
+    url: "http://velocity-warm-reader:9090"   # in-cluster service
+    timeoutMs: 5000
+    existingSecret: ""    # if empty, expects a Secret named <release>-api-warm-reader with key service_token
+  logging:
+    pretty: false
+    level: "info"
+  # Portal runtime knobs — the velocity-platform-api binary embeds the React SPA
+  # via rust-embed and serves `/config.json` from these values. Anything
+  # user-specific belongs in the cluster's identity provider, not here.
+  portal:
+    # AuthStrategy the portal redirects unauthenticated users to (NS/NAME).
+    # Empty leaves auto-redirect off; the user-supplied login page stays
+    # interactive.
+    defaultAuthStrategy: ""
+    # Central Grafana URL used by Metrics page link-outs. Empty hides them.
+    grafanaUrl: ""
+    # Short banner string (e.g. "PROD") for the header.
+    environment: ""
+  # External ingress for the API + bundled portal SPA. Same hostname for
+  # both — the SPA is served from `/`, the API from `/api/`, etc.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: velocity.local
+        path: /
+        pathType: Prefix
+    tls: []
+
+###############################################################################
+# Warm-tier reader (velocity-warm-reader)
+###############################################################################
+warmReader:
+  enabled: true
+  replicaCount: 1
+  image:
+    name: velocity-warm-reader
+    tag: "0.1.0"
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 1Gi }
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  env: []
+  logging:
+    pretty: false
+    level: "info"
+  tokenSecret:
+    existingSecret: ""    # if empty, auto-generated and shared with api.warmReader
+
+###############################################################################
+# Archive worker (velocity-archive-worker)
+###############################################################################
+archiveWorker:
+  enabled: true
+  replicaCount: 1
+  image:
+    name: velocity-archive-worker
+    tag: "0.1.0"
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 1Gi }
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  env: []
+  logging:
+    pretty: false
+    level: "info"
+  # Database — same NOBYPASSRLS role as the API uses. Operator owns the DDL;
+  # archive-worker only does data ops in tenant tables.
+  database:
+    host: ""              # fallback to globalHost
+    port: 5434
+    user: "velocity_api"
+    db:   "velocity"
+    password: ""
+    existingSecret: ""
+    passwordKey: "password"
+  tickIntervalSecs: 60
+  minRunIntervalSecs: 300
+  defaultBatchSize: 500
+  defaultMaxDurationSecs: 600
+
+###############################################################################
+# S3-compatible object store (Minio for dev, S3/GCS/etc. for prod).
+# Shared by warmReader (read) and archiveWorker (write).
+###############################################################################
+objectStore:
+  bucket: "velocity-warm"
+  host: ""              # fallback to globalHost (host.k3d.internal for dev)
+  port: 9000
+  region: "us-east-1"   # arbitrary for Minio; required by AWS SDK
+  accessKeyId:     "velocity"
+  secretAccessKey: "velocity_dev"
+  existingSecret: ""    # set to BYO-Secret with keys access_key_id/secret_access_key to skip the auto-rendered one
 
 ###############################################################################
 # Admission webhook
@@ -208,53 +419,6 @@ logCollector:
     # control-plane components' logs.
     - operator: "Exists"
       effect: "NoSchedule"
-
-###############################################################################
-# Admin portal (Phase 10) — React SPA served by nginx; same-origin proxy to
-# velocity-api so the browser never has to deal with CORS.
-###############################################################################
-portal:
-  enabled: false
-  replicaCount: 1
-  image:
-    name: velocity-portal
-    tag: "0.1.0"
-  # In-cluster host:port the nginx layer proxies /api, /auth, /version,
-  # /healthz, /readyz to. Defaults to the API Service shipped by this chart.
-  apiHost: "velocity-api:8080"
-  service:
-    type: ClusterIP
-    port: 80
-  ingress:
-    enabled: false
-    className: ""
-    annotations: {}
-    hosts:
-      - host: portal.velocity.local
-        path: /
-        pathType: Prefix
-    tls: []
-  config:
-    # AuthStrategy the portal redirects unauthenticated users to (NS/NAME).
-    # Leave empty for dev (then the portal shows the page but won't auto-redirect).
-    defaultAuthStrategy: ""
-    # Central Grafana URL used by Metrics page link-outs. Empty hides links.
-    grafanaUrl: ""
-    # Short banner string (e.g. "PROD") for the header.
-    environment: ""
-  resources:
-    requests: { cpu: 25m,  memory: 32Mi }
-    limits:   { cpu: 200m, memory: 128Mi }
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 101            # nginx user inside the official image
-    seccompProfile: { type: RuntimeDefault }
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    # nginx writes to /var/cache/nginx + /var/run; can't enable ROFS without
-    # additional emptyDir mounts. Left writable for the v1 chart.
-    readOnlyRootFilesystem: false
-    capabilities: { drop: ["ALL"] }
 
 ###############################################################################
 # RBAC + ServiceAccount

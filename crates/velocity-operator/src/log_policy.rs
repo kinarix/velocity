@@ -34,8 +34,9 @@ use serde::{Deserialize, Serialize};
 use velocity_types::crds::{LogFilterPolicy, LogRoutingPolicy};
 
 /// Where the rendered bundle lands. The processor mounts this same
-/// `name`/`key` from its Pod spec.
-const CONFIGMAP_NAMESPACE: &str = "velocity-system";
+/// `name`/`key` from its Pod spec. The namespace is the operator's own
+/// (passed in to `run`) — not hard-coded here so the operator can be
+/// reinstalled into any namespace.
 const CONFIGMAP_NAME: &str = "velocity-log-policies";
 const CONFIGMAP_KEY: &str = "log-policies.yaml";
 const MANAGER: &str = "velocity-operator";
@@ -45,18 +46,18 @@ const MANAGER: &str = "velocity-operator";
 /// the processor can't observe within the same window.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Run the sweeper forever. `webhook_disabled` is just to give the spawn
-/// site one less unwrap to forget — the sweeper itself never wires HTTP.
-pub async fn run(kube: Client) {
+/// Run the sweeper forever. `namespace` is the operator's own namespace
+/// (where the rendered ConfigMap lands).
+pub async fn run(kube: Client, namespace: String) {
     tracing::info!(
         interval_secs = SWEEP_INTERVAL.as_secs(),
-        cm_namespace = CONFIGMAP_NAMESPACE,
+        cm_namespace = %namespace,
         cm_name = CONFIGMAP_NAME,
         "log-policy sweeper started"
     );
     loop {
         tokio::time::sleep(SWEEP_INTERVAL).await;
-        match sweep_once(&kube).await {
+        match sweep_once(&kube, &namespace).await {
             Ok(n) => tracing::debug!(rules = n, "log-policy bundle applied"),
             Err(e) => tracing::warn!(error = %e, "log-policy sweep failed; retrying next interval"),
         }
@@ -66,7 +67,7 @@ pub async fn run(kube: Client) {
 /// One sweep tick. Returns the number of filter rules in the rendered
 /// bundle (so a metric or alert can fire on "suddenly 0 rules where
 /// there used to be many").
-pub async fn sweep_once(kube: &Client) -> Result<usize, kube::Error> {
+pub async fn sweep_once(kube: &Client, namespace: &str) -> Result<usize, kube::Error> {
     let filters: Api<LogFilterPolicy> = Api::all(kube.clone());
     let routings: Api<LogRoutingPolicy> = Api::all(kube.clone());
     let filter_list = filters.list(&Default::default()).await?;
@@ -81,7 +82,7 @@ pub async fn sweep_once(kube: &Client) -> Result<usize, kube::Error> {
         String::new()
     });
 
-    apply_configmap(kube, &yaml).await?;
+    apply_configmap(kube, namespace, &yaml).await?;
     Ok(bundle.filters.len())
 }
 
@@ -161,15 +162,15 @@ pub fn render_bundle(filters: &[LogFilterPolicy], routings: &[LogRoutingPolicy])
     RenderedBundle { filters: filter_rules, destinations }
 }
 
-async fn apply_configmap(kube: &Client, yaml: &str) -> Result<(), kube::Error> {
-    let api: Api<ConfigMap> = Api::namespaced(kube.clone(), CONFIGMAP_NAMESPACE);
+async fn apply_configmap(kube: &Client, namespace: &str, yaml: &str) -> Result<(), kube::Error> {
+    let api: Api<ConfigMap> = Api::namespaced(kube.clone(), namespace);
     let mut data = BTreeMap::new();
     data.insert(CONFIGMAP_KEY.to_string(), yaml.to_string());
 
     let cm = ConfigMap {
         metadata: ObjectMeta {
             name: Some(CONFIGMAP_NAME.to_string()),
-            namespace: Some(CONFIGMAP_NAMESPACE.to_string()),
+            namespace: Some(namespace.to_string()),
             // Labels make the ConfigMap discoverable + identify the owner
             // so a human grepping `kubectl get cm -A -l ...` can find it.
             labels: Some(BTreeMap::from([

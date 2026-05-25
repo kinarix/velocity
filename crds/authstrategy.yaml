@@ -93,10 +93,15 @@ spec:
                         issuer:
                           type: string
                         jwksUrl:
+                          default: ''
+                          description: |-
+                            JWKS endpoint URL. Required for JWT strategies. For OIDC strategies
+                            the API server fills this from the discovery document at strategy
+                            load time when [`OidcConfig::config_url`] is set and this is empty,
+                            so users with a discovery URL can omit it.
                           type: string
                       required:
                       - issuer
-                      - jwksUrl
                       type: object
                     type: array
                   oidc:
@@ -109,7 +114,11 @@ spec:
                     nullable: true
                     properties:
                       authorizationEndpoint:
-                        description: IdP authorization endpoint — the user-agent is redirected here.
+                        default: ''
+                        description: |-
+                          IdP authorization endpoint — the user-agent is redirected here.
+                          Required unless [`Self::config_url`] is set and discovery returns
+                          an `authorization_endpoint`.
                         type: string
                       clientId:
                         description: OAuth2 client id registered with the IdP.
@@ -128,10 +137,24 @@ spec:
                         - key
                         - name
                         type: object
+                      configUrl:
+                        description: |-
+                          OIDC discovery URL — usually `https://<idp>/.well-known/openid-configuration`.
+                          When set, the API server fetches this document once at strategy
+                          load time and uses it to populate any endpoint fields below (and
+                          the matching `issuers[].jwks_url`) that you left unset. Explicit
+                          values in the CRD always win. If discovery fails at load time and
+                          any required endpoint is still unset, the strategy is rejected and
+                          will not be registered — fail-closed.
+                        nullable: true
+                        type: string
                       issuer:
+                        default: ''
                         description: |-
                           Issuer string expected on the ID token — must match one of
                           [`AuthStrategyConfig::issuers`]. Selects which JWKS to verify with.
+                          May be populated from discovery's `issuer` claim when
+                          [`Self::config_url`] is set.
                         type: string
                       redirectUri:
                         description: |-
@@ -151,22 +174,24 @@ spec:
                         nullable: true
                         type: integer
                       tokenEndpoint:
-                        description: IdP token endpoint — back-channel exchange of the authorization code.
+                        default: ''
+                        description: |-
+                          IdP token endpoint — back-channel exchange of the authorization
+                          code. Required unless [`Self::config_url`] is set and discovery
+                          returns a `token_endpoint`.
                         type: string
                       userinfoEndpoint:
                         description: |-
                           IdP userinfo endpoint — optional; when set, the callback fetches
                           additional claims after token exchange. The middleware merges them
-                          over ID-token claims (later wins) before claim mapping runs.
+                          over ID-token claims (later wins) before claim mapping runs. May
+                          also be populated from discovery's `userinfo_endpoint`.
                         nullable: true
                         type: string
                     required:
-                    - authorizationEndpoint
                     - clientId
                     - clientSecretRef
-                    - issuer
                     - redirectUri
-                    - tokenEndpoint
                     type: object
                   revocation:
                     nullable: true

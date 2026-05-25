@@ -1,0 +1,22 @@
+{{- if and .Values.rbac.create .Values.operator.dataApi.enabled -}}
+{{- /*
+  ADR-011: ClusterRole for operator-materialised data-API pods.
+  The operator creates a ServiceAccount named "velocity-data-api" in every
+  data-API namespace it provisions, then stamps a ClusterRoleBinding
+  (velocity-data-api-{namespace}) that grants this role cluster-wide.
+  Cluster-wide watch is required so each data-API pod's kube informer can
+  discover SchemaDefinitions and AuthStrategies across all namespaces while
+  filtering by the org/app label selector.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: velocity-data-api
+  labels:
+    {{- include "velocity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: data-api
+rules:
+  - apiGroups: ["velocity.sh"]
+    resources: ["schemadefinitions", "authstrategies"]
+    verbs: ["get", "list", "watch"]
+{{- end -}}

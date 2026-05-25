@@ -1,0 +1,22 @@
+# Archive policy referenced by SchemaDefinitions in the procurement domain.
+# Lives in the domain namespace so it's discoverable by every schema that
+# inherits this policy.
+apiVersion: velocity.sh/v1
+kind: ArchivePolicy
+metadata:
+  name: procurement-archive
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+spec:
+  schedule:    "0 2 * * *"        # nightly at 02:00 local
+  trigger:
+    type:  age
+    value: "90d"
+  batchSize:    1000
+  maxDuration:  "10m"
+  destination:
+    backend: postgres-cold
+  purgeAfter: "365d"              # hard-delete hot rows after archive copy ages

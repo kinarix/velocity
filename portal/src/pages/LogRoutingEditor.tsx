@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { PageTitle } from "../components/PageTitle";
 import { SplitEditor } from "../components/SplitEditor";
+import { applyObject, type KubeObject } from "../api/admin";
 
 export function LogRoutingEditor() {
   const [name, setName] = useState("default-routing");
@@ -38,6 +39,7 @@ export function LogRoutingEditor() {
       <SplitEditor
         filename={`${name}.logrouting.yaml`}
         value={value}
+        onApply={() => applyObject("LogRoutingPolicy", namespace, name, value as KubeObject)}
         form={
           <div className="space-y-3 text-xs">
             <div>

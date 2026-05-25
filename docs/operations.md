@@ -149,9 +149,8 @@ The Kubernetes cluster is destroyed. Bring up a new cluster.
 # 2. Apply core CRD definitions
 kubectl apply -f crds/
 
-# 3. Apply Velocity operator and API
-helm install velocity-operator charts/velocity-operator
-helm install velocity-api      charts/velocity-api
+# 3. Apply Velocity (umbrella chart: operator + webhook + platform/data/search API tiers)
+helm install velocity charts/velocity
 
 # 4. Restore Postgres (CNPG handles this from S3 backup)
 kubectl apply -f restore/velocity-postgres-restore.yaml

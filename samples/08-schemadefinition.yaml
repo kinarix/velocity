@@ -1,0 +1,131 @@
+# SchemaDefinition is the unit that creates a real Postgres table, dynamic
+# REST routes, RLS, audit chain, time machine, search, and hooks. Apply
+# AFTER its referenced Domain, AuthStrategy, ArchivePolicy, and (optionally)
+# Log policies exist — the webhook resolves every ref before admitting.
+apiVersion: velocity.sh/v1
+kind: SchemaDefinition
+metadata:
+  name: purchase-order
+  namespace: acme-supply-chain-procurement
+  labels:
+    velocity.sh/org:    acme
+    velocity.sh/app:    supply-chain
+    velocity.sh/domain: procurement
+  annotations:
+    velocity.sh/owner: ops-lead@acme.com
+spec:
+  version: v1
+
+  # ─── Partitioning ──────────────────────────────────────────
+  partitioning:
+    enabled:   true
+    strategy:  range
+    field:     created_at
+    interval:  monthly
+    retention: 7years
+
+  # ─── Auth ──────────────────────────────────────────────────
+  auth:
+    strategyRef:
+      name:      jwt-internal
+      namespace: platform
+
+  # ─── Access ────────────────────────────────────────────────
+  access:
+    roles:
+      - role:       procurement-admin
+        operations: [create, read, update, delete, restore, export, history]
+      - role:       procurement-writer
+        operations: [create, read, update]
+      - role:       procurement-reader
+        operations: [read]
+    rowFilter:
+      - role: store-operator
+        filter:
+          field: store_id
+          op:    eq
+          value: "{{identity.attributes.store_id}}"
+
+  # ─── Fields ────────────────────────────────────────────────
+  fields:
+    - name:     po_number
+      type:     string
+      required: true
+      unique:   true            # partial unique index (WHERE deleted_at IS NULL)
+      indexed:  true
+      pattern:  "^PO-[0-9]{8}$"
+
+    - name:       supplier_code
+      type:       string
+      required:   true
+      filterable: true
+
+    - name:       status
+      type:       string
+      required:   true
+      enum:       [draft, approved, dispatched, received, cancelled]
+      filterable: true
+      sortable:   true
+
+    - name:    unit_price
+      type:    number
+      min:     0
+      max:     10000000
+      sensitivity: financial
+      access:
+        read:  [procurement-admin, procurement-writer]
+        write: [procurement-admin, procurement-writer]
+      masking:
+        roles:
+          procurement-reader:
+            strategy: redact
+
+    - name: store_id
+      type: string
+      filterable: true
+
+    - name: created_at
+      type: timestamp
+      required: true
+      sortable: true
+
+  # ─── Validations ───────────────────────────────────────────
+  validations:
+    - type: cel
+      rule: "self.status == 'cancelled' ? has(self.cancellation_reason) : true"
+      message: "Cancellation reason required when status is cancelled"
+      maxExecutionMs: 10
+
+  # ─── Search ────────────────────────────────────────────────
+  search:
+    tier: 1                     # tier 1: pg trgm; tier 3: Typesense + outbox CDC
+    cross_search: false
+
+  # ─── Time machine ──────────────────────────────────────────
+  timeMachine:
+    enabled: true
+    storage:
+      hot:
+        backend:   postgres
+        retention: 90days
+
+  # ─── Audit ─────────────────────────────────────────────────
+  audit:
+    enabled: true
+    writes:
+      requireReason:    [delete, restore]
+      requireTicketRef: [delete]
+
+  # ─── Archive ───────────────────────────────────────────────
+  archive:
+    policyRef:
+      name:      procurement-archive
+      namespace: acme-supply-chain-procurement
+
+  # ─── Scaling ───────────────────────────────────────────────
+  scaling:
+    min: 2
+    max: 30
+    triggers:
+      - type: cpu
+        threshold: 60

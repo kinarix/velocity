@@ -42,6 +42,13 @@ portal/.turbo/
 portal/coverage/
 portal/*.log
 node_modules/
+
+# Portal SPA build output dropped here by the Dockerfile before
+# `cargo build` so rust-embed can bundle it into the velocity-api
+# binary. Tracked dir, ignored contents (except README.md as the
+# placeholder so the dir survives a clone).
+crates/velocity-platform-api/static/*
+!crates/velocity-platform-api/static/README.md
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

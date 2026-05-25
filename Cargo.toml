@@ -3,7 +3,10 @@ resolver = "2"
 members = [
     "crates/velocity-types",
     "crates/velocity-operator",
-    "crates/velocity-api",
+    "crates/velocity-core",
+    "crates/velocity-data-api",
+    "crates/velocity-platform-api",
+    "crates/velocity-search",
     "crates/velocity-webhook",
     "crates/velocity-cli",
     "crates/velocity-log-processor",
@@ -51,6 +54,12 @@ pin-project    = "1"
 axum           = { version = "0.8", features = ["macros"] }
 tower          = "0.5"
 tower-http     = { version = "0.6", features = ["trace", "cors", "limit", "request-id"] }
+
+# Static asset embedding — velocity-platform-api ships the portal SPA bundled
+# into its binary (rust-embed reads crates/velocity-platform-api/static/ at
+# compile time). mime_guess maps file extensions to Content-Type headers.
+rust-embed     = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess     = "2"
 axum-server    = { version = "0.7", features = ["tls-rustls"] }
 hyper          = "1"
 reqwest        = { version = "0.13", default-features = false, features = ["json", "rustls"] }
